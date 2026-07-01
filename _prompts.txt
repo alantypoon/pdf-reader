@@ -1,0 +1,37 @@
+add a button "AI Generation" of generating revision flash cards and MCQ quiz questions that helps the user to learn about page by aigateway for ai inference. use a right-side drawer to display the flash card and mcq quiz. 
+
+- use the following aigateway settings in .env
+
+AIGATEWAY_API_URL=https://aigateway.aied.hku.hk/api/generate
+AIGATEWAY_PROVIDER=ett
+AIGATEWAY_MODEL=vllm|OpenGVLab/InternVL3_5-38B
+AIGATEWAY_APIKEY=<secretly hidden>
+
+- use the following sample code for ai inference calling:
+import { openAsBlob } from 'node:fs';
+
+const endpointUrl = "https://aigateway.aied.hku.hk/api/generate?debug_log=1";
+
+async function runEttExtraction() {
+  const formData = new FormData();
+  formData.append('provider', 'ett');
+  formData.append('apiKey', "<secretly hidden>");
+  formData.append('model', "vllm|OpenGVLab/InternVL3_5-38B");
+  formData.append('links', JSON.stringify(['https://example.com/article-one', 'https://example.com/article-two']));
+  formData.append('wordCount', '1000');
+  formData.append('files', await openAsBlob('./brief.pdf'), 'brief.pdf');
+  formData.append('files', await openAsBlob('./screenshot.png'), 'screenshot.png');
+
+  const response = await fetch(endpointUrl, {
+    method: 'POST',
+    headers: { Accept: "text/event-stream" },
+    body: formData,
+  });
+
+  console.log("HTTP", response.status);
+  console.log(await response.text());
+}
+runEttExtraction().catch(console.error);
+
+- save the user generated flash cards and quizs to database by MONGODB_URI in .env
+

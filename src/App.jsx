@@ -779,6 +779,35 @@ function App() {
           </label>
         )}
 
+        {!sidebarCollapsed && (
+          <label className="toggle-row">
+            <button
+              className={`toggle-btn icon-only ai-generate-btn ${aiDrawerOpen ? 'active' : ''}`}
+              onClick={handleAiGenerate}
+              disabled={aiLoading}
+            >
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" />
+              </svg>
+              {aiLoading ? 'Generating…' : 'AI Generation'}
+            </button>
+          </label>
+        )}
+
+        {sidebarCollapsed && (
+          <button
+            className={`sidebar-icon-btn ${aiDrawerOpen ? 'active' : ''}`}
+            onClick={handleAiGenerate}
+            disabled={aiLoading}
+            data-tooltip={aiLoading ? 'Generating…' : 'AI Generation'}
+            aria-label="AI Generation"
+          >
+            <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" />
+            </svg>
+          </button>
+        )}
+
       </aside>
 
       <main className="reader">
@@ -1041,6 +1070,157 @@ function App() {
 
 
       </main>
+
+      {/* ── AI Generation Drawer ─────────────────────────── */}
+      {aiDrawerOpen && (
+        <div className="resources-drawer-overlay" onClick={() => setAiDrawerOpen(false)}>
+          <section className="ai-drawer" onClick={(e) => e.stopPropagation()}>
+            <div className="ai-drawer-header">
+              <h2>
+                <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="ai-header-icon">
+                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" />
+                </svg>
+                AI Study Materials
+              </h2>
+              <div className="ai-drawer-header-actions">
+                {aiContent && !aiLoading && (
+                  <button className="ai-regenerate-btn" onClick={handleAiGenerate} title="Regenerate">
+                    <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                      <path d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" />
+                    </svg>
+                  </button>
+                )}
+                <button className="modal-close" onClick={() => setAiDrawerOpen(false)} aria-label="Close">✕</button>
+              </div>
+            </div>
+
+            <div className="ai-drawer-body">
+              {aiLoading && (
+                <div className="ai-loading">
+                  <div className="ai-spinner" />
+                  <p>Generating flash cards and quiz questions…</p>
+                  <small>This may take 30-60 seconds</small>
+                </div>
+              )}
+
+              {aiError && !aiLoading && (
+                <div className="ai-error">
+                  <p>⚠️ {aiError}</p>
+                  <button className="ai-retry-btn" onClick={handleAiGenerate}>Retry</button>
+                </div>
+              )}
+
+              {aiContent && !aiLoading && (
+                <div className="ai-content">
+                  {/* Flash Cards */}
+                  {aiContent.flashcards && aiContent.flashcards.length > 0 && (
+                    <div className="ai-section">
+                      <h3 className="ai-section-title">
+                        <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="ai-section-icon">
+                          <rect x="2" y="4" width="20" height="16" rx="2" />
+                          <line x1="8" y1="9" x2="16" y2="9" stroke="currentColor" strokeWidth="1.5" />
+                          <line x1="8" y1="13" x2="12" y2="13" stroke="currentColor" strokeWidth="1.5" />
+                        </svg>
+                        Flash Cards ({aiContent.flashcards.length})
+                      </h3>
+                      <div className="flashcards-grid">
+                        {aiContent.flashcards.map((card, idx) => (
+                          <div
+                            key={idx}
+                            className={`flashcard ${flippedCards[idx] ? 'flipped' : ''}`}
+                            onClick={() => toggleFlashcard(idx)}
+                          >
+                            <div className="flashcard-inner">
+                              <div className="flashcard-front">
+                                <span className="flashcard-label">Q{idx + 1}</span>
+                                <p>{card.question}</p>
+                                <small className="flashcard-hint">Click to reveal answer</small>
+                              </div>
+                              <div className="flashcard-back">
+                                <span className="flashcard-label">A{idx + 1}</span>
+                                <p>{card.answer}</p>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* MCQ Quiz */}
+                  {aiContent.mcq && aiContent.mcq.length > 0 && (
+                    <div className="ai-section">
+                      <h3 className="ai-section-title">
+                        <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="ai-section-icon">
+                          <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="1.8" />
+                          <text x="12" y="17" textAnchor="middle" fontSize="12" fill="currentColor" fontWeight="700">?</text>
+                        </svg>
+                        MCQ Quiz ({aiContent.mcq.length})
+                      </h3>
+                      <div className="mcq-list">
+                        {aiContent.mcq.map((q, qIdx) => {
+                          const selected = mcqAnswers[qIdx];
+                          const isCorrect = selected === q.correct;
+                          return (
+                            <div key={qIdx} className={`mcq-item ${selected ? 'answered' : ''}`}>
+                              <p className="mcq-question">
+                                <strong>Q{qIdx + 1}.</strong> {q.question}
+                              </p>
+                              <div className="mcq-options">
+                                {(q.options || []).map((opt) => {
+                                  const optLetter = opt.charAt(0);
+                                  let optClass = 'mcq-option';
+                                  if (selected) {
+                                    if (optLetter === q.correct) optClass += ' correct';
+                                    else if (optLetter === selected && !isCorrect) optClass += ' incorrect';
+                                  }
+                                  return (
+                                    <button
+                                      key={optLetter}
+                                      className={optClass}
+                                      onClick={() => !selected && handleMcqSelect(qIdx, optLetter)}
+                                      disabled={!!selected}
+                                    >
+                                      {opt}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                              {selected && (
+                                <div className={`mcq-feedback ${isCorrect ? 'correct' : 'incorrect'}`}>
+                                  <strong>{isCorrect ? '✓ Correct!' : '✗ Incorrect'}</strong>
+                                  <p>{q.explanation}</p>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Raw / unparsed content fallback */}
+                  {!aiContent.flashcards && !aiContent.mcq && aiContent.raw && (
+                    <div className="ai-section">
+                      <h3 className="ai-section-title">Generated Content</h3>
+                      <pre className="ai-raw">{aiContent.raw}</pre>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {!aiContent && !aiLoading && !aiError && (
+                <div className="ai-empty">
+                  <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="ai-empty-icon">
+                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" />
+                  </svg>
+                  <p>Click &ldquo;AI Generation&rdquo; in the sidebar to generate flash cards and quiz questions for this section.</p>
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
 
       {modalInfo && (
         <div className="modal-overlay" onClick={() => setModalInfo(null)}>
