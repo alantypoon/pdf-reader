@@ -468,7 +468,7 @@ async function startAutoCapture() {
       throw new Error('No pages were captured.');
     }
 
-    const fileName = `content-${getTimestamp()}.pdf`;
+    const fileName = `${getSuggestedBaseName()}_${getTimestamp()}.pdf`;
     pdf.save(fileName);
     return { pagesCaptured: pageIndex, fileName };
   } finally {

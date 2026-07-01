@@ -3,7 +3,7 @@
   "name": "Ebook to PDF Capturer",
   "version": "1.0",
   "description": "Automates page turning and captures eBook pages into a PDF.",
-  "permissions": ["activeTab", "scripting", "tabs", "downloads"],
+  "permissions": ["activeTab", "scripting", "tabs"],
   "action": {},
   "background": {
     "service_worker": "background.js"
