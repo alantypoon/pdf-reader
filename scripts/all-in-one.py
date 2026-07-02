@@ -39,18 +39,63 @@ Output:
             https://isolution.oupchina.com.hk/isolution-web/.iSolution/ebook_user_content/...
 
 
+    4. Extracts the English section list from en/contents.png and fills
+       contents[].en.name in contents.json.
+
+            data/biology-oup/1a/en/contents.png
+            data/biology-oup/1b/en/contents.png
+
+        The script first tries the AI Gateway ETT flow, following the same
+        request pattern as /var/www/html/aigateway/scripts/test-ett.py. If the
+        gateway returns no text, it falls back to local Tesseract OCR.
+
+
+    5. Adds root-level names for elective books.
+
+        For elective books, a new top-level "name" field is added under
+        "chapter", for example:
+
+            {
+                "chapter": "e1",
+                "name": "Microbes and Disease",
+                ...
+            }
+
+        Elective book names:
+            e1 → Microbes and Disease
+            e2 → Human Physiology: Regulation and Control
+            e3 → Applied Ecology
+            e4 → Biotechnology
+
+
+    6. Downloads MP3 resources and rewrites the URLs to local paths.
+
+
 """
 
 import argparse
 import glob
 import json
+import mimetypes
 import os
 import re
+import subprocess
 import sys
+from pathlib import Path
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 from urllib.request import urlretrieve
 
 import fitz  # PyMuPDF
+
+
+ELECTIVE_BOOK_NAMES = {
+    "e1": "Microbes and Disease",
+    "e2": "Human Physiology: Regulation and Control",
+    "e3": "Applied Ecology",
+    "e4": "Biotechnology",
+}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -372,7 +417,260 @@ def fix_urls(data_dir):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  Step 4 — Download MP3 resources
+#  Step 4 — Extract section names from contents.png
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def load_env_file(env_path):
+    values = {}
+    if not os.path.isfile(env_path):
+        return values
+
+    with open(env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def get_ai_gateway_config(base_dir):
+    env_values = load_env_file(os.path.join(base_dir, ".env"))
+    return {
+        "url": os.environ.get("AIGATEWAY_API_URL") or env_values.get("AIGATEWAY_API_URL") or "https://aigateway.aied.hku.hk/api/generate",
+        "model": os.environ.get("AIGATEWAY_MODEL") or env_values.get("AIGATEWAY_MODEL") or "vllm|OpenGVLab/InternVL3_5-38B",
+        "api_key": os.environ.get("AIGATEWAY_APIKEY") or env_values.get("AIGATEWAY_APIKEY") or "",
+    }
+
+
+def send_ett_request(url, api_key, model, file_path, prompt):
+    boundary = "----PdfReaderContentsEtt"
+
+    def field(name, value):
+        return (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{name}"\r\n'
+            f"\r\n"
+            f"{value}\r\n"
+        ).encode("utf-8")
+
+    mime_type, _ = mimetypes.guess_type(str(file_path))
+    if mime_type is None:
+        mime_type = "application/octet-stream"
+
+    with open(file_path, "rb") as fh:
+        file_bytes = fh.read()
+
+    parts = [
+        field("provider", "ett"),
+        field("model", model),
+        field("apiKey", api_key),
+        field("stream", "false"),
+        field("prompt", prompt),
+        (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="files"; filename="{Path(file_path).name}"\r\n'
+            f"Content-Type: {mime_type}\r\n"
+            f"\r\n"
+        ).encode("utf-8"),
+        file_bytes,
+        b"\r\n",
+        f"--{boundary}--\r\n".encode("utf-8"),
+    ]
+
+    body = b"".join(parts)
+    req = Request(
+        url,
+        data=body,
+        headers={
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urlopen(req, timeout=120) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except HTTPError as err:
+        return {"error": True, "status": err.code, "body": err.read().decode("utf-8", errors="replace")}
+    except URLError as err:
+        return {"error": True, "reason": str(err.reason)}
+
+
+def extract_text_from_ett_result(result):
+    if not isinstance(result, dict) or result.get("error"):
+        return ""
+
+    text = result.get("response", "") or result.get("text", "") or result.get("output", "") or ""
+    master = result.get("masterSummary", "")
+    if isinstance(master, str) and master.strip():
+        text = master
+    elif isinstance(master, dict):
+        text = master.get("text", "") or master.get("summary", "") or text
+
+    if not text:
+        parts = []
+        for file_info in result.get("files", []) or []:
+            file_text = file_info.get("text", "") or file_info.get("response", "") or file_info.get("output", "") or ""
+            if isinstance(file_text, str) and file_text.strip():
+                parts.append(file_text.strip())
+        text = "\n\n".join(parts)
+
+    generation = result.get("generation", "")
+    if not text and isinstance(generation, str) and generation.strip():
+        text = generation
+    elif not text and isinstance(generation, dict):
+        text = generation.get("text", "") or generation.get("response", "") or ""
+
+    return text.strip() if isinstance(text, str) else ""
+
+
+def extract_text_with_tesseract(image_path):
+    result = subprocess.run(
+        ["tesseract", image_path, "stdout", "--psm", "6"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def parse_contents_entries(text):
+    entries = {}
+    for raw_line in text.splitlines():
+        line = " ".join(raw_line.strip().split())
+        if not line:
+            continue
+        if line.lower().startswith("new senior secondary mastering biology"):
+            continue
+
+        match = re.match(r"^(\d+(?:\.\d+)?)\s+(.+?)$", line)
+        if match:
+            section = match.group(1)
+            title = match.group(2).strip()
+            entries[section] = title
+            continue
+
+        if re.fullmatch(r"appendix", line, re.IGNORECASE):
+            entries["appendix"] = "Appendix"
+
+    return entries
+
+
+def fill_section_names_from_contents_png(data_dir, base_dir):
+    contents_path = os.path.join(data_dir, "contents.json")
+    image_path = os.path.join(data_dir, "en", "contents.png")
+
+    if not os.path.exists(image_path):
+        print(f"  [skip] {image_path} — not found")
+        return
+
+    if os.path.exists(contents_path):
+        with open(contents_path, "r", encoding="utf-8") as f:
+            contents = json.load(f)
+    else:
+        contents = _create_skeleton_from_pdfs(data_dir)
+        if not contents:
+            print(f"  [skip] No PDFs found to create {contents_path}")
+            return
+
+    config = get_ai_gateway_config(base_dir)
+    prompt = (
+        "Extract the numbered section list from this biology contents image. "
+        "Return plain text lines only in the form 'section_number section_title'. "
+        "Ignore the book title line. Preserve the exact section titles."
+    )
+
+    extracted_text = ""
+    if config["api_key"]:
+        result = send_ett_request(config["url"], config["api_key"], config["model"], image_path, prompt)
+        extracted_text = extract_text_from_ett_result(result)
+        if extracted_text:
+            print("  ETT extracted section names from contents.png")
+        else:
+            print("  ETT returned no usable text; falling back to Tesseract OCR")
+    else:
+        print("  [skip] AIGATEWAY_APIKEY not configured; using Tesseract OCR")
+
+    if not extracted_text:
+        try:
+            extracted_text = extract_text_with_tesseract(image_path)
+        except subprocess.CalledProcessError as err:
+            print(f"  [skip] Tesseract OCR failed for {image_path}: {err}")
+            return
+
+    entries = parse_contents_entries(extracted_text)
+    if not entries:
+        print(f"  [skip] No section names parsed from {image_path}")
+        return
+
+    updates = 0
+    missing = []
+    for item in contents.get("contents", []):
+        section = str(item.get("section", "")).strip()
+        title = entries.get(section)
+        if title is None:
+            missing.append(section)
+            continue
+
+        item.setdefault("en", {})
+        old_value = item["en"].get("name", "")
+        if old_value != title:
+            item["en"]["name"] = title
+            updates += 1
+
+    with open(contents_path, "w", encoding="utf-8") as f:
+        json.dump(contents, f, ensure_ascii=False, indent=4)
+
+    print(f"\n  Updated English section names in {contents_path}")
+    for section in sorted(entries.keys(), key=lambda s: (0, float(s), "") if re.fullmatch(r'\d+(?:\.\d+)?', s) else (1, 0, s)):
+        print(f"    Section {section}: {entries[section]}")
+    print(f"    Changed: {updates}")
+    if missing:
+        print(f"    Unmatched sections: {', '.join(missing)}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Step 5 — Add root-level elective book names
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def add_elective_book_name(data_dir):
+    """Add a root-level name field for elective books e1-e4."""
+    contents_path = os.path.join(data_dir, "contents.json")
+    chapter_code = os.path.basename(os.path.normpath(data_dir)).lower()
+    elective_name = ELECTIVE_BOOK_NAMES.get(chapter_code)
+
+    if not elective_name:
+        print(f"  [skip] {chapter_code} — not an elective book")
+        return
+
+    if os.path.exists(contents_path):
+        with open(contents_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    else:
+        data = _create_skeleton_from_pdfs(data_dir)
+        if not data:
+            print(f"  [skip] No PDFs found to create {contents_path}")
+            return
+
+    old_name = data.get("name")
+    data["name"] = elective_name
+
+    with open(contents_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+
+    if old_name == elective_name:
+        print(f"  {contents_path} already has elective name: {elective_name}")
+    else:
+        print(f"  Set elective book name in {contents_path}")
+        print(f"    chapter: {data.get('chapter')}")
+        print(f"    name:    {elective_name}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Step 6 — Download MP3 resources
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def download_mp3s(data_dir):
@@ -412,7 +710,7 @@ def download_mp3s(data_dir):
                 os.makedirs(mp3_dir, exist_ok=True)
                 local_path = os.path.join(mp3_dir, filename)
 
-                if os.path.exists(local_path):
+                if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
                     total_skipped += 1
                 else:
                     try:
@@ -447,7 +745,7 @@ def download_mp3s(data_dir):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="All-in-one: split PDFs, fill resources, and fix URLs"
+        description="All-in-one: split PDFs, fill resources, fix URLs, extract section names, add elective names, and download MP3s"
     )
     parser.add_argument(
         "chapter_path",
@@ -481,9 +779,19 @@ def main():
         help="Skip step 3 (fix URLs)",
     )
     parser.add_argument(
+        "--skip-section-names",
+        action="store_true",
+        help="Skip step 4 (extract section names from contents.png)",
+    )
+    parser.add_argument(
+        "--skip-book-names",
+        action="store_true",
+        help="Skip step 5 (add elective book names)",
+    )
+    parser.add_argument(
         "--skip-mp3s",
         action="store_true",
-        help="Skip step 4 (download MP3s)",
+        help="Skip step 6 (download MP3s)",
     )
     args = parser.parse_args()
 
@@ -551,14 +859,32 @@ def main():
         else:
             print("[skip] Step 3 — Fix URLs")
 
-        # ── Step 4: Download MP3s ──────────────────────────────────
+        # ── Step 4: Extract section names ──────────────────────────
+        if not args.skip_section_names:
+            print("\n" + "=" * 60)
+            print("  Step 4 — Extracting English section names from contents.png")
+            print("=" * 60)
+            fill_section_names_from_contents_png(book_dir, base_dir)
+        else:
+            print("[skip] Step 4 — Extract section names")
+
+        # ── Step 5: Add elective book names ───────────────────────
+        if not args.skip_book_names:
+            print("\n" + "=" * 60)
+            print("  Step 5 — Adding elective book name")
+            print("=" * 60)
+            add_elective_book_name(book_dir)
+        else:
+            print("[skip] Step 5 — Add elective book name")
+
+        # ── Step 6: Download MP3s ──────────────────────────────────
         if not args.skip_mp3s:
             print("\n" + "=" * 60)
-            print("  Step 4 — Downloading MP3 resources")
+            print("  Step 6 — Downloading MP3 resources")
             print("=" * 60)
             download_mp3s(book_dir)
         else:
-            print("[skip] Step 4 — Download MP3s")
+            print("[skip] Step 6 — Download MP3s")
 
     print("\nDone.")
 

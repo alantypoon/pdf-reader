@@ -20,12 +20,19 @@ function SectionAutocomplete({ sections, onSelect, getSectionName, currentSectio
 
   const currentSectionName = useMemo(() => {
     if (!currentSection || !language) return '';
+    const sectionId = String(currentSection.section || currentSection.page || '').trim();
+    let sectionLabel = '';
     if (language === 'bilingual') {
       const en = getSectionName(currentSection, 'en');
       const tc = getSectionName(currentSection, 'tc');
-      return [en, tc].filter(Boolean).join(' / ') || '';
+      sectionLabel = [en, tc].filter(Boolean).join(' / ') || '';
+    } else {
+      sectionLabel = getSectionName(currentSection, language) || '';
     }
-    return getSectionName(currentSection, language) || '';
+    if (sectionId && sectionLabel) {
+      return `${sectionId} - ${sectionLabel}`;
+    }
+    return sectionLabel || sectionId;
   }, [currentSection, language, getSectionName]);
 
   const placeholder = query ? 'Search section…' : (currentSectionName || 'Search section…');

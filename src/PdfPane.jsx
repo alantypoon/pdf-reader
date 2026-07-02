@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.js?url';
+import { t, uiLang } from './i18n';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
@@ -30,8 +31,13 @@ function PdfPane({
   onThumbnailClick,
   syncGroup,
   syncId,
-  zoom = 1
+  zoom = 1,
+  fitMode = 'auto',
+  onRenderScaleChange,
+  language = 'en'
 }) {
+  const lang = uiLang(language);
+  const _ = (key) => t(key, lang);
   const isImageMode = Array.isArray(images) && images.length > 0;
   console.log(`[PdfPane] mode=${mode} isImageMode=${isImageMode} images=${images?.length || 0} source=${source ? 'yes' : 'no'} thumbnailsOpen=${thumbnailsOpen}`);
   const [pdfDoc, setPdfDoc] = useState(null);
@@ -39,6 +45,8 @@ function PdfPane({
   const [thumbs, setThumbs] = useState([]);
   const [renderedPage, setRenderedPage] = useState(1);
   const [contentWidth, setContentWidth] = useState(0);
+  const [contentHeight, setContentHeight] = useState(0);
+  const [imageLoadVersion, setImageLoadVersion] = useState(0);
   const [loadError, setLoadError] = useState(null);
   const canvasRef = useRef(null);
   const scrollRef = useRef(null);
@@ -77,13 +85,36 @@ function PdfPane({
   useEffect(() => {
     const node = contentRef.current;
     if (!node) return;
-    const observer = new ResizeObserver(() => {
-      setContentWidth(node.clientWidth);
+    const observer = new ResizeObserver((entries) => {
+      const rect = entries[0].contentRect;
+      setContentWidth(rect.width);
+      setContentHeight(rect.height);
     });
     observer.observe(node);
     setContentWidth(node.clientWidth);
+    setContentHeight(node.clientHeight);
     return () => observer.disconnect();
   }, []);
+
+  // ── Fit scale: report the scale at which the page fits the container ──
+  const imgRef = useRef(null);
+
+  const handleImageLoad = () => {
+    setImageLoadVersion((current) => current + 1);
+  };
+
+  const paginationPaneStyle = useMemo(() => {
+    const isWidthMode = fitMode === 'width';
+    const needsScroll = zoom > 1.005 || isWidthMode;
+    return {
+      overflowX: needsScroll && !isWidthMode ? 'auto' : 'hidden',
+      overflowY: needsScroll && isWidthMode ? 'auto' : (zoom > 1.005 ? 'auto' : 'hidden'),
+      position: 'relative',
+      display: 'flex',
+      justifyContent: 'center',
+      alignItems: isWidthMode ? 'flex-start' : 'center',
+    };
+  }, [fitMode, zoom]);
 
   useEffect(() => {
     if (typeof onPageCountChange === 'function') {
@@ -164,7 +195,15 @@ function PdfPane({
       const baseViewport = page.getViewport({ scale: 1 });
       const scaleW = fitWidth / baseViewport.width;
       const scaleH = fitHeight / baseViewport.height;
-      const scale = Math.max(0.001, Math.min(scaleW, scaleH) * zoom);
+      const fitScale = fitMode === 'height'
+        ? scaleH
+        : fitMode === 'width'
+          ? scaleW
+          : Math.min(scaleW, scaleH);
+      const scale = Math.max(0.001, fitScale * zoom);
+      if (typeof onRenderScaleChange === 'function') {
+        onRenderScaleChange(scale);
+      }
       const viewport = page.getViewport({ scale });
       const canvas = canvasRef.current;
       if (!canvas || modeGenRef.current !== gen) return;
@@ -174,6 +213,10 @@ function PdfPane({
       canvas.height = Math.floor(viewport.height * ratio);
       canvas.style.width = `${viewport.width}px`;
       canvas.style.height = `${viewport.height}px`;
+      canvas.style.maxWidth = fitMode === 'height' ? 'none' : '100%';
+      canvas.style.maxHeight = fitMode === 'width' ? 'none' : '100%';
+      canvas.style.display = 'block';
+      canvas.style.flexShrink = '0';
       context.setTransform(ratio, 0, 0, ratio, 0, 0);
       await page.render({ canvasContext: context, viewport }).promise;
       if (modeGenRef.current !== gen) return;
@@ -184,7 +227,25 @@ function PdfPane({
     };
 
     draw();
-  }, [isImageMode, pdfDoc, currentPage, numPages, mode, onPageChange, zoom, contentWidth]);
+  }, [isImageMode, pdfDoc, currentPage, numPages, mode, onPageChange, zoom, contentWidth, contentHeight, fitMode]);
+
+  useEffect(() => {
+    if (!isImageMode || mode !== 'pagination') return;
+    if (typeof onRenderScaleChange !== 'function') return;
+    const img = imgRef.current;
+    if (!img || !img.complete) return;
+
+    const frame = requestAnimationFrame(() => {
+      const rect = img.getBoundingClientRect();
+      const baseSize = fitMode === 'height' ? img.naturalHeight : img.naturalWidth;
+      const renderedSize = fitMode === 'height' ? rect.height : rect.width;
+      if (baseSize > 0 && renderedSize > 0) {
+        onRenderScaleChange(renderedSize / baseSize);
+      }
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [isImageMode, mode, currentPage, images, zoom, fitMode, contentWidth, contentHeight, imageLoadVersion]);
 
   // ── Scrolling mode (PDF) ───────────────────────────────────
   useEffect(() => {
@@ -314,11 +375,11 @@ function PdfPane({
     const imgElements = images.map((url, idx) => {
       const pageNum = idx + 1;
       const img = document.createElement('img');
-      img.alt = `Page ${pageNum}`;
+      img.alt = `${_('pageN')} ${pageNum}`;
       img.dataset.page = String(pageNum);
       img.dataset.src = url;
       img.className = 'page-img';
-      img.style.width = '100%';
+      img.style.width = `${100 * zoom}%`;
       img.style.display = 'block';
       img.style.minHeight = '120px';
       return img;
@@ -393,6 +454,17 @@ function PdfPane({
     };
   }, [isImageMode, images, mode, syncGroup, syncId]);
 
+  // ── Apply zoom to image-mode scrolling images ─────────────
+  useEffect(() => {
+    if (!isImageMode || mode !== 'scrolling') return;
+    const mount = scrollRef.current;
+    if (!mount) return;
+    const imgs = mount.querySelectorAll('img.page-img');
+    imgs.forEach((img) => {
+      img.style.width = `${100 * zoom}%`;
+    });
+  }, [isImageMode, mode, zoom]);
+
   // ── Scroll to currentPage (external navigation) ────────────
   useEffect(() => {
     if (!isImageMode || mode !== 'scrolling') return;
@@ -420,7 +492,7 @@ function PdfPane({
         <span className="header-page-num">{titleSuffix}</span>
         {thumbnailsOpen && (
           <label className="thumb-cols-label header-thumb-cols">
-            <span>Cols: {thumbCols}</span>
+            <span>{_('cols')} {thumbCols}</span>
             <input
               type="range"
               min="1"
@@ -451,7 +523,7 @@ function PdfPane({
                   }
                 }}
               >
-                <img src={thumb.url} alt={`Page ${thumb.page}`} />
+                <img src={thumb.url} alt={`${_('pageN')} ${thumb.page}`} />
                 <span>{thumb.page}</span>
               </button>
             ))}
@@ -477,27 +549,53 @@ function PdfPane({
                       }
                     }}
                   >
-                    <img src={thumb.url} alt={`Page ${thumb.page}`} />
+                    <img src={thumb.url} alt={`${_('pageN')} ${thumb.page}`} />
                     <span>{thumb.page}</span>
                   </button>
                 ))}
               </div>
           ) : loadError ? (
             <div className="pdf-error">
-              <p>Failed to load PDF</p>
+              <p>{_('failedToLoadPdf')}</p>
               <small>{loadError}</small>
             </div>
           ) : isImageMode && mode === 'pagination' ? (
-            <div className="pdf-single-page">
+            (() => {
+              const imgSrc = images[Math.max(0, Math.min(currentPage - 1, images.length - 1))] || '';
+              const imageStyle = fitMode === 'height'
+                ? {
+                    width: 'auto',
+                    height: `${100 * zoom}%`,
+                    display: 'block',
+                    flexShrink: 0,
+                    maxWidth: 'none',
+                    maxHeight: 'none',
+                  }
+                : {
+                    width: `${100 * zoom}%`,
+                    height: 'auto',
+                    display: 'block',
+                    flexShrink: 0,
+                    maxHeight: 'none',
+                  };
+              return (
+            <div
+              className="pdf-single-page"
+              style={paginationPaneStyle}
+            >
               <img
-                src={images[Math.max(0, Math.min(currentPage - 1, images.length - 1))] || ''}
-                alt={`Page ${currentPage}`}
+                ref={imgRef}
+                src={imgSrc}
+                alt={`${_('pageN')} ${currentPage}`}
                 className="page-img"
-                style={{ width: '100%', display: 'block' }}
+                onLoad={handleImageLoad}
+                style={imageStyle}
               />
             </div>
+              );
+            })()
           ) : !isImageMode && mode === 'pagination' ? (
-            <div className="pdf-single-page">
+            <div className="pdf-single-page" style={paginationPaneStyle}>
               <canvas ref={canvasRef} />
             </div>
           ) : (

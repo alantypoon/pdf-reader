@@ -6,7 +6,12 @@ export default defineConfig({
   base: './',
   server: {
     proxy: {
-      '/api': 'http://localhost:3001',
+      '/api': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+        timeout: 180000,
+        proxyTimeout: 180000
+      },
       '/pdf-reader/data': 'http://localhost:3001'
     }
   }

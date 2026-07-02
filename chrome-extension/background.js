@@ -169,6 +169,17 @@ function saveResourcesAsJson(resources) {
   });
 }
 
+function savePdfDownload(dataUrl, fileName) {
+  return chrome.downloads.download({
+    url: dataUrl,
+    filename: fileName,
+    saveAs: false,
+    conflictAction: 'uniquify'
+  }).then((downloadId) => {
+    return { downloadId, fileName };
+  });
+}
+
 function isForbiddenUrl(url) {
   if (!url) {
     return false;
@@ -208,6 +219,13 @@ chrome.action.onClicked.addListener(async (tab) => {
 });
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'savePdfDownload') {
+    savePdfDownload(request.dataUrl, request.fileName)
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
   if (request.action !== 'captureVisibleTabImage') {
     return;
   }

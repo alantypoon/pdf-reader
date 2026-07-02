@@ -1,1 +1,0 @@
-// Capture now starts directly from chrome.action.onClicked in background.js.

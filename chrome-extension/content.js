@@ -1,15 +1,26 @@
 const NEXT_BUTTON_SELECTOR = '#ebk-btn_0';
 const PREV_BUTTON_SELECTOR = '#ebk-btn_1, .prev-btn, [title="Previous"], [title="Prev"]';
 const PAGE_TURN_WAIT_MS = 1200;
+const PAGE_TURN_POLL_MS = 400;
+const PAGE_TURN_MAX_WAIT_MS = 15000;
+const MIN_CAPTURE_INTERVAL_MS = 700;
+const CAPTURE_RETRY_DELAY_MS = 1200;
 const MAX_PAGES = 2000;
 const MAX_PREV_STEPS = 500;
 const PDF_MARGIN_MM = 6;
 const TRIM_DIFF_THRESHOLD = 14;
 const TRIM_ALPHA_THRESHOLD = 8;
 const HIDE_BEFORE_CAPTURE_SELECTOR = '.copyright, .blur1';
+const MESSAGE_LISTENER_KEY = '__ebookPdfCaptureMessageListener';
 let isCapturing = false;
+let lastCaptureAt = 0;
 
-chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
+const existingMessageListener = window[MESSAGE_LISTENER_KEY];
+if (typeof existingMessageListener === 'function') {
+  chrome.runtime.onMessage.removeListener(existingMessageListener);
+}
+
+const runtimeMessageListener = (request, _sender, sendResponse) => {
   if (request.action !== 'startAutoCapture') {
     return;
   }
@@ -32,7 +43,10 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
     });
 
   return true;
-});
+};
+
+window[MESSAGE_LISTENER_KEY] = runtimeMessageListener;
+chrome.runtime.onMessage.addListener(runtimeMessageListener);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -68,8 +82,9 @@ function isDisabled(button) {
   }
   const className = String(button.className || '');
   const attrDisabled = button.hasAttribute('disabled') || button.getAttribute('aria-disabled') === 'true';
+  const statusDisabled = button.getAttribute('status') === 'disable';
   const classDisabled = /(disabled|inactive|off)/i.test(className);
-  return attrDisabled || classDisabled;
+  return attrDisabled || statusDisabled || classDisabled;
 }
 
 function clickElement(el) {
@@ -84,6 +99,11 @@ function sanitizeFilePart(text) {
     .replace(/[\\/:*?"<>|]+/g, '_')
     .replace(/\s+/g, ' ')
     .slice(0, 80);
+}
+
+function buildDefaultPdfFileName() {
+  const baseName = getSuggestedBaseName();
+  return `${baseName || 'ebook'}-${getTimestamp()}.pdf`;
 }
 
 function getSuggestedBaseName() {
@@ -118,18 +138,58 @@ function getTimestamp() {
   return `${yyyy}${mm}${dd}-${hh}${min}${ss}`;
 }
 
-function captureVisibleTabImage() {
+async function waitForCaptureQuota() {
+  const now = Date.now();
+  const elapsedMs = now - lastCaptureAt;
+  if (elapsedMs < MIN_CAPTURE_INTERVAL_MS) {
+    await sleep(MIN_CAPTURE_INTERVAL_MS - elapsedMs);
+  }
+  lastCaptureAt = Date.now();
+}
+
+function isCaptureQuotaError(message) {
+  return /MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND quota/i.test(String(message || ''));
+}
+
+async function captureVisibleTabImage() {
+  while (true) {
+    await waitForCaptureQuota();
+
+    try {
+      return await new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({ action: 'captureVisibleTabImage' }, (response) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+          if (!response?.ok || !response?.dataUrl) {
+            reject(new Error(response?.error || 'Failed to capture visible tab.'));
+            return;
+          }
+          resolve(response.dataUrl);
+        });
+      });
+    } catch (err) {
+      if (!isCaptureQuotaError(err?.message)) {
+        throw err;
+      }
+      await sleep(CAPTURE_RETRY_DELAY_MS);
+    }
+  }
+}
+
+function savePdfDownload(dataUrl, fileName) {
   return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage({ action: 'captureVisibleTabImage' }, (response) => {
+    chrome.runtime.sendMessage({ action: 'savePdfDownload', dataUrl, fileName }, (response) => {
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
         return;
       }
-      if (!response?.ok || !response?.dataUrl) {
-        reject(new Error(response?.error || 'Failed to capture visible tab.'));
+      if (!response?.ok) {
+        reject(new Error(response?.error || 'Failed to save PDF download.'));
         return;
       }
-      resolve(response.dataUrl);
+      resolve(response.result);
     });
   });
 }
@@ -375,6 +435,30 @@ async function captureCroppedPageImageDataUrl() {
   return trimUniformBorder(cropped);
 }
 
+async function waitForPageTurn(directionSelector, previousSignature) {
+  await sleep(PAGE_TURN_WAIT_MS);
+
+  let elapsedMs = PAGE_TURN_WAIT_MS;
+  while (elapsedMs <= PAGE_TURN_MAX_WAIT_MS) {
+    const imageDataUrl = await captureCroppedPageImageDataUrl();
+    const signature = imageDataUrl.slice(0, 12000);
+    const navButton = findButton(directionSelector);
+
+    if (signature !== previousSignature) {
+      return { imageDataUrl, signature, buttonDisabled: isDisabled(navButton) };
+    }
+
+    if (isDisabled(navButton)) {
+      return { imageDataUrl, signature, buttonDisabled: true };
+    }
+
+    await sleep(PAGE_TURN_POLL_MS);
+    elapsedMs += PAGE_TURN_POLL_MS;
+  }
+
+  throw new Error('Timed out waiting for the next page to finish loading.');
+}
+
 async function moveToFirstPage() {
   let stagnantCount = 0;
 
@@ -388,10 +472,7 @@ async function moveToFirstPage() {
     const beforeSignature = beforeTurn.slice(0, 12000);
 
     clickElement(prevBtn);
-    await sleep(PAGE_TURN_WAIT_MS);
-
-    const afterTurn = await captureCroppedPageImageDataUrl();
-    const afterSignature = afterTurn.slice(0, 12000);
+    const { signature: afterSignature } = await waitForPageTurn(PREV_BUTTON_SELECTOR, beforeSignature);
 
     if (beforeSignature === afterSignature) {
       stagnantCount += 1;
@@ -409,6 +490,8 @@ async function startAutoCapture() {
     throw new Error('jsPDF is not available in this page context.');
   }
 
+  const fileName = buildDefaultPdfFileName();
+
   isCapturing = true;
   try {
     await moveToFirstPage();
@@ -418,18 +501,16 @@ async function startAutoCapture() {
     const pdfWidth = pdf.internal.pageSize.getWidth();
     const pdfHeight = pdf.internal.pageSize.getHeight();
 
-    const seenSignatures = new Set();
     let pageIndex = 0;
-    let lastSignature = '';
+    let lastSignature = null;
 
     while (pageIndex < MAX_PAGES) {
       const imageDataUrl = await captureCroppedPageImageDataUrl();
       const signature = imageDataUrl.slice(0, 12000);
 
-      if (signature === lastSignature || seenSignatures.has(signature)) {
-        break;
+      if (signature === lastSignature) {
+        throw new Error('The page did not change after the last turn while the Next button remained enabled.');
       }
-      seenSignatures.add(signature);
       lastSignature = signature;
 
       if (pageIndex > 0) {
@@ -455,11 +536,8 @@ async function startAutoCapture() {
       }
 
       clickElement(nextBtn);
-      await sleep(PAGE_TURN_WAIT_MS);
-
-      const afterTurn = await captureCroppedPageImageDataUrl();
-      const afterTurnSignature = afterTurn.slice(0, 12000);
-      if (afterTurnSignature === lastSignature) {
+      const afterTurn = await waitForPageTurn(NEXT_BUTTON_SELECTOR, lastSignature);
+      if (afterTurn.buttonDisabled) {
         break;
       }
     }
@@ -468,9 +546,9 @@ async function startAutoCapture() {
       throw new Error('No pages were captured.');
     }
 
-    const fileName = `content-${getTimestamp()}.pdf`;
-    pdf.save(fileName);
-    return { pagesCaptured: pageIndex, fileName };
+    const pdfDataUrl = pdf.output('datauristring');
+    const saveResult = await savePdfDownload(pdfDataUrl, fileName);
+    return { pagesCaptured: pageIndex, fileName, downloadId: saveResult.downloadId };
   } finally {
     isCapturing = false;
   }

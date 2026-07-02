@@ -35,3 +35,24 @@ runEttExtraction().catch(console.error);
 
 - save the user generated flash cards and quizs to database by MONGODB_URI in .env
 
+
+////
+
+in backend server, store each user action in the database collection user-actions, i.e. login, logout, reading which page, spend how long before turning to next page, use of ai generation, answering quiz questions, etc.
+
+
+////
+
+before each ai generation, must check if there exists a generated document in the database pdf-reader in the collection ai-generations. if there is one, load from the database instead of generating a new one, unless regenerate button is clicked, it will regenerate the document. do not allow mutliple versions of documents for the same page. remove the previous one before writing the new one.
+
+when regenerate button is clicked, ask for user confirmation before proceeding.
+
+///
+
+why the book 1a, section 1, page 1, 1-1.png always starts new ai generation when the ai generation button is clicked? there should be book/section/page equal to 1a/1/1 exists so that no new ai generation is required. just load the document from the database and render the drawer page to the user is fine. but why the generation will be taken place every time?
+
+///
+
+when contents.json contains /name, append it to the book's label text, e.g. E1 - Microbes and Disease while the value is still e1.
+
+use upper case for the book's ID, for example 1A, 1B, etc. while the value is still using the lower case.

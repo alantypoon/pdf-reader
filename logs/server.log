@@ -1,0 +1,378 @@
+[server] DATA_PATH: /var/www/html/devtest/dse/pdf-reader/data
+[server] dataRoot: /var/www/html/devtest/dse/pdf-reader/data/biology-oup
+[server] remarksFile: /var/www/html/devtest/dse/pdf-reader/data/remarks.json
+[mongo] connected to mongodb://<credentials>@127.0.0.1:2700/?authSource=admin
+Server running on http://localhost:3001
+[catalog] dataRoot: /var/www/html/devtest/dse/pdf-reader/data/biology-oup
+[catalog] folders found: [ '.DS_Store', '1a', '1b', '2', '3', '4', 'e1', 'e2', 'e4' ]
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1b/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/3/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/4/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e1/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e4/contents.json
+[page] request: chapter=1a language=tc page=1
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc/contents/pages
+[catalog]   1a: 6 sections
+[catalog]   1b: 5 sections
+[catalog]   e1: 10 sections
+[catalog]   e2: 6 sections
+[catalog]   e4: 3 sections
+[catalog]   3: 7 sections
+[page] 232 files in pages/, looking for prefix "1-"
+[page] → returning 20 images (first: /pdf-reader/data/biology-oup/1a/tc/contents/pages/1-1.png)
+[catalog]   2: 9 sections
+[catalog]   4: 6 sections
+[catalog] returning 8 chapters
+[catalog] dataRoot: /var/www/html/devtest/dse/pdf-reader/data/biology-oup
+[catalog] folders found: [ '.DS_Store', '1a', '1b', '2', '3', '4', 'e1', 'e2', 'e4' ]
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1b/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/3/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/4/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e1/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e4/contents.json
+[catalog]   1a: 6 sections
+[catalog]   1b: 5 sections
+[catalog]   3: 7 sections
+[catalog]   e1: 10 sections
+[catalog]   e4: 3 sections
+[catalog]   e2: 6 sections
+[catalog]   2: 9 sections
+[catalog]   4: 6 sections
+[catalog] returning 8 chapters
+[page] request: chapter=1a language=tc page=1
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc/contents/pages
+[page] 232 files in pages/, looking for prefix "1-"
+[page] → returning 20 images (first: /pdf-reader/data/biology-oup/1a/tc/contents/pages/1-1.png)
+[catalog] dataRoot: /var/www/html/devtest/dse/pdf-reader/data/biology-oup
+[catalog] folders found: [ '.DS_Store', '1a', '1b', '2', '3', '4', 'e1', 'e2', 'e4' ]
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1b/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/3/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/4/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e1/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e4/contents.json
+[page] request: chapter=1a language=tc page=1
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc/contents/pages
+[page] 232 files in pages/, looking for prefix "1-"
+[page] → returning 20 images (first: /pdf-reader/data/biology-oup/1a/tc/contents/pages/1-1.png)
+[catalog]   1a: 6 sections
+[catalog]   1b: 5 sections
+[catalog]   3: 7 sections
+[catalog]   e1: 10 sections
+[catalog]   e2: 6 sections
+[catalog]   e4: 3 sections
+[catalog]   2: 9 sections
+[catalog]   4: 6 sections
+[catalog] returning 8 chapters
+[catalog] dataRoot: /var/www/html/devtest/dse/pdf-reader/data/biology-oup
+[catalog] folders found: [ '.DS_Store', '1a', '1b', '2', '3', '4', 'e1', 'e2', 'e4' ]
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1b/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/3/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/4/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e1/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e4/contents.json
+[catalog]   1a: 6 sections
+[catalog]   1b: 5 sections
+[catalog]   e1: 10 sections
+[catalog]   3: 7 sections
+[catalog]   e4: 3 sections
+[catalog]   e2: 6 sections
+[catalog]   2: 9 sections
+[catalog]   4: 6 sections
+[catalog] returning 8 chapters
+[page] request: chapter=1a language=tc page=1
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc/contents/pages
+[page] 232 files in pages/, looking for prefix "1-"
+[page] → returning 20 images (first: /pdf-reader/data/biology-oup/1a/tc/contents/pages/1-1.png)
+[page] request: chapter=1a language=tc page=1
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc/contents/pages
+[catalog] dataRoot: /var/www/html/devtest/dse/pdf-reader/data/biology-oup
+[page] 232 files in pages/, looking for prefix "1-"
+[page] → returning 20 images (first: /pdf-reader/data/biology-oup/1a/tc/contents/pages/1-1.png)
+[catalog] folders found: [ '.DS_Store', '1a', '1b', '2', '3', '4', 'e1', 'e2', 'e4' ]
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1b/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/3/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/4/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e1/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e4/contents.json
+[catalog]   1a: 6 sections
+[catalog]   1b: 5 sections
+[catalog]   e1: 10 sections
+[catalog]   3: 7 sections
+[catalog]   e4: 3 sections
+[catalog]   e2: 6 sections
+[catalog]   2: 9 sections
+[catalog]   4: 6 sections
+[catalog] returning 8 chapters
+[catalog] dataRoot: /var/www/html/devtest/dse/pdf-reader/data/biology-oup
+[catalog] folders found: [ '.DS_Store', '1a', '1b', '2', '3', '4', 'e1', 'e2', 'e4' ]
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1b/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/3/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/4/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e1/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e4/contents.json
+[page] request: chapter=1a language=tc page=1
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc/contents/pages
+[page] 232 files in pages/, looking for prefix "1-"
+[page] → returning 20 images (first: /pdf-reader/data/biology-oup/1a/tc/contents/pages/1-1.png)
+[catalog]   1a: 6 sections
+[catalog]   1b: 5 sections
+[catalog]   e1: 10 sections
+[catalog]   3: 7 sections
+[catalog]   e2: 6 sections
+[catalog]   e4: 3 sections
+[catalog]   2: 9 sections
+[catalog]   4: 6 sections
+[catalog] returning 8 chapters
+[catalog] dataRoot: /var/www/html/devtest/dse/pdf-reader/data/biology-oup
+[catalog] folders found: [ '.DS_Store', '1a', '1b', '2', '3', '4', 'e1', 'e2', 'e4' ]
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1b/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/3/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/4/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e1/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e4/contents.json
+[catalog]   1a: 6 sections
+[catalog]   1b: 5 sections
+[catalog]   e1: 10 sections
+[catalog]   e4: 3 sections
+[catalog]   e2: 6 sections
+[catalog]   3: 7 sections
+[catalog]   2: 9 sections
+[catalog]   4: 6 sections
+[catalog] returning 8 chapters
+[page] request: chapter=1a language=tc page=1
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc/contents/pages
+[page] 232 files in pages/, looking for prefix "1-"
+[page] → returning 20 images (first: /pdf-reader/data/biology-oup/1a/tc/contents/pages/1-1.png)
+[catalog] dataRoot: /var/www/html/devtest/dse/pdf-reader/data/biology-oup
+[catalog] folders found: [ '.DS_Store', '1a', '1b', '2', '3', '4', 'e1', 'e2', 'e4' ]
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1b/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/3/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/4/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e1/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e4/contents.json
+[page] request: chapter=1a language=tc page=1
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc/contents/pages
+[page] 232 files in pages/, looking for prefix "1-"
+[page] → returning 20 images (first: /pdf-reader/data/biology-oup/1a/tc/contents/pages/1-1.png)
+[catalog]   1a: 6 sections
+[catalog]   1b: 5 sections
+[catalog]   e1: 10 sections
+[catalog]   3: 7 sections
+[catalog]   e2: 6 sections
+[catalog]   e4: 3 sections
+[catalog]   2: 9 sections
+[catalog]   4: 6 sections
+[catalog] returning 8 chapters
+[catalog] dataRoot: /var/www/html/devtest/dse/pdf-reader/data/biology-oup
+[catalog] folders found: [ '.DS_Store', '1a', '1b', '2', '3', '4', 'e1', 'e2', 'e4' ]
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1b/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/3/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/4/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e1/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e4/contents.json
+[catalog]   1a: 6 sections
+[catalog]   1b: 5 sections
+[catalog]   e1: 10 sections
+[catalog]   e2: 6 sections
+[catalog]   e4: 3 sections
+[catalog]   3: 7 sections
+[catalog]   2: 9 sections
+[catalog]   4: 6 sections
+[catalog] returning 8 chapters
+[page] request: chapter=1a language=tc page=1
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc/contents/pages
+[page] 232 files in pages/, looking for prefix "1-"
+[page] → returning 20 images (first: /pdf-reader/data/biology-oup/1a/tc/contents/pages/1-1.png)
+[page] request: chapter=1a language=tc page=1
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc/contents/pages
+[catalog] dataRoot: /var/www/html/devtest/dse/pdf-reader/data/biology-oup
+[page] 232 files in pages/, looking for prefix "1-"
+[page] → returning 20 images (first: /pdf-reader/data/biology-oup/1a/tc/contents/pages/1-1.png)
+[catalog] folders found: [ '.DS_Store', '1a', '1b', '2', '3', '4', 'e1', 'e2', 'e4' ]
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1b/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/3/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/4/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e1/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e4/contents.json
+[catalog]   1a: 6 sections
+[catalog]   1b: 5 sections
+[catalog]   3: 7 sections
+[catalog]   e1: 10 sections
+[catalog]   e4: 3 sections
+[catalog]   e2: 6 sections
+[catalog]   2: 9 sections
+[catalog]   4: 6 sections
+[catalog] returning 8 chapters
+[catalog] dataRoot: /var/www/html/devtest/dse/pdf-reader/data/biology-oup
+[catalog] folders found: [ '.DS_Store', '1a', '1b', '2', '3', '4', 'e1', 'e2', 'e4' ]
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1b/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/3/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/4/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e1/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e4/contents.json
+[page] request: chapter=1a language=tc page=1
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc/contents/pages
+[page] 232 files in pages/, looking for prefix "1-"
+[page] → returning 20 images (first: /pdf-reader/data/biology-oup/1a/tc/contents/pages/1-1.png)
+[catalog]   1a: 6 sections
+[catalog]   1b: 5 sections
+[catalog]   3: 7 sections
+[catalog]   e1: 10 sections
+[catalog]   e4: 3 sections
+[catalog]   e2: 6 sections
+[catalog]   2: 9 sections
+[catalog]   4: 6 sections
+[catalog] returning 8 chapters
+[catalog] dataRoot: /var/www/html/devtest/dse/pdf-reader/data/biology-oup
+[catalog] folders found: [ '.DS_Store', '1a', '1b', '2', '3', '4', 'e1', 'e2', 'e4' ]
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1b/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/3/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/4/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e1/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e4/contents.json
+[catalog]   1a: 6 sections
+[catalog]   1b: 5 sections
+[catalog]   3: 7 sections
+[catalog]   e4: 3 sections
+[catalog]   e1: 10 sections
+[catalog]   e2: 6 sections
+[catalog]   2: 9 sections
+[catalog]   4: 6 sections
+[catalog] returning 8 chapters
+[page] request: chapter=1a language=tc page=1
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc/contents/pages
+[page] 232 files in pages/, looking for prefix "1-"
+[page] → returning 20 images (first: /pdf-reader/data/biology-oup/1a/tc/contents/pages/1-1.png)
+[catalog] dataRoot: /var/www/html/devtest/dse/pdf-reader/data/biology-oup
+[catalog] folders found: [ '.DS_Store', '1a', '1b', '2', '3', '4', 'e1', 'e2', 'e4' ]
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1b/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/3/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/4/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e1/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e4/contents.json
+[catalog]   1a: 6 sections
+[catalog]   1b: 5 sections
+[catalog]   3: 7 sections
+[catalog]   e1: 10 sections
+[catalog]   e4: 3 sections
+[catalog]   e2: 6 sections
+[catalog]   2: 9 sections
+[catalog]   4: 6 sections
+[catalog] returning 8 chapters
+[page] request: chapter=1a language=tc page=1
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc/contents/pages
+[page] 232 files in pages/, looking for prefix "1-"
+[page] → returning 20 images (first: /pdf-reader/data/biology-oup/1a/tc/contents/pages/1-1.png)
+[catalog] dataRoot: /var/www/html/devtest/dse/pdf-reader/data/biology-oup
+[catalog] folders found: [ '.DS_Store', '1a', '1b', '2', '3', '4', 'e1', 'e2', 'e4' ]
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1b/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/3/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/4/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e1/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e4/contents.json
+[catalog]   1a: 6 sections
+[catalog]   1b: 5 sections
+[catalog]   3: 7 sections
+[catalog]   e1: 10 sections
+[catalog]   e4: 3 sections
+[catalog]   e2: 6 sections
+[catalog]   2: 9 sections
+[catalog]   4: 6 sections
+[catalog] returning 8 chapters
+[page] request: chapter=1a language=tc page=1
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc/contents/pages
+[page] 232 files in pages/, looking for prefix "1-"
+[page] → returning 20 images (first: /pdf-reader/data/biology-oup/1a/tc/contents/pages/1-1.png)
+[catalog] dataRoot: /var/www/html/devtest/dse/pdf-reader/data/biology-oup
+[catalog] folders found: [ '.DS_Store', '1a', '1b', '2', '3', '4', 'e1', 'e2', 'e4' ]
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/1b/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/3/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/4/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e1/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/biology-oup/e4/contents.json
+[catalog]   1a: 6 sections
+[catalog]   1b: 5 sections
+[catalog]   e1: 10 sections
+[catalog]   e4: 3 sections
+[catalog]   e2: 6 sections
+[catalog]   3: 7 sections
+[catalog]   2: 9 sections
+[catalog]   4: 6 sections
+[catalog] returning 8 chapters
+[page] request: chapter=1a language=en page=1
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/en pagesDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/en/contents/pages
+[page] request: chapter=1a language=tc page=1
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc/contents/pages
+[page] 232 files in pages/, looking for prefix "1-"
+[page] → returning 20 images (first: /pdf-reader/data/biology-oup/1a/en/contents/pages/1-1.png)
+[page] 232 files in pages/, looking for prefix "1-"
+[page] → returning 20 images (first: /pdf-reader/data/biology-oup/1a/tc/contents/pages/1-1.png)
+[page] request: chapter=1a language=en page=1
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/en pagesDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/en/contents/pages
+[page] 232 files in pages/, looking for prefix "1-"
+[page] → returning 20 images (first: /pdf-reader/data/biology-oup/1a/en/contents/pages/1-1.png)
+[page] request: chapter=1a language=tc page=1
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc/contents/pages
+[page] 232 files in pages/, looking for prefix "1-"
+[page] → returning 20 images (first: /pdf-reader/data/biology-oup/1a/tc/contents/pages/1-1.png)
+[page] request: chapter=1a language=tc page=1
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc/contents/pages
+[page] 232 files in pages/, looking for prefix "1-"
+[page] → returning 20 images (first: /pdf-reader/data/biology-oup/1a/tc/contents/pages/1-1.png)
+[page] request: chapter=1a language=en page=1
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/en pagesDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/en/contents/pages
+[page] 232 files in pages/, looking for prefix "1-"
+[page] → returning 20 images (first: /pdf-reader/data/biology-oup/1a/en/contents/pages/1-1.png)
+[page] request: chapter=1a language=en page=1
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/en pagesDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/en/contents/pages
+[page] 232 files in pages/, looking for prefix "1-"
+[page] → returning 20 images (first: /pdf-reader/data/biology-oup/1a/en/contents/pages/1-1.png)
+[page] request: chapter=1a language=tc page=1
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/biology-oup/1a/tc/contents/pages
+[page] 232 files in pages/, looking for prefix "1-"
+[page] → returning 20 images (first: /pdf-reader/data/biology-oup/1a/tc/contents/pages/1-1.png)
