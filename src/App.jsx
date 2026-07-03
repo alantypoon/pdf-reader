@@ -38,11 +38,12 @@ function hasRenderableSource(source) {
   return typeof source === 'string' && source.trim().length > 0;
 }
 
-function getSubjectLabel(subjectId) {
+function getSubjectLabel(subjectId, selectedLanguage = 'en') {
   const normalized = String(subjectId || '').trim().toLowerCase();
-  if (normalized === 'biology-oup') return 'Biology';
-  if (normalized === 'chemistry-winter') return 'Chemistry';
-  if (normalized === 'physics-oup') return 'Physics';
+  const showChinese = selectedLanguage === 'tc';
+  if (normalized === 'biology-oup') return showChinese ? '生物' : 'Biology';
+  if (normalized === 'chemistry-winter') return showChinese ? '化學' : 'Chemistry';
+  if (normalized === 'physics-oup') return showChinese ? '物理' : 'Physics';
   return String(subjectId || '').trim();
 }
 
@@ -122,14 +123,18 @@ function App() {
   const drawingRef = useRef(false);
   const currentStrokeRef = useRef(null);
   const displayModeInitializedRef = useRef(false);
+  const initialSubjectRestoreRef = useRef(false);
   const [structure, setStructure] = useState([]);
   const [dataBooks, setDataBooks] = useState([]);
   const [activeBookId, setActiveBookId] = useState('');
   const [physicsChapterCatalog, setPhysicsChapterCatalog] = useState(null);
-  const [selectedBook, setSelectedBook] = useState(savedPrefs.selectedBook || '');
-  const [selectedChapter, setSelectedChapter] = useState(savedPrefs.selectedChapter || '1a');
-  const [selectedFile, setSelectedFile] = useState(Number(savedPrefs.selectedFile || 1));
-  const [selectedPage, setSelectedPage] = useState(Number(savedPrefs.selectedPage || 1));
+  const [subjectSelections, setSubjectSelections] = useState({});
+  const [userSelectsLoaded, setUserSelectsLoaded] = useState(false);
+  const [selectedBook, setSelectedBook] = useState('');
+  const [selectedChapter, setSelectedChapter] = useState('');
+  const [selectedFile, setSelectedFile] = useState(1);
+  const [selectedPage, setSelectedPage] = useState(1);
+  const [selectedPhysicsChapterId, setSelectedPhysicsChapterId] = useState('');
   const [displayMode, setDisplayMode] = useState(savedPrefs.displayMode || 'scrolling');
   const showThumbnails = displayMode === 'thumbnails';
   const [selectedLanguage, setSelectedLanguage] = useState(savedPrefs.selectedLanguage || 'bilingual');
@@ -190,8 +195,10 @@ function App() {
   const fitButtonMode = fitMode === 'height' ? 'height' : 'width';
   const fitButtonTitle = fitButtonMode === 'height' ? _('fitHeight') : _('fitWidth');
   const regenerateConfirmMessage = _('confirmRegenerate');
+  const fitDisabled = displayMode === 'scrolling';
 
   const fitScreen = () => {
+    if (fitDisabled) return;
     setFitMode((current) => (current === 'width' ? 'height' : 'width'));
     setZoomLevel(1);
   };
@@ -245,6 +252,54 @@ function App() {
   };
 
   useEffect(() => {
+    const loadUserSelects = async () => {
+      if (!userId) {
+        setUserSelectsLoaded(true);
+        return;
+      }
+      try {
+        const data = await fetchJson(`api/user-selects?userId=${encodeURIComponent(userId)}`);
+        setSubjectSelections(data.selections && typeof data.selections === 'object' ? data.selections : {});
+      } catch (err) {
+        console.error('[user-selects] failed to load:', err);
+        setSubjectSelections({});
+      } finally {
+        setUserSelectsLoaded(true);
+      }
+    };
+    setUserSelectsLoaded(false);
+    loadUserSelects();
+  }, [userId]);
+
+  const applyBookSelection = useCallback((chapters, nextBookId, options = {}) => {
+    const { preferredSectionId, preferredPageId, preferredPhysicsChapterId } = options;
+    const nextBook = (chapters || []).find((chapter) => chapter.id === nextBookId) || (chapters || [])[0] || null;
+    const firstSection = nextBook?.contents?.[0];
+    const firstSectionId = firstSection ? Number(firstSection.page || firstSection.section) : 1;
+    const hasPreferredSection = nextBook?.contents?.some((item) => Number(item.page || item.section) === Number(preferredSectionId));
+    const nextSectionId = hasPreferredSection ? Number(preferredSectionId) : firstSectionId;
+    const nextPageId = Math.max(1, Number(preferredPageId || 1));
+
+    setSelectedChapter(nextBook?.id || '');
+    setSelectedFile(nextSectionId);
+    setSelectedPage(nextPageId);
+    setSelectedPhysicsChapterId(preferredPhysicsChapterId ? String(preferredPhysicsChapterId) : '');
+  }, []);
+
+  const applySubjectSelection = useCallback((subjectId, chapters, defaultSubjectId = '') => {
+    const normalizedSubjectId = String(subjectId || defaultSubjectId || '').trim();
+    const savedSelection = subjectSelections[normalizedSubjectId] || {};
+    const fallbackBookId = savedSelection.bookId || chapters?.[0]?.id || '';
+    applyBookSelection(chapters, fallbackBookId, {
+      preferredSectionId: savedSelection.sectionId,
+      preferredPageId: savedSelection.pageId,
+      preferredPhysicsChapterId: savedSelection.physicsChapterId,
+    });
+  }, [applyBookSelection, subjectSelections]);
+
+  useEffect(() => {
+    if (!userSelectsLoaded || initialSubjectRestoreRef.current) return;
+    initialSubjectRestoreRef.current = true;
     const loadCatalog = async (book) => {
       try {
         const bookParam = book ? `?book=${encodeURIComponent(book)}` : '';
@@ -258,7 +313,12 @@ function App() {
         }
         setStructure(chapters);
         if (chapters.length) {
-          setSelectedChapter((current) => (chapters.some((chapter) => chapter.id === current) ? current : chapters[0].id));
+          applySubjectSelection(book || bookId, chapters, bookId);
+        } else {
+          setSelectedChapter('');
+          setSelectedFile(1);
+          setSelectedPage(1);
+          setSelectedPhysicsChapterId('');
         }
       } catch (err) {
         console.error('[catalog] failed to load:', err);
@@ -268,8 +328,12 @@ function App() {
       }
     };
 
-    loadCatalog(savedPrefs.selectedBook || '');
-  }, []);
+    const storedSubjectId = typeof savedPrefs.selectedBook === 'string' ? savedPrefs.selectedBook : '';
+    const rememberedSubjectId = Object.keys(subjectSelections).length > 0
+      ? (storedSubjectId || '')
+      : storedSubjectId;
+    loadCatalog(rememberedSubjectId);
+  }, [applySubjectSelection, savedPrefs.selectedBook, subjectSelections, userSelectsLoaded]);
 
   useEffect(() => {
     if (selectedBook !== 'physics-oup' || physicsChapterCatalog) return;
@@ -335,19 +399,41 @@ function App() {
     [structure, selectedChapter]
   );
 
-  const handleBookSelect = async (newBookId) => {
-    setSelectedChapter(newBookId);
-    const newChapter = structure.find((chapter) => chapter.id === newBookId);
-    const firstSection = newChapter?.contents?.[0];
-    const firstPage = firstSection ? Number(firstSection.page || firstSection.section) : 1;
-    setSelectedFile(firstPage);
-    setSelectedPage(1);
+  const handleBookSelect = (newBookId) => {
+    applyBookSelection(structure, newBookId);
   };
 
   const currentSection = useMemo(
     () => currentChapter?.contents?.find((item) => Number(item.page || item.section) === Number(selectedFile)),
     [currentChapter, selectedFile]
   );
+
+  const currentBookHeaderName = useMemo(() => {
+    if (!currentChapter) return selectedChapter;
+    const zhName = typeof currentChapter.nameZh === 'string' ? currentChapter.nameZh.trim() : '';
+    const enName = typeof currentChapter.nameEn === 'string' ? currentChapter.nameEn.trim() : '';
+    const fallbackName = typeof currentChapter.name === 'string' ? currentChapter.name.trim() : '';
+
+    if (selectedLanguage === 'tc') {
+      return zhName || enName || fallbackName || currentChapter.id || selectedChapter;
+    }
+    if (selectedLanguage === 'bilingual') {
+      return enName || zhName || fallbackName || currentChapter.id || selectedChapter;
+    }
+    return enName || fallbackName || zhName || currentChapter.id || selectedChapter;
+  }, [currentChapter, selectedChapter, selectedLanguage]);
+
+  const bookAutocompleteOptions = useMemo(() => {
+    if (selectedBook !== 'biology-oup') {
+      return structure;
+    }
+    return (structure || []).map((item) => ({
+      ...item,
+      name: /^e\d+$/i.test(String(item.id || '')) ? item.name : '',
+      nameEn: /^e\d+$/i.test(String(item.id || '')) ? item.nameEn : '',
+      nameZh: /^e\d+$/i.test(String(item.id || '')) ? item.nameZh : '',
+    }));
+  }, [selectedBook, structure]);
 
   const physicsBookChapterMeta = useMemo(() => {
     if (selectedBook !== 'physics-oup' || !physicsChapterCatalog) return null;
@@ -366,6 +452,10 @@ function App() {
   const currentPhysicsChapter = useMemo(() => {
     if (!physicsChapterOptions.length) return null;
     const page = Math.max(1, Number(selectedPage) || 1);
+    const explicit = physicsChapterOptions.find((item) => String(item.id) === String(selectedPhysicsChapterId));
+    if (explicit && page === Number(explicit.startPage || 1)) {
+      return explicit;
+    }
     const exact = physicsChapterOptions.find((item) => page >= Number(item.startPage) && page <= Number(item.endPage || item.startPage));
     if (exact) return exact;
     const fallback = physicsChapterOptions
@@ -373,11 +463,45 @@ function App() {
       .sort((a, b) => Number(a.startPage) - Number(b.startPage))
       .pop();
     return fallback || physicsChapterOptions[0];
-  }, [physicsChapterOptions, selectedPage]);
+  }, [physicsChapterOptions, selectedPage, selectedPhysicsChapterId]);
+
+  const currentSectionHeaderId = useMemo(() => {
+    if (selectedBook === 'physics-oup' && currentPhysicsChapter) {
+      return currentPhysicsChapter.id;
+    }
+    return selectedFile;
+  }, [selectedBook, currentPhysicsChapter, selectedFile]);
+
+  const currentSectionHeaderName = useMemo(() => {
+    if (selectedBook === 'physics-oup' && currentPhysicsChapter) {
+      if (selectedLanguage === 'tc') {
+        return currentPhysicsChapter.nameZh || currentPhysicsChapter.nameEn || currentPhysicsChapter.id;
+      }
+      if (selectedLanguage === 'bilingual') {
+        return currentPhysicsChapter.nameEn || currentPhysicsChapter.nameZh || currentPhysicsChapter.id;
+      }
+      return currentPhysicsChapter.nameEn || currentPhysicsChapter.nameZh || currentPhysicsChapter.id;
+    }
+
+    if (!currentSection) {
+      return String(selectedFile || '');
+    }
+
+    const enName = getSectionName(currentSection, 'en');
+    const zhName = getSectionName(currentSection, 'tc');
+    if (selectedLanguage === 'tc') {
+      return zhName || enName || String(selectedFile || '');
+    }
+    if (selectedLanguage === 'bilingual') {
+      return enName || zhName || String(selectedFile || '');
+    }
+    return enName || zhName || String(selectedFile || '');
+  }, [selectedBook, currentPhysicsChapter, currentSection, selectedFile, selectedLanguage]);
 
   const handlePhysicsChapterSelect = (chapterId) => {
     const next = physicsChapterOptions.find((item) => String(item.id) === String(chapterId));
     if (!next) return;
+    setSelectedPhysicsChapterId(String(next.id));
     setSelectedPage(Math.max(1, Number(next.startPage) || 1));
   };
 
@@ -445,12 +569,52 @@ function App() {
   }, [displayMode]);
 
   useEffect(() => {
+    if (!selectedBook) return;
+    setSubjectSelections((current) => {
+      const nextEntry = {
+        bookId: selectedChapter,
+        sectionId: selectedFile,
+        pageId: selectedPage,
+        physicsChapterId: selectedBook === 'physics-oup' ? selectedPhysicsChapterId : '',
+      };
+      const previous = current[selectedBook] || {};
+      if (
+        previous.bookId === nextEntry.bookId
+        && Number(previous.sectionId) === Number(nextEntry.sectionId)
+        && Number(previous.pageId) === Number(nextEntry.pageId)
+        && String(previous.physicsChapterId || '') === String(nextEntry.physicsChapterId || '')
+      ) {
+        return current;
+      }
+      return { ...current, [selectedBook]: nextEntry };
+    });
+  }, [selectedBook, selectedChapter, selectedFile, selectedPage, selectedPhysicsChapterId]);
+
+  useEffect(() => {
+    if (!userSelectsLoaded || !userId || !selectedBook) return;
+    const timer = window.setTimeout(() => {
+      fetchJson('api/user-selects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          lastSubjectId: selectedBook,
+          subjectId: selectedBook,
+          bookId: selectedChapter,
+          sectionId: selectedFile,
+          pageId: selectedPage,
+          physicsChapterId: selectedBook === 'physics-oup' ? selectedPhysicsChapterId : '',
+        }),
+      }).catch((err) => {
+        console.error('[user-selects] failed to save:', err);
+      });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [userId, userSelectsLoaded, selectedBook, selectedChapter, selectedFile, selectedPage, selectedPhysicsChapterId]);
+
+  useEffect(() => {
     if (typeof window === 'undefined') return;
     const prefs = {
-      selectedBook,
-      selectedChapter,
-      selectedFile,
-      selectedPage,
       displayMode,
       selectedLanguage,
       sidebarCollapsed,
@@ -465,10 +629,6 @@ function App() {
     };
     window.localStorage.setItem(PREFERENCES_KEY, JSON.stringify(prefs));
   }, [
-    selectedBook,
-    selectedChapter,
-    selectedFile,
-    selectedPage,
     displayMode,
     selectedLanguage,
     sidebarCollapsed,
@@ -1125,6 +1285,13 @@ function App() {
     return !!(aiContent?.en || aiContent?.zh);
   }, [aiContent]);
 
+  const aiLookupKey = useMemo(() => ({
+    subjectId: selectedBook,
+    bookId: selectedChapter,
+    sectionId: selectedFile,
+    pageId: selectedPage,
+  }), [selectedBook, selectedChapter, selectedFile, selectedPage]);
+
   // ── Escape key closes modal then drawers ───────────────────
   useEffect(() => {
     const onKey = (e) => {
@@ -1208,6 +1375,10 @@ function App() {
             <select value={selectedBook} onChange={async (event) => {
               const newBook = event.target.value;
               setSelectedBook(newBook);
+              setSelectedChapter('');
+              setSelectedFile(1);
+              setSelectedPage(1);
+              setSelectedPhysicsChapterId('');
               try {
                 const data = await fetchJson(`api/catalog?book=${encodeURIComponent(newBook)}`);
                 const chapters = data.chapters || [];
@@ -1215,23 +1386,24 @@ function App() {
                 setActiveBookId(typeof data.activeBookId === 'string' ? data.activeBookId : newBook);
                 setStructure(chapters);
                 if (chapters.length) {
-                  setSelectedChapter(chapters[0].id);
-                  const firstSection = chapters[0]?.contents?.[0];
-                  const firstPage = firstSection ? Number(firstSection.page || firstSection.section) : 1;
-                  setSelectedFile(firstPage);
+                  applySubjectSelection(newBook, chapters, newBook);
+                } else {
+                  setSelectedChapter('');
+                  setSelectedFile(1);
                   setSelectedPage(1);
+                  setSelectedPhysicsChapterId('');
                 }
               } catch (err) {
                 console.error('[catalog] failed to load book:', newBook, err);
               }
             }}>
               {dataBooks.map((bookId) => (
-                <option key={bookId} value={bookId}>{getSubjectLabel(bookId)}</option>
+                <option key={bookId} value={bookId}>{getSubjectLabel(bookId, selectedLanguage)}</option>
               ))}
             </select>
           ) : (
             <select value={selectedBook} disabled>
-              <option value={selectedBook}>{selectedBook ? getSubjectLabel(selectedBook) : _('noBook')}</option>
+              <option value={selectedBook}>{selectedBook ? getSubjectLabel(selectedBook, selectedLanguage) : _('noBook')}</option>
             </select>
           )}
         </label>
@@ -1243,7 +1415,7 @@ function App() {
             {_('chapter')}
           </span>
           <BookAutocomplete
-            books={structure}
+            books={bookAutocompleteOptions}
             currentBook={currentChapter}
             language={selectedLanguage}
             subjectId={selectedBook}
@@ -1476,6 +1648,7 @@ function App() {
                 onClick={fitScreen}
                 data-tooltip={fitButtonTitle}
                 aria-label={fitButtonTitle}
+                disabled={fitDisabled}
               >
                 <svg viewBox="0 0 24 24" role="presentation" focusable="false">
                   {fitButtonMode === 'height' ? (
@@ -1567,6 +1740,7 @@ function App() {
               onClick={fitScreen}
               title={fitButtonTitle}
               aria-label={fitButtonTitle}
+              disabled={fitDisabled}
             >
               <svg viewBox="0 0 24 24" role="presentation" focusable="false">
                 {fitButtonMode === 'height' ? (
@@ -1614,8 +1788,8 @@ function App() {
                 key={language}
                 source={isImages ? '' : (src || '')}
                 images={isImages ? src : null}
-                title={`${language === 'en' ? _('english') : _('chinese')} · ${currentChapter?.name || selectedChapter}`}
-                section={selectedFile}
+                title={`${language === 'en' ? _('english') : _('chinese')} · ${currentBookHeaderName}`}
+                section={`${currentSectionHeaderId} - ${currentSectionHeaderName}`}
                 mode={displayMode}
                 currentPage={selectedPage}
                 onPageChange={setSelectedPage}
@@ -1743,7 +1917,7 @@ function App() {
             <button onClick={() => changePage(-1)} title={_('prevPage')} aria-label={_('prevPage')}>&lt;</button>
             <button onClick={() => changePage(1)} title={_('nextPage')} aria-label={_('nextPage')}>&gt;</button>
             <button onClick={() => moveSection(1)} title={_('nextSection')} aria-label={_('nextSection')}>&gt;|</button>
-            <button className="icon-btn active" onClick={fitScreen} title={fitButtonTitle} aria-label={fitButtonTitle}>
+            <button className="icon-btn active" onClick={fitScreen} title={fitButtonTitle} aria-label={fitButtonTitle} disabled={fitDisabled}>
               <svg viewBox="0 0 24 24" role="presentation" focusable="false">
                 {fitButtonMode === 'height' ? (
                   <path d="M12 3l3.5 3.5-1.4 1.4-1.1-1.1V17.2l1.1-1.1 1.4 1.4L12 21l-3.5-3.5 1.4-1.4 1.1 1.1V6.8L9.9 7.9 8.5 6.5 12 3zM5 5h3v2H7v10h1v2H5V5zm11 0h3v14h-3v-2h1V7h-1V5z" />
@@ -1905,6 +2079,13 @@ function App() {
             </div>
 
             <div className="ai-drawer-body">
+              {isTestMode && (
+                <div className="ai-lookup-key">
+                  <strong>Lookup Key</strong>
+                  <code>{JSON.stringify(aiLookupKey)}</code>
+                </div>
+              )}
+
               {aiLoading && (
                 <div className="ai-loading">
                   <div className="ai-spinner" />

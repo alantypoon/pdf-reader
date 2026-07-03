@@ -17,6 +17,32 @@ function compareNaturalIds(left, right) {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
 }
 
+function compareBiologyBookIds(left, right) {
+  const a = String(left || '').trim().toLowerCase();
+  const b = String(right || '').trim().toLowerCase();
+
+  const coreMatchA = a.match(/^(\d+)([a-z]?)$/i);
+  const coreMatchB = b.match(/^(\d+)([a-z]?)$/i);
+  const electiveMatchA = a.match(/^e(\d+)$/i);
+  const electiveMatchB = b.match(/^e(\d+)$/i);
+
+  if (coreMatchA && coreMatchB) {
+    const numDiff = Number(coreMatchA[1]) - Number(coreMatchB[1]);
+    if (numDiff !== 0) return numDiff;
+    return coreMatchA[2].localeCompare(coreMatchB[2], undefined, { sensitivity: 'base' });
+  }
+  if (coreMatchA) return -1;
+  if (coreMatchB) return 1;
+
+  if (electiveMatchA && electiveMatchB) {
+    return Number(electiveMatchA[1]) - Number(electiveMatchB[1]);
+  }
+  if (electiveMatchA) return -1;
+  if (electiveMatchB) return 1;
+
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+}
+
 function stripLeadingId(label, id) {
   const text = String(label || '').trim();
   const normalizedId = String(id || '').trim();
@@ -33,7 +59,7 @@ function getBookPrimaryLabel(item, subjectId, language) {
   if (!item) return '';
   const id = String(item.id || '').trim();
   const normalizedSubjectId = String(subjectId || '').trim().toLowerCase();
-  if (normalizedSubjectId === 'biology-oup') {
+  if (normalizedSubjectId === 'biology-oup' && !/^e\d+$/i.test(id)) {
     return id.toUpperCase();
   }
   const fallbackName = stripLeadingId(item.name, id);
@@ -56,6 +82,22 @@ function getBookPrimaryLabel(item, subjectId, language) {
   return label || id.toUpperCase();
 }
 
+function getBookSecondaryLabel(item, language) {
+  const id = String(item?.id || '').trim();
+  if (!item || !id) return '';
+  const fallbackName = stripLeadingId(item.name, id);
+  const nameEn = stripLeadingId(item.nameEn, id) || fallbackName;
+  const nameZh = stripLeadingId(item.nameZh, id);
+
+  if (language === 'tc') {
+    return nameEn || '';
+  }
+  if (language === 'en') {
+    return nameZh || '';
+  }
+  return nameZh || '';
+}
+
 function BookAutocomplete({ books, onSelect, currentBook, language, subjectId, placeholder, emptyText }) {
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
@@ -63,7 +105,12 @@ function BookAutocomplete({ books, onSelect, currentBook, language, subjectId, p
   const inputRef = useRef(null);
 
   const filtered = useMemo(() => {
-    const sortedBooks = [...(books || [])].sort((a, b) => compareNaturalIds(a.id, b.id));
+    const normalizedSubjectId = String(subjectId || '').trim().toLowerCase();
+    const sortedBooks = [...(books || [])].sort((a, b) => (
+      normalizedSubjectId === 'biology-oup'
+        ? compareBiologyBookIds(a.id, b.id)
+        : compareNaturalIds(a.id, b.id)
+    ));
     if (!query.trim()) return sortedBooks;
     const lower = query.toLowerCase();
     return sortedBooks.filter((item) => {
@@ -72,7 +119,7 @@ function BookAutocomplete({ books, onSelect, currentBook, language, subjectId, p
       const nameZh = String(item.nameZh || '').toLowerCase();
       return id.includes(lower) || nameEn.includes(lower) || nameZh.includes(lower);
     });
-  }, [query, books]);
+  }, [query, books, subjectId]);
 
   const currentBookName = useMemo(() => {
     return getBookPrimaryLabel(currentBook, subjectId, language);
@@ -198,7 +245,7 @@ function BookAutocomplete({ books, onSelect, currentBook, language, subjectId, p
             >
               <div className="autocomplete-names">
                 <strong>{getBookPrimaryLabel(item, subjectId, language)}</strong>
-                <small>{stripLeadingId(item.nameZh || '', item.id)}</small>
+                <small>{getBookSecondaryLabel(item, language)}</small>
               </div>
             </li>
           ))}

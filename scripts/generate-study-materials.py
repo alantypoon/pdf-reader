@@ -895,20 +895,25 @@ def main():
                         max_pages = 1
 
                     # Determine page range:
-                    #   4-part target (…/section/page) → just that single page
-                    #   3-part target (…/section)       → ALL pages of that section
-                    #   2-part target (…/book)          → limited by --pages-per-section
-                    #   1-part target (subject)         → limited by --pages-per-section
+                    #   4-part target (…/section/page) → start at that page and continue
+                    #                                  through the end of the section
+                    #   3-part target (…/section)      → ALL pages of that section
+                    #   2-part target (…/book)         → limited by --pages-per-section
+                    #   1-part target (subject)        → limited by --pages-per-section
+                    #   no target                      → ALL pages of every section
                     if page is not None:
-                        # Explicit page → single page
-                        page_limit = 1
-                        page_start = int(page)
-                        page_end = page_start
+                        # Explicit start page → continue through the section
+                        page_start = max(1, int(page))
+                        page_end = max(page_start, max_pages)
                     elif section is not None:
                         # Explicit section (3-part target) → all pages
                         page_limit = max_pages
                         page_start = 1
                         page_end = page_limit
+                    elif args.target is None:
+                        # No-argument run → process all pages in the section
+                        page_start = 1
+                        page_end = max_pages
                     else:
                         # Book or subject level → respect --pages-per-section
                         page_limit = min(max_pages, args.pages_per_section)

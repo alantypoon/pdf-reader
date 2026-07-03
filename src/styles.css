@@ -120,6 +120,15 @@ button, input, select {
   fill: #ffffff;
 }
 
+.sidebar-icon-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.sidebar-icon-btn:disabled:hover::after {
+  opacity: 0;
+}
+
 .sidebar-toggle {
   display: inline-flex;
   align-items: center;
@@ -375,6 +384,15 @@ button, input, select {
 
 .toggle-btn:not(.active):hover {
   background: #e8f0fe;
+}
+
+.toggle-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.toggle-btn:disabled:hover {
+  background: transparent;
 }
 
 .toggle-btn.icon-only {
@@ -1726,6 +1744,28 @@ button, input, select {
   flex: 1;
   overflow-y: auto;
   padding: 24px;
+}
+
+.ai-lookup-key {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  border: 1px solid #c7d2fe;
+  border-radius: 12px;
+  background: #eef2ff;
+}
+
+.ai-lookup-key strong {
+  font-size: 0.8rem;
+  color: #4338ca;
+}
+
+.ai-lookup-key code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  color: #1e293b;
+  word-break: break-all;
 }
 
 /* ── Loading ───────────────────────────────────────────── */

@@ -1,6 +1,6 @@
 const T = {
   en: {
-    appTitle: 'PDF Reader',
+    appTitle: 'DSE Reader',
     book: 'Subject',
     chapter: 'Book',
     section: 'Section',
@@ -90,7 +90,7 @@ const T = {
     noMatchingChapters: 'No matching chapters',
   },
   tc: {
-    appTitle: 'PDF 閱讀器',
+    appTitle: 'DSE 閱讀器',
     book: '科目',
     chapter: '書本',
     section: '章節',

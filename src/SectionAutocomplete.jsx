@@ -35,6 +35,23 @@ function SectionAutocomplete({ sections, onSelect, getSectionName, currentSectio
     return sectionLabel || sectionId;
   }, [currentSection, language, getSectionName]);
 
+  const getPrimarySectionName = (item) => {
+    if (language === 'bilingual') {
+      return getSectionName(item, 'en') || getSectionName(item, 'tc') || '';
+    }
+    return getSectionName(item, language) || getSectionName(item, language === 'tc' ? 'en' : 'tc') || '';
+  };
+
+  const getSecondarySectionName = (item) => {
+    if (language === 'tc') {
+      return getSectionName(item, 'en') || '';
+    }
+    if (language === 'en') {
+      return getSectionName(item, 'tc') || '';
+    }
+    return getSectionName(item, 'tc') || '';
+  };
+
   const placeholder = query ? 'Search section…' : (currentSectionName || 'Search section…');
 
   const handleSelect = (item) => {
@@ -156,8 +173,8 @@ function SectionAutocomplete({ sections, onSelect, getSectionName, currentSectio
             >
               <span className="autocomplete-section-badge">{item.section}</span>
               <div className="autocomplete-names">
-                <strong>{getSectionName(item, 'en')}</strong>
-                <small>{getSectionName(item, 'tc')}</small>
+                <strong>{getPrimarySectionName(item)}</strong>
+                <small>{getSecondarySectionName(item)}</small>
               </div>
             </li>
           ))}

@@ -6,4 +6,6 @@ dist
 data
 .env
 .DS_Store
-
+logs/*
+logs/server.log
+logs/server.pid

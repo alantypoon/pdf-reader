@@ -29,6 +29,7 @@ const MONGO_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/pdf-read
 let mongoClient;
 let aiGenerations;
 let userActions;
+let userSelects;
 
 function normalizeStringId(value, fallback = '') {
   return String(value != null ? value : fallback).trim();
@@ -133,6 +134,7 @@ async function connectMongo() {
     const db = mongoClient.db('pdf-reader');
     aiGenerations = db.collection('ai-generations');
     userActions = db.collection('user-actions');
+    userSelects = db.collection('user-selects');
     await migrateAiGenerationSubjectIds();
     await aiGenerations.createIndex(
       { subjectId: 1, bookId: 1, sectionId: 1, pageId: 1 },
@@ -141,6 +143,10 @@ async function connectMongo() {
     await aiGenerations.createIndex(
       { subjectId: 1, bookId: 1, sectionId: 1, updatedAt: -1 },
       { name: 'ai_generations_lookup' }
+    );
+    await userSelects.createIndex(
+      { userId: 1 },
+      { unique: true, name: 'user_selects_user_unique' }
     );
     console.log('[mongo] connected to', MONGO_URI.replace(/\/\/.*@/, '//<credentials>@'));
   } catch (err) {
@@ -337,6 +343,64 @@ function compareNaturalIds(left, right) {
 app.get('/api/session-user', (request, response) => {
   response.json({ userId: getAuthenticatedUserId(request) });
 });
+
+app.get('/api/user-selects', asyncRoute(async (request, response) => {
+  const authenticatedUserId = getAuthenticatedUserId(request);
+  const userId = String(request.query.userId || authenticatedUserId || '').trim();
+  if (!userId) {
+    response.status(400).json({ error: 'userId is required' });
+    return;
+  }
+  if (!userSelects) {
+    response.json({ userId, lastSubjectId: '', selections: {} });
+    return;
+  }
+  const doc = await userSelects.findOne({ userId });
+  response.json({
+    userId,
+    lastSubjectId: typeof doc?.lastSubjectId === 'string' ? doc.lastSubjectId : '',
+    selections: doc?.selections && typeof doc.selections === 'object' ? doc.selections : {},
+    updatedAt: doc?.updatedAt || null,
+  });
+}));
+
+app.post('/api/user-selects', asyncRoute(async (request, response) => {
+  const authenticatedUserId = getAuthenticatedUserId(request);
+  const body = request.body || {};
+  const userId = String(body.userId || authenticatedUserId || '').trim();
+  const subjectId = String(body.subjectId || body.lastSubjectId || '').trim();
+  if (!userId || !subjectId) {
+    response.status(400).json({ error: 'userId and subjectId are required' });
+    return;
+  }
+  if (!userSelects) {
+    response.status(500).json({ error: 'MongoDB not connected' });
+    return;
+  }
+  const now = new Date().toISOString();
+  const selection = {
+    bookId: body.bookId != null ? String(body.bookId) : '',
+    sectionId: body.sectionId != null ? Number(body.sectionId) : 1,
+    pageId: body.pageId != null ? Number(body.pageId) : 1,
+    physicsChapterId: body.physicsChapterId != null ? String(body.physicsChapterId) : '',
+  };
+  await userSelects.updateOne(
+    { userId },
+    {
+      $set: {
+        lastSubjectId: String(body.lastSubjectId || subjectId),
+        [`selections.${subjectId}`]: selection,
+        updatedAt: now,
+      },
+      $setOnInsert: {
+        userId,
+        createdAt: now,
+      },
+    },
+    { upsert: true }
+  );
+  response.json({ ok: true });
+}));
 
 app.post('/api/user-actions', asyncRoute(async (request, response) => {
   const authenticatedUserId = getAuthenticatedUserId(request);
