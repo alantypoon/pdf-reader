@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import Swal from 'sweetalert2';
 import PdfPane from './PdfPane';
 import SectionAutocomplete from './SectionAutocomplete';
 import { t, uiLang } from './i18n';
 
 const PREFERENCES_KEY = 'pdfReaderPreferences';
+const DEFAULT_ANNOTATION_COLOR = '#9acd32';
 
 function loadPreferences() {
   if (typeof window === 'undefined') {
@@ -42,6 +44,28 @@ function getUserId() {
 
 async function fetchJson(url, options) {
   const response = await fetch(url, options);
+
+  // ── Show SweetAlert2 for 502 / 5xx server errors ──
+  if (response.status >= 500 && !fetchJson._swalOpen) {
+    fetchJson._swalOpen = true;
+    const statusText = [502, 503, 504].includes(response.status)
+      ? `Bad Gateway (${response.status})`
+      : `Server Error (${response.status})`;
+    Swal.fire({
+      icon: 'error',
+      title: statusText,
+      html: `
+        <p>The server returned an error for:</p>
+        <code style="word-break:break-all;font-size:0.85rem;">${url}</code>
+        <p style="margin-top:12px;">Please check that the backend server is running and try again.</p>
+      `,
+      confirmButtonText: 'OK',
+      allowOutsideClick: true
+    }).finally(() => {
+      fetchJson._swalOpen = false;
+    });
+  }
+
   const rawText = await response.text();
   const contentType = response.headers.get('content-type') || '';
   let data = {};
@@ -67,6 +91,12 @@ async function fetchJson(url, options) {
 
 function App() {
   const savedPrefs = loadPreferences();
+  const initialTextColor = useMemo(() => {
+    const value = savedPrefs.textColor;
+    return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)
+      ? value
+      : DEFAULT_ANNOTATION_COLOR;
+  }, [savedPrefs.textColor]);
   const fallbackUserId = useMemo(() => getUserId(), []);
   const [userId, setUserId] = useState(fallbackUserId);
   const isTestMode = useMemo(() => {
@@ -79,6 +109,9 @@ function App() {
   const currentStrokeRef = useRef(null);
   const displayModeInitializedRef = useRef(false);
   const [structure, setStructure] = useState([]);
+  const [dataBooks, setDataBooks] = useState([]);
+  const [activeBookId, setActiveBookId] = useState('');
+  const [selectedBook, setSelectedBook] = useState(savedPrefs.selectedBook || '');
   const [selectedChapter, setSelectedChapter] = useState(savedPrefs.selectedChapter || '1a');
   const [selectedFile, setSelectedFile] = useState(Number(savedPrefs.selectedFile || 1));
   const [selectedPage, setSelectedPage] = useState(Number(savedPrefs.selectedPage || 1));
@@ -91,7 +124,7 @@ function App() {
   const [pageAnnotations, setPageAnnotations] = useState([]);
   const [tool, setTool] = useState('hand');
   const [annotationToolsOpen, setAnnotationToolsOpen] = useState(Boolean(savedPrefs.annotationToolsOpen));
-  const [textColor, setTextColor] = useState(savedPrefs.textColor || '#1f2937');
+  const [textColor, setTextColor] = useState(initialTextColor);
   const [noteText, setNoteText] = useState('');
   const [clearedTimestamps, setClearedTimestamps] = useState([]);
   const [undoStack, setUndoStack] = useState([]);
@@ -185,21 +218,30 @@ function App() {
   };
 
   useEffect(() => {
-    const loadCatalog = async () => {
+    const loadCatalog = async (book) => {
       try {
-        const data = await fetchJson('api/catalog');
+        const bookParam = book ? `?book=${encodeURIComponent(book)}` : '';
+        const data = await fetchJson(`api/catalog${bookParam}`);
         const chapters = data.chapters || [];
+        setDataBooks(Array.isArray(data.books) ? data.books : []);
+        const bookId = typeof data.activeBookId === 'string' ? data.activeBookId : '';
+        setActiveBookId(bookId);
+        if (!book) {
+          setSelectedBook(bookId);
+        }
         setStructure(chapters);
         if (chapters.length) {
           setSelectedChapter((current) => (chapters.some((chapter) => chapter.id === current) ? current : chapters[0].id));
         }
       } catch (err) {
         console.error('[catalog] failed to load:', err);
+        setDataBooks([]);
+        setActiveBookId('');
         setStructure([]);
       }
     };
 
-    loadCatalog();
+    loadCatalog(savedPrefs.selectedBook || '');
   }, []);
 
   useEffect(() => {
@@ -271,10 +313,11 @@ function App() {
     const loadPages = async () => {
       try {
         const targets = selectedLanguage === 'bilingual' ? ['en', 'tc'] : [selectedLanguage];
+        const bookParam = selectedBook ? `&book=${encodeURIComponent(selectedBook)}` : '';
         console.log(`[loadPages] chapter=${selectedChapter} file=${selectedFile} languages=${targets.join(',')}`);
         const entries = await Promise.all(
           targets.map(async (language) => {
-            const url = `api/page?chapter=${selectedChapter}&language=${language}&page=${selectedFile}`;
+            const url = `api/page?chapter=${selectedChapter}&language=${language}&page=${selectedFile}${bookParam}`;
             console.log(`[loadPages] fetching: ${url}`);
             const data = await fetchJson(url);
             const result = data.images || data.url || '';
@@ -293,7 +336,7 @@ function App() {
     if (selectedChapter) {
       loadPages();
     }
-  }, [selectedChapter, selectedFile, selectedLanguage]);
+  }, [selectedChapter, selectedFile, selectedLanguage, selectedBook]);
 
   useEffect(() => {
     if (!displayModeInitializedRef.current) {
@@ -306,12 +349,14 @@ function App() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const prefs = {
+      selectedBook,
       selectedChapter,
       selectedFile,
       selectedPage,
       displayMode,
       selectedLanguage,
       sidebarCollapsed,
+      tool,
       annotationToolsOpen,
       textColor,
       thumbCols,
@@ -321,12 +366,14 @@ function App() {
     };
     window.localStorage.setItem(PREFERENCES_KEY, JSON.stringify(prefs));
   }, [
+    selectedBook,
     selectedChapter,
     selectedFile,
     selectedPage,
     displayMode,
     selectedLanguage,
     sidebarCollapsed,
+    tool,
     annotationToolsOpen,
     textColor,
     thumbCols,
@@ -795,6 +842,7 @@ function App() {
 
       const endpointUrl = 'api/ai-generate';
       const requestBody = {
+        book: selectedBook,
         chapter: selectedChapter,
         section: selectedFile,
         page: selectedPage,
@@ -981,6 +1029,44 @@ function App() {
               <path d="M4 5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5zm2 0v14h12V5H6zm2 2h8v2H8V7zm0 4h8v2H8v-2zm0 4h5v2H8v-2z" />
             </svg>
             {_('book')}
+          </span>
+          {dataBooks.length > 0 ? (
+            <select value={selectedBook} onChange={async (event) => {
+              const newBook = event.target.value;
+              setSelectedBook(newBook);
+              try {
+                const data = await fetchJson(`api/catalog?book=${encodeURIComponent(newBook)}`);
+                const chapters = data.chapters || [];
+                setDataBooks(Array.isArray(data.books) ? data.books : []);
+                setActiveBookId(typeof data.activeBookId === 'string' ? data.activeBookId : newBook);
+                setStructure(chapters);
+                if (chapters.length) {
+                  setSelectedChapter(chapters[0].id);
+                  const firstSection = chapters[0]?.contents?.[0];
+                  const firstPage = firstSection ? Number(firstSection.page || firstSection.section) : 1;
+                  setSelectedFile(firstPage);
+                  setSelectedPage(1);
+                }
+              } catch (err) {
+                console.error('[catalog] failed to load book:', newBook, err);
+              }
+            }}>
+              {dataBooks.map((bookId) => (
+                <option key={bookId} value={bookId}>{bookId}</option>
+              ))}
+            </select>
+          ) : (
+            <select value={selectedBook} disabled>
+              <option value={selectedBook}>{selectedBook || _('noBook')}</option>
+            </select>
+          )}
+        </label>
+        <label>
+          <span className="sidebar-label-icon">
+            <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+              <path d="M3 4h18v2H3V4zm0 7h18v2H3v-2zm0 7h18v2H3v-2z" />
+            </svg>
+            {_('chapter')}
           </span>
           <select value={selectedChapter} onChange={(event) => {
             const newChapterId = event.target.value;
@@ -1393,6 +1479,7 @@ function App() {
             bottom: panelPos.y == null ? '16px' : undefined
           }}
         >
+          <div className="panel-row-1">
           <span
             className="panel-drag-handle"
             onPointerDown={handlePanelDragStart}
@@ -1408,11 +1495,9 @@ function App() {
               <circle cx="15" cy="19" r="1.5" />
             </svg>
           </span>
-          <div className="panel-scroll-area">
           <div className="toolbar-group toolbar-primary">
             <button onClick={() => moveSection(-1)} title={_('prevSection')} aria-label={_('prevSection')}>|&lt;</button>
             <button onClick={() => changePage(-1)} title={_('prevPage')} aria-label={_('prevPage')}>&lt;</button>
-            <span className="page-indicator">{selectedPage}</span>
             <button onClick={() => changePage(1)} title={_('nextPage')} aria-label={_('nextPage')}>&gt;</button>
             <button onClick={() => moveSection(1)} title={_('nextSection')} aria-label={_('nextSection')}>&gt;|</button>
             <button className="icon-btn active" onClick={fitScreen} title={fitButtonTitle} aria-label={fitButtonTitle}>
@@ -1424,41 +1509,48 @@ function App() {
                 )}
               </svg>
             </button>
-            <button onClick={() => changeZoom(-0.1)} title={_('zoomOut')} aria-label={_('zoomOut')}>-</button>
-            <span className="zoom-indicator">{displayZoomPercent}%</span>
-            <button onClick={() => changeZoom(0.1)} title={_('zoomIn')} aria-label={_('zoomIn')}>+</button>
+            <span className="toolbar-sep" />
+            <input
+              type="range"
+              className="zoom-slider"
+              min="5"
+              max="400"
+              value={Math.round(zoomLevel * 100)}
+              onChange={(e) => setZoomLevel(Number(e.target.value) / 100)}
+              title={_('zoomLevel')}
+              aria-label={_('zoomLevel')}
+            />
+            <span className="zoom-label">{displayZoomPercent}%</span>
           </div>
+          <button
+            className={`tool-btn annotation-toggle-btn ${annotationToolsOpen ? 'active' : ''}`}
+            onClick={() => {
+              setAnnotationToolsOpen((prev) => {
+                if (prev) setTool('hand');
+                return !prev;
+              });
+            }}
+            title={_('toggleAnnotations')}
+            aria-label={_('toggleAnnotations')}
+          >
+            <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+              <path d="M4 16.5V20h3.5L18 9.5 14.5 6 4 16.5zm2.2 1.3h-.7v-.7l8.6-8.6.7.7-8.6 8.6zM19.7 7.8c.4-.4.4-1 0-1.4l-2.1-2.1c-.4-.4-1-.4-1.4 0l-1.2 1.2 3.5 3.5 1.2-1.2z" />
+            </svg>
+          </button>
+          <button
+            className="tool-btn panel-close-btn panel-close-accent"
+            onClick={() => setPanelVisible(false)}
+            title={_('closePanel')}
+            aria-label={_('closePanel')}
+          >
+            <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+              <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+            </svg>
+          </button>
+          </div>
+          {annotationToolsOpen && (
+          <div className="panel-row-2 annotation-row">
           <div className="toolbar-group toolbar-secondary">
-            <button
-              className={`tool-btn annotation-toggle-btn ${annotationToolsOpen ? 'active' : ''}`}
-              onClick={() => {
-                setAnnotationToolsOpen((current) => {
-                  const next = !current;
-                  if (!next) {
-                    setTool('hand');
-                  }
-                  return next;
-                });
-              }}
-              title={_('toggleAnnotations')}
-              aria-label={_('toggleAnnotations')}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <path d="M4 16.5V20h3.5L18 9.5 14.5 6 4 16.5zm2.2 1.3h-.7v-.7l8.6-8.6.7.7-8.6 8.6zM19.7 7.8c.4-.4.4-1 0-1.4l-2.1-2.1c-.4-.4-1-.4-1.4 0l-1.2 1.2 3.5 3.5 1.2-1.2z" />
-              </svg>
-            </button>
-            {annotationToolsOpen && (
-              <>
-            <button
-              className={`tool-btn ${tool === 'hand' ? 'active' : ''}`}
-              onClick={() => setTool('hand')}
-              title={_('handPan')}
-              aria-label={_('handPan')}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <path d="M18 13.5V11a1.5 1.5 0 0 0-3 0v2.5a1.5 1.5 0 0 0-3 0V7a1.5 1.5 0 0 0-3 0v8.5a1.5 1.5 0 0 0-3 0V12a1.5 1.5 0 0 0-3 0v3c0 3.04 2.46 5.5 5.5 5.5h2.55a5.5 5.5 0 0 0 3.89-1.61l3.54-3.54A1.5 1.5 0 0 0 18 13.5z" />
-              </svg>
-            </button>
             <button
               className={`tool-btn ${tool === 'pen' ? 'active' : ''}`}
               onClick={() => setTool('pen')}
@@ -1492,24 +1584,6 @@ function App() {
             </button>
             <span className="toolbar-sep" />
             <input type="color" value={textColor} onChange={(event) => setTextColor(event.target.value)} title={_('color')} aria-label={_('color')} />
-            <input value={noteText} onChange={(event) => setNoteText(event.target.value)} placeholder={_('remark')} />
-            <button
-              className="tool-btn"
-              onClick={() => saveRemark({
-                type: 'text',
-                chapter: selectedChapter,
-                page: selectedPage,
-                color: textColor,
-                text: noteText,
-                createdAt: new Date().toISOString()
-              })}
-              title={_('saveText')}
-              aria-label={_('saveText')}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <path d="M17 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm-5 16a3 3 0 1 1 0-6 3 3 0 0 1 0 6zm4-10H8V5h8v4z" />
-              </svg>
-            </button>
             <span className="toolbar-sep" />
             <button
               className="tool-btn"
@@ -1555,23 +1629,11 @@ function App() {
                 <path d="M2 7h20" stroke="currentColor" strokeWidth="2" fill="none" />
               </svg>
             </button>
-                </>
-              )}
           </div>
-          <button
-              className="tool-btn panel-close-btn panel-close-accent"
-            onClick={() => setPanelVisible(false)}
-            title={_('closePanel')}
-            aria-label={_('closePanel')}
-          >
-            <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-              <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
-            </svg>
-          </button>
           </div>
+          )}
         </section>
         )}
-
 
       </main>
 
@@ -1632,6 +1694,24 @@ function App() {
                       >
                         🇭🇰 {_('chinese')}
                       </button>
+                    </div>
+                  )}
+
+                  {aiDisplayContent?.summary && aiDisplayContent.summary.length > 0 && (
+                    <div className="ai-section">
+                      <h3 className="ai-section-title">
+                        <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="ai-section-icon">
+                          <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="1.8" />
+                          <line x1="12" y1="7" x2="12" y2="13" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                          <circle cx="12" cy="16.5" r="0.8" fill="currentColor" />
+                        </svg>
+                        Summary
+                      </h3>
+                      <ul className="ai-summary">
+                        {aiDisplayContent.summary.map((point, idx) => (
+                          <li key={idx}>{point}</li>
+                        ))}
+                      </ul>
                     </div>
                   )}
 

@@ -1,3 +1,4 @@
+(() => {
 const NEXT_BUTTON_SELECTOR = '#ebk-btn_0';
 const PREV_BUTTON_SELECTOR = '#ebk-btn_1, .prev-btn, [title="Previous"], [title="Prev"]';
 const PAGE_TURN_WAIT_MS = 1200;
@@ -8,6 +9,7 @@ const CAPTURE_RETRY_DELAY_MS = 1200;
 const MAX_PAGES = 2000;
 const MAX_PREV_STEPS = 500;
 const PDF_MARGIN_MM = 6;
+const PDF_PART_SIZE_LIMIT_BYTES = Math.floor(64 * 1024 * 1024 * 0.9);
 const TRIM_DIFF_THRESHOLD = 14;
 const TRIM_ALPHA_THRESHOLD = 8;
 const HIDE_BEFORE_CAPTURE_SELECTOR = '.copyright, .blur1';
@@ -106,6 +108,14 @@ function buildDefaultPdfFileName() {
   return `${baseName || 'ebook'}-${getTimestamp()}.pdf`;
 }
 
+function buildPartFileName(fileName, partNumber) {
+  const suffix = `_${partNumber}`;
+  if (fileName.toLowerCase().endsWith('.pdf')) {
+    return `${fileName.slice(0, -4)}${suffix}.pdf`;
+  }
+  return `${fileName}${suffix}`;
+}
+
 function getSuggestedBaseName() {
   const docs = getSameOriginFrameDocuments(document);
   const candidates = [document.title];
@@ -178,20 +188,64 @@ async function captureVisibleTabImage() {
   }
 }
 
-function savePdfDownload(dataUrl, fileName) {
+function savePdfDownload(pdfBlob, fileName) {
   return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage({ action: 'savePdfDownload', dataUrl, fileName }, (response) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-      if (!response?.ok) {
-        reject(new Error(response?.error || 'Failed to save PDF download.'));
-        return;
-      }
-      resolve(response.result);
-    });
+    try {
+      const objectUrl = URL.createObjectURL(pdfBlob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = fileName;
+      link.style.display = 'none';
+      document.documentElement.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      resolve({ fileName });
+    } catch (err) {
+      reject(err instanceof Error ? err : new Error('Failed to save PDF download.'));
+    }
   });
+}
+
+function createPdfDocument() {
+  const { jsPDF } = window.jspdf;
+  return new jsPDF('p', 'mm', 'a4');
+}
+
+function addImageToPdf(pdf, imageDataUrl) {
+  const pdfWidth = pdf.internal.pageSize.getWidth();
+  const pdfHeight = pdf.internal.pageSize.getHeight();
+  const imgProps = pdf.getImageProperties(imageDataUrl);
+  const usableWidth = Math.max(1, pdfWidth - (PDF_MARGIN_MM * 2));
+  const usableHeight = Math.max(1, pdfHeight - (PDF_MARGIN_MM * 2));
+  const ratio = Math.min(usableWidth / imgProps.width, usableHeight / imgProps.height);
+  const newWidth = imgProps.width * ratio;
+  const newHeight = imgProps.height * ratio;
+  const x = PDF_MARGIN_MM + ((usableWidth - newWidth) / 2);
+  const y = PDF_MARGIN_MM + ((usableHeight - newHeight) / 2);
+
+  pdf.addImage(imageDataUrl, 'JPEG', x, y, newWidth, newHeight);
+}
+
+async function mergePdfParts(partBlobs) {
+  if (!window.PDFLib?.PDFDocument) {
+    throw new Error('PDF merge library is not available in this page context.');
+  }
+
+  const mergedPdf = await window.PDFLib.PDFDocument.create();
+
+  for (const partBlob of partBlobs) {
+    const partBytes = await partBlob.arrayBuffer();
+    const sourcePdf = await window.PDFLib.PDFDocument.load(partBytes);
+    const pageIndices = sourcePdf.getPageIndices();
+    const copiedPages = await mergedPdf.copyPages(sourcePdf, pageIndices);
+    for (const page of copiedPages) {
+      mergedPdf.addPage(page);
+    }
+  }
+
+  const mergedBytes = await mergedPdf.save();
+  return new Blob([mergedBytes], { type: 'application/pdf' });
 }
 
 function getCaptureRectCssPixels() {
@@ -489,6 +543,9 @@ async function startAutoCapture() {
   if (!window.jspdf?.jsPDF) {
     throw new Error('jsPDF is not available in this page context.');
   }
+  if (!window.PDFLib?.PDFDocument) {
+    throw new Error('PDFLib is not available in this page context.');
+  }
 
   const fileName = buildDefaultPdfFileName();
 
@@ -496,15 +553,14 @@ async function startAutoCapture() {
   try {
     await moveToFirstPage();
 
-    const { jsPDF } = window.jspdf;
-    const pdf = new jsPDF('p', 'mm', 'a4');
-    const pdfWidth = pdf.internal.pageSize.getWidth();
-    const pdfHeight = pdf.internal.pageSize.getHeight();
-
-    let pageIndex = 0;
+    let pdf = createPdfDocument();
+    const partBlobs = [];
+    let partNumber = 1;
+    let pagesCaptured = 0;
+    let pagesInCurrentPart = 0;
     let lastSignature = null;
 
-    while (pageIndex < MAX_PAGES) {
+    while (pagesCaptured < MAX_PAGES) {
       const imageDataUrl = await captureCroppedPageImageDataUrl();
       const signature = imageDataUrl.slice(0, 12000);
 
@@ -513,22 +569,35 @@ async function startAutoCapture() {
       }
       lastSignature = signature;
 
-      if (pageIndex > 0) {
+      if (pagesInCurrentPart > 0) {
         pdf.addPage();
       }
 
-      const imgProps = pdf.getImageProperties(imageDataUrl);
-      const usableWidth = Math.max(1, pdfWidth - (PDF_MARGIN_MM * 2));
-      const usableHeight = Math.max(1, pdfHeight - (PDF_MARGIN_MM * 2));
-      // Fit inside a printable area with fixed page margins.
-      const ratio = Math.min(usableWidth / imgProps.width, usableHeight / imgProps.height);
-      const newWidth = imgProps.width * ratio;
-      const newHeight = imgProps.height * ratio;
-      const x = PDF_MARGIN_MM + ((usableWidth - newWidth) / 2);
-      const y = PDF_MARGIN_MM + ((usableHeight - newHeight) / 2);
+      addImageToPdf(pdf, imageDataUrl);
+      pagesCaptured += 1;
+      pagesInCurrentPart += 1;
 
-      pdf.addImage(imageDataUrl, 'JPEG', x, y, newWidth, newHeight);
-      pageIndex += 1;
+      let currentPartBlob = pdf.output('blob');
+      if (currentPartBlob.size >= PDF_PART_SIZE_LIMIT_BYTES) {
+        if (pagesInCurrentPart === 1) {
+          throw new Error('A single captured page exceeds the PDF part size limit. Reduce capture size before exporting.');
+        }
+
+        pdf.deletePage(pagesInCurrentPart);
+        pagesInCurrentPart -= 1;
+        const finalizedPartBlob = pdf.output('blob');
+        partBlobs.push(finalizedPartBlob);
+        partNumber += 1;
+
+        pdf = createPdfDocument();
+        addImageToPdf(pdf, imageDataUrl);
+        pagesInCurrentPart = 1;
+        currentPartBlob = pdf.output('blob');
+
+        if (currentPartBlob.size >= PDF_PART_SIZE_LIMIT_BYTES) {
+          throw new Error('A single captured page exceeds the PDF part size limit. Reduce capture size before exporting.');
+        }
+      }
 
       const nextBtn = findButton(NEXT_BUTTON_SELECTOR);
       if (!nextBtn || isDisabled(nextBtn)) {
@@ -542,14 +611,23 @@ async function startAutoCapture() {
       }
     }
 
-    if (pageIndex === 0) {
+    if (pagesCaptured === 0) {
       throw new Error('No pages were captured.');
     }
 
-    const pdfDataUrl = pdf.output('datauristring');
-    const saveResult = await savePdfDownload(pdfDataUrl, fileName);
-    return { pagesCaptured: pageIndex, fileName, downloadId: saveResult.downloadId };
+    const finalPartBlob = pdf.output('blob');
+    if (partBlobs.length > 0) {
+      partBlobs.push(finalPartBlob);
+      const mergedPdfBlob = await mergePdfParts(partBlobs);
+      await savePdfDownload(mergedPdfBlob, fileName);
+      return { pagesCaptured, fileName, partsSaved: partBlobs.length };
+    }
+
+    await savePdfDownload(finalPartBlob, fileName);
+    return { pagesCaptured, fileName, partsSaved: 1 };
   } finally {
     isCapturing = false;
   }
 }
+
+})();

@@ -1,24 +1,28 @@
 import 'dotenv/config';
 import express from 'express';
-import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { MongoClient } from 'mongodb';
+import sharp from 'sharp';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const app = express();
 const port = 3001;
-const execFileAsync = promisify(execFile);
 
 const DATA_PATH = process.env.DATA_PATH || path.resolve(__dirname, '../data');
-const dataRoot = path.join(DATA_PATH, 'biology-oup');
-const remarksFile = path.join(DATA_PATH, 'remarks.json');
+const DEFAULT_BOOK = process.env.DEFAULT_BOOK || 'biology-oup';
+const ETT_MAX_IMAGE_DIM = 1536;   // max px on longest side for images sent to ETT/vLLM
 const DSE_AUTH_CONFIG_PATH = process.env.DSE_AUTH_CONFIG_PATH || path.resolve(__dirname, '../../../dse-auth-config.php');
+
+/** Resolve the data root for a given book ID */
+function getDataRoot(book) {
+  const safeBook = String(book || DEFAULT_BOOK).replace(/\.\./g, '').replace(/[^a-zA-Z0-9_-]/g, '');
+  return path.join(DATA_PATH, safeBook || DEFAULT_BOOK);
+}
 
 // ── MongoDB ───────────────────────────────────────────────
 const MONGO_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/pdf-reader';
@@ -40,8 +44,7 @@ async function connectMongo() {
 }
 
 console.log('[server] DATA_PATH:', DATA_PATH);
-console.log('[server] dataRoot:', dataRoot);
-console.log('[server] remarksFile:', remarksFile);
+console.log('[server] DEFAULT_BOOK:', DEFAULT_BOOK);
 
 app.use(express.json({ limit: '2mb' }));
 
@@ -253,12 +256,20 @@ app.post('/api/user-actions/logout', asyncRoute(async (request, response) => {
   response.json({ ok: true });
 }));
 
-app.get('/api/catalog', asyncRoute(async (_request, response) => {
+app.get('/api/catalog', asyncRoute(async (request, response) => {
+  const requestedBook = request.query.book || DEFAULT_BOOK;
+  const dataRoot = getDataRoot(requestedBook);
   console.log('[catalog] dataRoot:', dataRoot);
   if (!existsSync(dataRoot)) {
     response.status(500).json({ error: `Data root not found: ${dataRoot}` });
     return;
   }
+  const activeBookId = path.basename(dataRoot);
+  const dataFolders = await fs.readdir(DATA_PATH, { withFileTypes: true });
+  const books = dataFolders
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort((a, b) => a.localeCompare(b));
   const folders = await fs.readdir(dataRoot, { withFileTypes: true });
   console.log('[catalog] folders found:', folders.map(f => f.name));
   const chapters = await Promise.all(
@@ -278,12 +289,14 @@ app.get('/api/catalog', asyncRoute(async (_request, response) => {
       })
   );
   console.log('[catalog] returning', chapters.length, 'chapters');
-  response.json({ chapters });
+  response.json({ chapters, books, activeBookId });
 }));
 
 app.get('/api/page', asyncRoute(async (request, response) => {
+  const requestedBook = request.query.book || DEFAULT_BOOK;
+  const dataRoot = getDataRoot(requestedBook);
   const { chapter, language, page } = request.query;
-  console.log(`[page] request: chapter=${chapter} language=${language} page=${page}`);
+  console.log(`[page] request: book=${requestedBook} chapter=${chapter} language=${language} page=${page}`);
   const langDir = path.join(dataRoot, String(chapter), String(language));
   const pagesDir = path.join(langDir, 'contents', 'pages');
   console.log(`[page] langDir=${langDir} pagesDir=${pagesDir}`);
@@ -300,7 +313,7 @@ app.get('/api/page', asyncRoute(async (request, response) => {
         const bn = parseInt(b.slice(prefix.length).split('.')[0], 10) || 0;
         return an - bn;
       })
-      .map((f) => `/pdf-reader/data/biology-oup/${chapter}/${language}/contents/pages/${f}`);
+      .map((f) => `/pdf-reader/data/${requestedBook}/${chapter}/${language}/contents/pages/${f}`);
 
     if (images.length > 0) {
       console.log(`[page] → returning ${images.length} images (first: ${images[0]})`);
@@ -320,13 +333,13 @@ app.get('/api/page', asyncRoute(async (request, response) => {
     const dirFiles = await fs.readdir(contentsDir);
     const exactMatch = `${String(page)}.pdf`;
     if (dirFiles.includes(exactMatch)) {
-      pdfUrl = `/pdf-reader/data/biology-oup/${chapter}/${language}/contents/${exactMatch}`;
+      pdfUrl = `/pdf-reader/data/${requestedBook}/${chapter}/${language}/contents/${exactMatch}`;
     } else {
       const prefixMatch = dirFiles.find(
         (f) => f.startsWith(`${String(page)}-`) && f.endsWith('.pdf')
       );
       if (prefixMatch) {
-        pdfUrl = `/pdf-reader/data/biology-oup/${chapter}/${language}/contents/${prefixMatch}`;
+        pdfUrl = `/pdf-reader/data/${requestedBook}/${chapter}/${language}/contents/${prefixMatch}`;
       }
     }
   } catch { /* ignore */ }
@@ -351,12 +364,17 @@ app.get('/api/remarks', asyncRoute(async (request, response) => {
 }));
 
 app.post('/api/remarks', asyncRoute(async (request, response) => {
-  const { userId, ...remark } = request.body;
-  const file = remarksPath(userId);
-  const current = await readJSON(file, { remarks: [] });
-  const remarks = [...current.remarks, remark];
-  await fs.writeFile(file, JSON.stringify({ remarks }, null, 2));
-  response.json({ remarks });
+  try {
+    const { userId, ...remark } = request.body;
+    const file = remarksPath(userId);
+    const current = await readJSON(file, { remarks: [] });
+    const remarks = [...current.remarks, remark];
+    await fs.writeFile(file, JSON.stringify({ remarks }, null, 2));
+    response.json({ remarks });
+  } catch (err) {
+    console.error('[remarks] POST error:', err.message);
+    response.status(500).json({ error: 'Failed to save remark', remarks: [] });
+  }
 }));
 
 app.delete('/api/remarks', async (request, response) => {
@@ -459,8 +477,29 @@ const AIGATEWAY_MODEL = process.env.AIGATEWAY_MODEL || 'vllm|OpenGVLab/InternVL3
 const AIGATEWAY_APIKEY = process.env.AIGATEWAY_APIKEY || '';
 const BILINGUAL_ALIGNMENT_VERSION = 1;
 
+/** Resize an image to fit within ETT_MAX_IMAGE_DIM on the longest side.
+ *  Returns { buffer, contentType }.  Keeps originals intact — only resizes
+ *  the copy sent to the gateway. */
+async function resizeForEtt(imagePath) {
+  const metadata = await sharp(imagePath).metadata();
+  const longest = Math.max(metadata.width, metadata.height);
+  if (longest <= ETT_MAX_IMAGE_DIM) {
+    const buf = await sharp(imagePath).jpeg({ quality: 85 }).toBuffer();
+    return { buffer: buf, contentType: 'image/jpeg' };
+  }
+  const ratio = ETT_MAX_IMAGE_DIM / longest;
+  const newWidth = Math.round(metadata.width * ratio);
+  const newHeight = Math.round(metadata.height * ratio);
+  console.log(`[resize] ${path.basename(imagePath)}: ${metadata.width}x${metadata.height} → ${newWidth}x${newHeight}`);
+  const buf = await sharp(imagePath)
+    .resize(newWidth, newHeight, { fit: 'inside' })
+    .jpeg({ quality: 85 })
+    .toBuffer();
+  return { buffer: buf, contentType: 'image/jpeg' };
+}
+
 /** Find split page image files for a given section within a chapter/language */
-async function findPageImages(chapter, language, section) {
+async function findPageImages(dataRoot, chapter, language, section) {
   const langDir = path.join(dataRoot, String(chapter), String(language));
   const pagesDir = path.join(langDir, 'contents', 'pages');
   const results = [];
@@ -493,6 +532,10 @@ async function findPageImages(chapter, language, section) {
     }
   }
 
+  console.log(`[ai-generate] findPageImages: chapter=${chapter} lang=${language} section=${section} → ${results.length} image(s)`);
+  if (results.length > 0) {
+    console.log(`[ai-generate]   ${results.join(', ')}`);
+  }
   return results;
 }
 
@@ -518,11 +561,13 @@ ${extractedText.slice(0, 3000)}
 IMPORTANT: Base every question and answer STRICTLY on the provided content. Do not introduce concepts, facts, or terminology not found in the content above.
 
 Generate in JSON:
-1. 4-6 flashcards (each with "question" and "answer")
-2. 3-5 MCQ questions (each with "question", 4 "options" labeled A-D, "correct" letter, and "explanation")
+1. A bullet-point summary of the key concepts on this page (3-6 bullet points as an array of strings)
+2. 4-6 flashcards (each with "question" and "answer")
+3. 3-5 MCQ questions (each with "question", 4 "options" labeled A-D, "correct" letter, and "explanation")
 
 Output ONLY the JSON object, no markdown:
 {
+  "summary": ["bullet point 1", "bullet point 2", "bullet point 3"],
   "flashcards": [{"question":"...","answer":"..."}],
   "mcq": [{"question":"...","options":["A. ...","B. ...","C. ...","D. ..."],"correct":"A","explanation":"..."}]
 }`;
@@ -544,8 +589,9 @@ ${langInstruction}
 
 IMPORTANT REQUIREMENTS:
 - The translated English and Chinese versions must match in meaning item-by-item.
-- Keep the SAME number of flashcards and MCQ questions.
-- Preserve the SAME ordering.
+- Keep the SAME number of summary bullet points, flashcards, and MCQ questions.
+- Preserve the SAME ordering for all arrays.
+- summary[i] in the output must match summary[i] in the source by meaning.
 - flashcards[i] in the output must match flashcards[i] in the source by meaning.
 - mcq[i] in the output must match mcq[i] in the source by meaning.
 - Keep exactly 4 options for each MCQ, labeled A-D.
@@ -563,6 +609,7 @@ ${JSON.stringify(sourceContent)}
 
 Output ONLY the translated JSON object in this schema:
 {
+  "summary": ["translated bullet point 1", "translated bullet point 2"],
   "flashcards": [{"question":"...","answer":"..."}],
   "mcq": [{"question":"...","options":["A. ...","B. ...","C. ...","D. ..."],"correct":"A","explanation":"..."}]
 }`;
@@ -591,20 +638,6 @@ function extractTextFromGatewayResponse(rawText) {
   } catch {
     return rawText.trim();
   }
-}
-
-async function extractTextWithTesseract(imagePaths, language) {
-  const tesseractLanguage = language === 'tc' ? 'eng' : 'eng';
-  const outputs = [];
-  for (const imagePath of imagePaths) {
-    const { stdout } = await execFileAsync('tesseract', [imagePath, 'stdout', '--psm', '11', '-l', tesseractLanguage], {
-      maxBuffer: 20 * 1024 * 1024,
-    });
-    if (stdout?.trim()) {
-      outputs.push(stdout.trim());
-    }
-  }
-  return outputs.join('\n\n').trim();
 }
 
 function formatLanguageDebug(debugMap) {
@@ -731,8 +764,8 @@ async function runGenerationPrompt(prompt) {
   return { content: parseGeneratedContent(genText), raw: genText };
 }
 
-async function extractPageText(chapter, sectionNum, page, language) {
-  const sectionImages = await findPageImages(chapter, language, sectionNum);
+async function extractPageText(dataRoot, chapter, sectionNum, page, language) {
+  const sectionImages = await findPageImages(dataRoot, chapter, language, sectionNum);
   console.log(`[ai-generate] ${language}: found ${sectionImages.length} section images`);
 
   if (sectionImages.length === 0) {
@@ -765,9 +798,9 @@ async function extractPageText(chapter, sectionNum, page, language) {
   formData.append('prompt', extractPrompt);
 
   for (const imgPath of selectedImages) {
-    const imgBuffer = await fs.readFile(imgPath);
-    const filename = path.basename(imgPath);
-    formData.append('files', new Blob([imgBuffer]), filename);
+    const { buffer, contentType } = await resizeForEtt(imgPath);
+    const filename = path.basename(imgPath).replace(/\.(png|jpg|jpeg|webp)$/i, '.jpg');
+    formData.append('files', new Blob([buffer], { type: contentType }), filename);
   }
 
   console.log(`[ai-generate] ${language}: sending ${selectedImages.length} image(s) for extraction`);
@@ -799,21 +832,11 @@ async function extractPageText(chapter, sectionNum, page, language) {
   console.log(`[ai-generate] ${language}: extracted text length=${extractedText.length}`);
 
   if (!extractedText.trim()) {
-    try {
-      const ocrText = await extractTextWithTesseract(selectedImages, language);
-      if (ocrText.trim()) {
-        debug.extractionMethod = language === 'tc' ? 'tesseract-fallback-eng' : 'tesseract-fallback';
-        debug.extractionRaw = `${text}\n\n=== Tesseract fallback ===\n${ocrText}`;
-        extractedText = ocrText;
-        console.log(`[ai-generate] ${language}: using local OCR fallback, text length=${extractedText.length}`);
-      }
-    } catch (err) {
-      debug.extractionRaw = `${text}\n\n=== Tesseract fallback error ===\n${err.message}`;
-      console.warn(`[ai-generate] ${language}: tesseract fallback failed — ${err.message}`);
-    }
-  }
-
-  if (!extractedText.trim()) {
+    console.log(`[ai-generate] ${language}: ERROR — no text extracted`);
+    console.log(`[ai-generate] ${language}: request payload:`);
+    console.log(`[ai-generate] ${language}: ${JSON.stringify({ provider: AIGATEWAY_PROVIDER, model: AIGATEWAY_MODEL, prompt: extractPrompt.slice(0, 200), wordCount: '3000', images: selectedImages }, null, 2)}`);
+    console.log(`[ai-generate] ${language}: raw response (${text.length} bytes):`);
+    console.log(`[ai-generate] ${language}: ${text.slice(0, 2000)}`);
     throw new AiGenerationError(`No text could be extracted for language=${language}`, debug);
   }
 
@@ -821,8 +844,8 @@ async function extractPageText(chapter, sectionNum, page, language) {
 }
 
 /** Generate flashcards & MCQs for a single language. Returns the parsed content object. */
-async function generateForLanguage(chapter, sectionNum, page, language, sectionName) {
-  const extraction = await extractPageText(chapter, sectionNum, page, language);
+async function generateForLanguage(dataRoot, chapter, sectionNum, page, language, sectionName) {
+  const extraction = await extractPageText(dataRoot, chapter, sectionNum, page, language);
   const genPrompt = buildGenerationPrompt(chapter, sectionName || '', page || 1, language, extraction.extractedText);
   console.log(`[ai-generate] ${language}: calling generation...`);
   const generated = await runGenerationPrompt(genPrompt);
@@ -927,9 +950,11 @@ async function getCachedAiContent(chapter, sectionNum, page, language) {
 app.post('/api/ai-generate', async (request, response) => {
   try {
     const { chapter, section: sectionNum, page, sectionName, userId } = request.body;
+    const requestedBook = request.body.book || DEFAULT_BOOK;
+    const dataRoot = getDataRoot(requestedBook);
     const isTestMode = request.body.test === true || request.body.test === '1';
     const forceRegenerate = request.body.force === true || request.body.force === '1';
-    console.log(`[ai-generate] chapter=${chapter} section=${sectionNum} page=${page} (both en + tc)`);
+    console.log(`[ai-generate] book=${requestedBook} chapter=${chapter} section=${sectionNum} page=${page} (both en + tc)`);
     const debugInfo = {
       request: {
         chapter,
@@ -960,7 +985,7 @@ app.post('/api/ai-generate', async (request, response) => {
       debugInfo.cache = 'existing-document-hit';
     } else {
       try {
-        const english = await generateForLanguage(chapter, sectionNum, page, 'en', sectionName);
+        const english = await generateForLanguage(dataRoot, chapter, sectionNum, page, 'en', sectionName);
         results.en = english.content;
         debugInfo.extractionRaw.en = english.debug?.extractionRaw || '';
         debugInfo.generationRaw.en = english.debug?.generationRaw || '';
@@ -968,7 +993,7 @@ app.post('/api/ai-generate', async (request, response) => {
 
         let chineseReference = { extractedText: '', debug: { extractionRaw: '[no chinese reference text]', extractionMethod: 'not-used' } };
         try {
-          chineseReference = await extractPageText(chapter, sectionNum, page, 'tc');
+          chineseReference = await extractPageText(dataRoot, chapter, sectionNum, page, 'tc');
         } catch (err) {
           console.warn('[ai-generate] tc: reference extraction failed, continuing with translation only');
           chineseReference = {

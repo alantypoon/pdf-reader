@@ -5,6 +5,10 @@ async function ensureInjection(tabId) {
   });
   await chrome.scripting.executeScript({
     target: { tabId },
+    files: ['pdf-lib.min.js']
+  });
+  await chrome.scripting.executeScript({
+    target: { tabId },
     files: ['content.js']
   });
 }

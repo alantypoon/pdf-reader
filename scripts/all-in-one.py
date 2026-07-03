@@ -45,9 +45,8 @@ Output:
             data/biology-oup/1a/en/contents.png
             data/biology-oup/1b/en/contents.png
 
-        The script first tries the AI Gateway ETT flow, following the same
-        request pattern as /var/www/html/aigateway/scripts/test-ett.py. If the
-        gateway returns no text, it falls back to local Tesseract OCR.
+        The script uses the AI Gateway ETT flow, following the same
+        request pattern as /var/www/html/aigateway/scripts/test-ett.py.
 
 
     5. Adds root-level names for elective books.
@@ -79,7 +78,6 @@ import json
 import mimetypes
 import os
 import re
-import subprocess
 import sys
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -104,11 +102,14 @@ ELECTIVE_BOOK_NAMES = {
 
 def split_pdfs(data_dir, args):
     """Split multi-page PDFs into individual PNG (or JPG) images."""
-    for language in ("en", "tc"):
+    langs_available = [lang for lang in ("en", "tc")
+                       if os.path.isdir(os.path.join(data_dir, lang))]
+    if not langs_available:
+        print(f"  [skip] No language directories (en/, tc/) found in {data_dir}")
+        return
+
+    for language in langs_available:
         lang_dir = os.path.join(data_dir, language)
-        if not os.path.isdir(lang_dir):
-            print(f"  [skip] {lang_dir} — not found")
-            continue
 
         # PDFs live under {lang}/contents/
         contents_dir = os.path.join(lang_dir, "contents")
@@ -249,9 +250,17 @@ def fill_resources(data_dir):
     contents_path = os.path.join(data_dir, "contents.json")
 
     if os.path.exists(contents_path):
-        with open(contents_path, "r", encoding="utf-8") as f:
-            contents = json.load(f)
+        try:
+            with open(contents_path, "r", encoding="utf-8") as f:
+                contents = json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"  [warn] Failed to read {contents_path}: {e}")
+            print(f"  [warn] Recreating skeleton from PDFs…")
+            contents = None
     else:
+        contents = None
+
+    if contents is None:
         # Create skeleton from PDF files so we have sections to fill into
         contents = _create_skeleton_from_pdfs(data_dir)
         if not contents:
@@ -265,7 +274,11 @@ def fill_resources(data_dir):
     # Preserve any resources already present in contents.json.
     section_map = {}
     for item in contents.get("contents", []):
-        sec = item["section"]
+        sec = item.get("section")
+        if not sec:
+            print(f"  [warn] Skipping contents entry with missing 'section': {item}")
+            continue
+        sec = str(sec)
         section_map[sec] = {
             "en": list(item.get("en", {}).get("resources", [])),
             "tc": list(item.get("tc", {}).get("resources", [])),
@@ -276,31 +289,39 @@ def fill_resources(data_dir):
     skeleton = _create_skeleton_from_pdfs(data_dir)
     if skeleton:
         for item in skeleton.get("contents", []):
-            sec = item["section"]
+            sec = item.get("section")
+            if not sec:
+                continue
+            sec = str(sec)
             if sec not in section_map:
                 section_map[sec] = {"en": [], "tc": []}
                 contents["contents"].append(item)
                 print(f"  Added new section {sec} from PDFs")
 
     # Read resource files from {data_dir}/{lang}/resources/resource*.json
+    any_resources_found = False
     for lang in ("en", "tc"):
         resources_dir = os.path.join(data_dir, lang, "resources")
         if not os.path.isdir(resources_dir):
-            print(f"  [skip] {resources_dir} — not found")
+            # Not an error — many books simply have no resource folder yet
             continue
 
         pattern = os.path.join(resources_dir, "resource*.json")
         resource_files = sorted(glob.glob(pattern))
 
         if not resource_files:
-            print(f"  [skip] {resources_dir} — no resource*.json files")
             continue
 
+        any_resources_found = True
         print(f"\n  Reading {len(resource_files)} resource file(s) from {resources_dir}/")
 
         for filepath in resource_files:
-            with open(filepath, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, IOError) as e:
+                print(f"  [warn] Failed to read {filepath}: {e}")
+                continue
 
             for content_item in data.get("contents", []):
                 # Process both en and tc from each file (some files have both)
@@ -324,7 +345,10 @@ def fill_resources(data_dir):
 
     # Write back to contents.json
     for item in contents["contents"]:
-        sec = item["section"]
+        sec = item.get("section")
+        if not sec:
+            continue
+        sec = str(sec)
         if sec in section_map:
             if "en" not in item:
                 item["en"] = {}
@@ -353,6 +377,12 @@ def fill_resources(data_dir):
         print(f"    Section {sec}: {en_n:3d} EN, {tc_n:3d} TC")
 
     print(f"    Total:       {total_en:3d} EN, {total_tc:3d} TC")
+
+    if not any_resources_found and total_en == 0 and total_tc == 0:
+        print(f"  [info] No resource files found for this book.")
+        print(f"  [info] To add resources, place resource*.json files in:")
+        print(f"  [info]   {os.path.join(data_dir, 'en', 'resources')}/")
+        print(f"  [info]   {os.path.join(data_dir, 'tc', 'resources')}/")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -403,11 +433,14 @@ def fix_urls(data_dir):
 
     total = 0
     for section in data.get("contents", []):
+        sec = section.get("section")
+        if not sec:
+            continue
         for lang in ("en", "tc"):
             resources = section.get(lang, {}).get("resources", [])
             n = fix_urls_in_resources(resources)
             if n:
-                print(f"    section {section['section']} {lang}: fixed {n} URL(s)")
+                print(f"    section {sec} {lang}: fixed {n} URL(s)")
             total += n
 
     with open(contents_path, "w", encoding="utf-8") as f:
@@ -527,14 +560,6 @@ def extract_text_from_ett_result(result):
     return text.strip() if isinstance(text, str) else ""
 
 
-def extract_text_with_tesseract(image_path):
-    result = subprocess.run(
-        ["tesseract", image_path, "stdout", "--psm", "6"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return result.stdout.strip()
 
 
 def parse_contents_entries(text):
@@ -590,16 +615,11 @@ def fill_section_names_from_contents_png(data_dir, base_dir):
         if extracted_text:
             print("  ETT extracted section names from contents.png")
         else:
-            print("  ETT returned no usable text; falling back to Tesseract OCR")
-    else:
-        print("  [skip] AIGATEWAY_APIKEY not configured; using Tesseract OCR")
-
-    if not extracted_text:
-        try:
-            extracted_text = extract_text_with_tesseract(image_path)
-        except subprocess.CalledProcessError as err:
-            print(f"  [skip] Tesseract OCR failed for {image_path}: {err}")
+            print("  [skip] ETT returned no usable text for contents.png")
             return
+    else:
+        print("  [skip] AIGATEWAY_APIKEY not configured; cannot extract section names")
+        return
 
     entries = parse_contents_entries(extracted_text)
     if not entries:
@@ -610,6 +630,8 @@ def fill_section_names_from_contents_png(data_dir, base_dir):
     missing = []
     for item in contents.get("contents", []):
         section = str(item.get("section", "")).strip()
+        if not section:
+            continue
         title = entries.get(section)
         if title is None:
             missing.append(section)
@@ -691,7 +713,9 @@ def download_mp3s(data_dir):
     total_errors = 0
 
     for section in data.get("contents", []):
-        sec = section["section"]
+        sec = section.get("section")
+        if not sec:
+            continue
         for lang in ("en", "tc"):
             resources = section.get(lang, {}).get("resources", [])
             for res in resources:

@@ -881,19 +881,72 @@ button, input, select {
   object-fit: contain;
 }
 
-.zoom-indicator {
-  min-width: 54px;
+.zoom-label {
+  min-width: 42px;
   text-align: center;
   font-weight: 700;
+  font-size: 0.78rem;
   color: #12324a;
 }
 
-.page-indicator {
-  min-width: 36px;
-  text-align: center;
-  font-weight: 700;
-  color: #12324a;
-  font-size: 0.875rem;
+.zoom-slider {
+  width: 80px;
+  height: 4px;
+  accent-color: #667eea;
+  cursor: pointer;
+  background: transparent;
+}
+
+.zoom-slider::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: #d7e0e8;
+}
+
+.zoom-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #667eea;
+  margin-top: -5px;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+}
+
+.zoom-slider::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: #d7e0e8;
+  border: none;
+}
+
+.zoom-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #667eea;
+  border: none;
+  cursor: pointer;
+}
+
+/* ── Annotation toggle button ───────────────── */
+.annotation-toggle-btn {
+  background: #f4f9fc !important;
+  border: 1.5px solid #d7e0e8 !important;
+}
+
+.annotation-toggle-btn.active {
+  background: #667eea !important;
+  border-color: #667eea !important;
+}
+
+.annotation-toggle-btn.active svg {
+  fill: #ffffff !important;
+}
+
+.annotation-toggle-btn svg {
+  fill: #5a6b7d !important;
 }
 
 .toggle-row {
@@ -937,9 +990,9 @@ button, input, select {
 
 .annotation-panel {
   display: flex;
+  flex-direction: column;
   flex-wrap: nowrap;
-  align-items: center;
-  gap: 10px;
+  gap: 6px;
   padding: 10px 14px;
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.97);
@@ -949,15 +1002,18 @@ button, input, select {
   position: fixed;
   z-index: 100;
   overflow: visible;
-  white-space: nowrap;
   user-select: none;
   max-width: calc(100vw - 32px);
-  opacity: 0.7;
+  opacity: 0.9;
 }
 
 .annotation-panel.dragging {
   cursor: grabbing;
   box-shadow: 0 14px 40px rgba(0, 0, 0, 0.22), 0 4px 12px rgba(0, 0, 0, 0.12);
+}
+
+.annotation-row {
+  margin-top: 0;
 }
 
 .panel-drag-handle {
@@ -988,14 +1044,34 @@ button, input, select {
   height: 16px;
 }
 
-.panel-scroll-area {
+.panel-row-1 {
   display: flex;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 10px;
-  overflow-x: auto;
+  gap: 6px;
   flex: 1 1 auto;
   min-width: 0;
-  flex-wrap: wrap;
+}
+
+.panel-row-2 {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex: 1 1 100%;
+  width: 100%;
+  min-width: 0;
+  padding-top: 8px;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.toolbar-secondary {
+  margin-left: auto;
+}
+
+.annotation-row {
+  margin-top: 0;
 }
 
 .panel-close-btn {
@@ -1083,7 +1159,7 @@ button, input, select {
 
 .annotation-panel .annotation-toggle-btn {
   width: auto;
-  padding: 10px 14px;
+  /* padding: 10px 14px; */
   gap: 8px;
 }
 
@@ -1409,26 +1485,6 @@ button, input, select {
 }
 
 @media (max-width: 960px) {
-  .app-shell {
-    grid-template-columns: 1fr;
-  }
-
-  .sidebar {
-    position: relative;
-    width: 100%;
-    height: auto;
-    max-height: 35vh;
-    border-right: 0;
-    border-bottom: 1px solid #d7e0e8;
-  }
-
-  .sidebar.collapsed {
-    width: 100%;
-    height: auto;
-    max-height: none;
-    padding: 12px 14px;
-  }
-
   .book-stage.scrolling {
     grid-template-columns: 1fr;
   }
@@ -1699,6 +1755,38 @@ button, input, select {
   height: 18px;
   fill: none;
   stroke: #667eea;
+}
+
+/* ── Summary ───────────────────────────────────────────── */
+
+.ai-summary {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ai-summary li {
+  position: relative;
+  padding: 10px 14px 10px 32px;
+  background: #f0f4ff;
+  border-radius: 8px;
+  font-size: 0.92rem;
+  line-height: 1.55;
+  color: #2d3748;
+  border-left: 3px solid #667eea;
+}
+
+.ai-summary li::before {
+  content: '•';
+  position: absolute;
+  left: 12px;
+  color: #667eea;
+  font-weight: 700;
+  font-size: 1.2rem;
+  line-height: 1.4;
 }
 
 /* ── Flash Cards ───────────────────────────────────────── */
