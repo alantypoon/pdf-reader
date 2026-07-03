@@ -24,6 +24,11 @@ button, input, select {
   align-items: start;
 }
 
+.app-shell.scrolling-mode {
+  height: 100vh;
+  overflow: hidden;
+}
+
 .sidebar {
   position: sticky;
   top: 0;
@@ -35,6 +40,10 @@ button, input, select {
   transition: border-color 160ms ease;
   overflow-y: auto;
   overflow-x: hidden;
+}
+
+.sidebar.scroll-locked {
+  overflow-y: hidden;
 }
 
 .sidebar.collapsed {
@@ -453,13 +462,50 @@ button, input, select {
 
 .autocomplete-input {
   width: 100%;
-  padding: 10px 12px 10px 36px;
+  padding: 10px 44px 10px 36px;
   border: 1px solid #c9d7e3;
   border-radius: 14px;
   background: white;
   font-size: 0.92rem;
   outline: none;
   transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.autocomplete-toggle-btn {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #7b95ac;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, transform 120ms ease;
+}
+
+.autocomplete-toggle-btn:hover {
+  background: #eef5fb;
+  color: #2f6f9f;
+}
+
+.autocomplete-toggle-btn.open {
+  color: #2f6f9f;
+}
+
+.autocomplete-toggle-btn.open svg {
+  transform: rotate(180deg);
+}
+
+.autocomplete-toggle-btn svg {
+  width: 16px;
+  height: 16px;
+  transition: transform 120ms ease;
 }
 
 .autocomplete-input:focus {
@@ -557,6 +603,10 @@ button, input, select {
   grid-template-rows: 1fr;
 }
 
+.app-shell.scrolling-mode .reader {
+  overflow: hidden;
+}
+
 .page-frame {
   position: relative;
   min-height: 70vh;
@@ -591,7 +641,7 @@ button, input, select {
 
 .book-stage.pagination {
   grid-template-columns: 1fr;
-  height: calc(100dvh - 48px);
+  height: calc(100dvh - 48px - var(--bottom-toolbar-offset, 0px));
   min-height: 0;
 }
 
@@ -608,6 +658,13 @@ button, input, select {
 
 .book-stage.scrolling {
   grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  height: calc(100dvh - 48px - var(--bottom-toolbar-offset, 0px));
+  min-height: 0;
+  overflow: hidden;
+}
+
+.book-stage.scrolling > .page-card {
+  min-height: 0;
 }
 
 .book-stage.pagination .page-card {
@@ -1007,6 +1064,31 @@ button, input, select {
   opacity: 0.9;
 }
 
+.annotation-panel.docked-bottom {
+  left: 0 !important;
+  right: 0 !important;
+  top: auto !important;
+  bottom: 0 !important;
+  width: 100vw;
+  max-width: none;
+  border-radius: 16px 16px 0 0;
+  border-left: 0;
+  border-right: 0;
+  border-bottom: 0;
+  padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+  opacity: 0.98;
+}
+
+.annotation-panel.docked-bottom .panel-drag-handle {
+  display: none;
+}
+
+.annotation-panel.docked-bottom .panel-row-1,
+.annotation-panel.docked-bottom .panel-row-2 {
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
 .annotation-panel.dragging {
   cursor: grabbing;
   box-shadow: 0 14px 40px rgba(0, 0, 0, 0.22), 0 4px 12px rgba(0, 0, 0, 0.12);
@@ -1048,6 +1130,7 @@ button, input, select {
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   flex: 1 1 auto;
   min-width: 0;
@@ -1057,7 +1140,7 @@ button, input, select {
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: center;
   gap: 6px;
   flex: 1 1 100%;
   width: 100%;
@@ -1067,7 +1150,7 @@ button, input, select {
 }
 
 .toolbar-secondary {
-  margin-left: auto;
+  margin-left: 0;
 }
 
 .annotation-row {
@@ -1521,6 +1604,47 @@ button, input, select {
 
 .ai-generate-btn svg {
   fill: #ffffff !important;
+}
+
+.ai-generated-tick {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.45);
+}
+
+.ai-generated-tick svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: #ffffff;
+  stroke-width: 2.4;
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+}
+
+.ai-generated-tick-collapsed {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 14px;
+  height: 14px;
+  margin-left: 0;
+  background: #16a34a;
+  border: 1px solid #15803d;
+}
+
+.ai-generated-tick-collapsed svg {
+  width: 10px;
+  height: 10px;
+  stroke: #ffffff;
+  stroke-width: 2.2;
 }
 
 .ai-drawer {

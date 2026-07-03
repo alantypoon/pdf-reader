@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Swal from 'sweetalert2';
+import BookAutocomplete from './BookAutocomplete';
 import PdfPane from './PdfPane';
 import SectionAutocomplete from './SectionAutocomplete';
 import { t, uiLang } from './i18n';
@@ -30,6 +31,19 @@ function getSectionResources(section, language) {
   const value = section?.[language];
   if (!value || typeof value === 'string') return [];
   return value.resources || [];
+}
+
+function hasRenderableSource(source) {
+  if (Array.isArray(source)) return source.length > 0;
+  return typeof source === 'string' && source.trim().length > 0;
+}
+
+function getSubjectLabel(subjectId) {
+  const normalized = String(subjectId || '').trim().toLowerCase();
+  if (normalized === 'biology-oup') return 'Biology';
+  if (normalized === 'chemistry-winter') return 'Chemistry';
+  if (normalized === 'physics-oup') return 'Physics';
+  return String(subjectId || '').trim();
 }
 
 function getUserId() {
@@ -111,6 +125,7 @@ function App() {
   const [structure, setStructure] = useState([]);
   const [dataBooks, setDataBooks] = useState([]);
   const [activeBookId, setActiveBookId] = useState('');
+  const [physicsChapterCatalog, setPhysicsChapterCatalog] = useState(null);
   const [selectedBook, setSelectedBook] = useState(savedPrefs.selectedBook || '');
   const [selectedChapter, setSelectedChapter] = useState(savedPrefs.selectedChapter || '1a');
   const [selectedFile, setSelectedFile] = useState(Number(savedPrefs.selectedFile || 1));
@@ -131,7 +146,9 @@ function App() {
   const [redoStack, setRedoStack] = useState([]);
   const [thumbCols, setThumbCols] = useState(Number(savedPrefs.thumbCols || 4));
   const [zoomLevel, setZoomLevel] = useState(Number(savedPrefs.zoomLevel || 1));
-  const [fitMode, setFitMode] = useState('auto');
+  const [fitMode, setFitMode] = useState(
+    savedPrefs.fitMode === 'height' ? 'height' : 'width'
+  );
   const [renderScaleByLanguage, setRenderScaleByLanguage] = useState({});
   const [pageCounts, setPageCounts] = useState({});
   const [modalInfo, setModalInfo] = useState(null);
@@ -145,11 +162,17 @@ function App() {
   const [mcqAnswers, setMcqAnswers] = useState({});
   const [aiDebug, setAiDebug] = useState(null);
   const [panelVisible, setPanelVisible] = useState(savedPrefs.panelVisible !== false);
+  const [panelReservedHeight, setPanelReservedHeight] = useState(0);
+  const [fitRefreshToken, setFitRefreshToken] = useState(0);
   const [panelPos, setPanelPos] = useState(() => {
     const saved = savedPrefs.panelPos;
     return (saved && typeof saved.x === 'number' && typeof saved.y === 'number')
       ? saved
       : { x: undefined, y: undefined };
+  });
+  const [isNarrowScreen, setIsNarrowScreen] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.matchMedia('(max-width: 960px)').matches;
   });
   const panelRef = useRef(null);
   const dragRef = useRef({ dragging: false, startX: 0, startY: 0, posX: 0, posY: 0 });
@@ -172,6 +195,10 @@ function App() {
     setFitMode((current) => (current === 'width' ? 'height' : 'width'));
     setZoomLevel(1);
   };
+
+  const refreshFitForCurrentMode = useCallback(() => {
+    setFitRefreshToken((current) => current + 1);
+  }, []);
 
   const preferredAiDrawerLanguage = useMemo(() => {
     return selectedLanguage === 'tc' ? 'zh' : 'en';
@@ -245,6 +272,20 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (selectedBook !== 'physics-oup' || physicsChapterCatalog) return;
+    const loadPhysicsChapters = async () => {
+      try {
+        const data = await fetchJson('/pdf-reader/data/physics-oup/physics-chapters.json');
+        setPhysicsChapterCatalog(data || {});
+      } catch (err) {
+        console.error('[physics-chapters] failed to load:', err);
+        setPhysicsChapterCatalog({});
+      }
+    };
+    loadPhysicsChapters();
+  }, [selectedBook, physicsChapterCatalog]);
+
+  useEffect(() => {
     const loadSessionUser = async () => {
       try {
         const data = await fetchJson('api/session-user');
@@ -294,10 +335,53 @@ function App() {
     [structure, selectedChapter]
   );
 
+  const handleBookSelect = async (newBookId) => {
+    setSelectedChapter(newBookId);
+    const newChapter = structure.find((chapter) => chapter.id === newBookId);
+    const firstSection = newChapter?.contents?.[0];
+    const firstPage = firstSection ? Number(firstSection.page || firstSection.section) : 1;
+    setSelectedFile(firstPage);
+    setSelectedPage(1);
+  };
+
   const currentSection = useMemo(
     () => currentChapter?.contents?.find((item) => Number(item.page || item.section) === Number(selectedFile)),
     [currentChapter, selectedFile]
   );
+
+  const physicsBookChapterMeta = useMemo(() => {
+    if (selectedBook !== 'physics-oup' || !physicsChapterCatalog) return null;
+    return physicsChapterCatalog[String(selectedChapter || '').toLowerCase()] || null;
+  }, [selectedBook, selectedChapter, physicsChapterCatalog]);
+
+  const physicsChapterOptions = useMemo(() => {
+    return (physicsBookChapterMeta?.chapters || []).map((item) => ({
+      ...item,
+      name: item.nameEn || item.nameZh || item.id,
+      nameEn: item.nameEn || item.name || item.id,
+      nameZh: item.nameZh || '',
+    }));
+  }, [physicsBookChapterMeta]);
+
+  const currentPhysicsChapter = useMemo(() => {
+    if (!physicsChapterOptions.length) return null;
+    const page = Math.max(1, Number(selectedPage) || 1);
+    const exact = physicsChapterOptions.find((item) => page >= Number(item.startPage) && page <= Number(item.endPage || item.startPage));
+    if (exact) return exact;
+    const fallback = physicsChapterOptions
+      .filter((item) => page >= Number(item.startPage))
+      .sort((a, b) => Number(a.startPage) - Number(b.startPage))
+      .pop();
+    return fallback || physicsChapterOptions[0];
+  }, [physicsChapterOptions, selectedPage]);
+
+  const handlePhysicsChapterSelect = (chapterId) => {
+    const next = physicsChapterOptions.find((item) => String(item.id) === String(chapterId));
+    if (!next) return;
+    setSelectedPage(Math.max(1, Number(next.startPage) || 1));
+  };
+
+  const sectionOptionsCount = currentChapter?.contents?.length || 0;
 
   useEffect(() => {
     if (!currentChapter?.contents?.length) return;
@@ -312,10 +396,12 @@ function App() {
   useEffect(() => {
     const loadPages = async () => {
       try {
-        const targets = selectedLanguage === 'bilingual' ? ['en', 'tc'] : [selectedLanguage];
+        const targets = selectedLanguage === 'bilingual'
+          ? ['en', 'tc']
+          : [selectedLanguage, selectedLanguage === 'en' ? 'tc' : 'en'];
         const bookParam = selectedBook ? `&book=${encodeURIComponent(selectedBook)}` : '';
         console.log(`[loadPages] chapter=${selectedChapter} file=${selectedFile} languages=${targets.join(',')}`);
-        const entries = await Promise.all(
+        const entries = await Promise.allSettled(
           targets.map(async (language) => {
             const url = `api/page?chapter=${selectedChapter}&language=${language}&page=${selectedFile}${bookParam}`;
             console.log(`[loadPages] fetching: ${url}`);
@@ -325,8 +411,20 @@ function App() {
             return [language, result];
           })
         );
-        console.log(`[loadPages] setting pageSources:`, Object.keys(Object.fromEntries(entries)));
-        setPageSources(Object.fromEntries(entries));
+        const nextSources = {};
+        entries.forEach((entry, index) => {
+          const language = targets[index];
+          if (entry.status !== 'fulfilled') {
+            console.warn(`[loadPages] ${language} unavailable:`, entry.reason?.message || entry.reason);
+            return;
+          }
+          const [resolvedLanguage, source] = entry.value;
+          if (hasRenderableSource(source)) {
+            nextSources[resolvedLanguage] = source;
+          }
+        });
+        console.log(`[loadPages] setting pageSources:`, Object.keys(nextSources));
+        setPageSources(nextSources);
       } catch (err) {
         console.error('[loadPages] failed:', err);
         setPageSources({});
@@ -361,6 +459,7 @@ function App() {
       textColor,
       thumbCols,
       zoomLevel,
+      fitMode,
       panelPos,
       panelVisible
     };
@@ -378,6 +477,7 @@ function App() {
     textColor,
     thumbCols,
     zoomLevel,
+    fitMode,
     panelPos,
     panelVisible
   ]);
@@ -633,6 +733,7 @@ function App() {
 
   // ── Panel drag ─────────────────────────────────────────────
   const handlePanelDragStart = (event) => {
+    if (isNarrowScreen) return;
     if (!panelRef.current) return;
     if (event.pointerType === 'touch' && typeof event.target?.setPointerCapture === 'function') {
       event.target.setPointerCapture(event.pointerId);
@@ -648,8 +749,60 @@ function App() {
   };
 
   useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const mediaQuery = window.matchMedia('(max-width: 960px)');
+    const handleChange = (event) => {
+      setIsNarrowScreen(event.matches);
+    };
+    setIsNarrowScreen(mediaQuery.matches);
+    if (typeof mediaQuery.addEventListener === 'function') {
+      mediaQuery.addEventListener('change', handleChange);
+      return () => mediaQuery.removeEventListener('change', handleChange);
+    }
+    mediaQuery.addListener(handleChange);
+    return () => mediaQuery.removeListener(handleChange);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const onResize = () => {
+      refreshFitForCurrentMode();
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [refreshFitForCurrentMode]);
+
+  useEffect(() => {
+    refreshFitForCurrentMode();
+  }, [sidebarCollapsed, panelVisible, annotationToolsOpen, refreshFitForCurrentMode]);
+
+  useEffect(() => {
+    if (!panelVisible) {
+      setPanelReservedHeight(0);
+      return undefined;
+    }
+    const updatePanelHeight = () => {
+      if (!panelRef.current) {
+        setPanelReservedHeight(0);
+        return;
+      }
+      const rect = panelRef.current.getBoundingClientRect();
+      const offset = isNarrowScreen ? 0 : 16;
+      setPanelReservedHeight(Math.max(0, Math.ceil(rect.height + offset)));
+    };
+    updatePanelHeight();
+    const observer = new ResizeObserver(updatePanelHeight);
+    if (panelRef.current) observer.observe(panelRef.current);
+    window.addEventListener('resize', updatePanelHeight);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', updatePanelHeight);
+    };
+  }, [panelVisible, annotationToolsOpen, isNarrowScreen]);
+
+  useEffect(() => {
     const onMove = (event) => {
-      if (!dragRef.current.dragging) return;
+      if (isNarrowScreen || !dragRef.current.dragging) return;
       const dx = event.clientX - dragRef.current.startX;
       const dy = event.clientY - dragRef.current.startY;
       setPanelPos({
@@ -674,10 +827,19 @@ function App() {
       window.removeEventListener('pointerup', onUp);
       window.removeEventListener('pointercancel', onUp);
     };
-  }, []);
+  }, [isNarrowScreen]);
 
-  const visibleLanguages = selectedLanguage === 'bilingual' ? ['en', 'tc'] : [selectedLanguage];
-  const isBilingualView = selectedLanguage === 'bilingual';
+  const visibleLanguages = useMemo(() => {
+    if (selectedLanguage !== 'bilingual') {
+      if (hasRenderableSource(pageSources[selectedLanguage])) {
+        return [selectedLanguage];
+      }
+      const fallbackLanguage = selectedLanguage === 'en' ? 'tc' : 'en';
+      return hasRenderableSource(pageSources[fallbackLanguage]) ? [fallbackLanguage] : [];
+    }
+    return ['en', 'tc'].filter((language) => hasRenderableSource(pageSources[language]));
+  }, [selectedLanguage, pageSources]);
+  const isBilingualView = selectedLanguage === 'bilingual' && visibleLanguages.length > 1;
   const displayZoomPercent = useMemo(() => {
     const scales = visibleLanguages
       .map((language) => renderScaleByLanguage[language])
@@ -750,7 +912,7 @@ function App() {
 
   const fetchCachedAiContent = async () => {
     const data = await fetchJson(
-      `api/ai-content?chapter=${selectedChapter}&section=${selectedFile}&page=${selectedPage}`
+      `api/ai-content?subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&sectionId=${selectedFile}&pageId=${selectedPage}`
     );
     if (data.content && (data.content.en || data.content.zh)) {
       return data.content;
@@ -790,8 +952,16 @@ function App() {
     }
 
     if (forceRegenerate && requireConfirmation && typeof window !== 'undefined') {
-      const confirmed = window.confirm(regenerateConfirmMessage);
-      if (!confirmed) {
+      const result = await Swal.fire({
+        icon: 'warning',
+        text: regenerateConfirmMessage,
+        showCancelButton: true,
+        confirmButtonText: _('confirm'),
+        cancelButtonText: _('cancel'),
+        reverseButtons: true,
+        focusCancel: true,
+      });
+      if (!result.isConfirmed) {
         return;
       }
     }
@@ -842,10 +1012,10 @@ function App() {
 
       const endpointUrl = 'api/ai-generate';
       const requestBody = {
-        book: selectedBook,
-        chapter: selectedChapter,
-        section: selectedFile,
-        page: selectedPage,
+        subjectId: selectedBook,
+        bookId: selectedChapter,
+        sectionId: selectedFile,
+        pageId: selectedPage,
         sectionName: sectionName || '',
         userId,
         force: forceRegenerate ? '1' : undefined,
@@ -951,6 +1121,10 @@ function App() {
     return !!(aiContent?.en && aiContent?.zh);
   }, [aiContent]);
 
+  const aiGenerationPresent = useMemo(() => {
+    return !!(aiContent?.en || aiContent?.zh);
+  }, [aiContent]);
+
   // ── Escape key closes modal then drawers ───────────────────
   useEffect(() => {
     const onKey = (e) => {
@@ -989,8 +1163,8 @@ function App() {
   }, [modalInfo]);
 
   return (
-    <div className="app-shell">
-      <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
+    <div className={`app-shell ${displayMode === 'scrolling' ? 'scrolling-mode' : ''}`} style={{ '--bottom-toolbar-offset': `${panelReservedHeight}px` }}>
+      <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''} ${displayMode === 'scrolling' ? 'scroll-locked' : ''}`}>
         <div className="sidebar-title-row">
           <h1>
             <svg className="sidebar-logo" viewBox="0 0 24 24" role="presentation" focusable="false">
@@ -1052,12 +1226,12 @@ function App() {
               }
             }}>
               {dataBooks.map((bookId) => (
-                <option key={bookId} value={bookId}>{bookId}</option>
+                <option key={bookId} value={bookId}>{getSubjectLabel(bookId)}</option>
               ))}
             </select>
           ) : (
             <select value={selectedBook} disabled>
-              <option value={selectedBook}>{selectedBook || _('noBook')}</option>
+              <option value={selectedBook}>{selectedBook ? getSubjectLabel(selectedBook) : _('noBook')}</option>
             </select>
           )}
         </label>
@@ -1068,22 +1242,38 @@ function App() {
             </svg>
             {_('chapter')}
           </span>
-          <select value={selectedChapter} onChange={(event) => {
-            const newChapterId = event.target.value;
-            setSelectedChapter(newChapterId);
-            const newChapter = structure.find((c) => c.id === newChapterId);
-            const firstSection = newChapter?.contents?.[0];
-            const firstPage = firstSection ? Number(firstSection.page || firstSection.section) : 1;
-            setSelectedFile(firstPage);
-            setSelectedPage(1);
-          }}>
-            {structure.map((chapter) => (
-              <option key={chapter.id} value={chapter.id}>{chapter.name || chapter.id}</option>
-            ))}
-          </select>
+          <BookAutocomplete
+            books={structure}
+            currentBook={currentChapter}
+            language={selectedLanguage}
+            subjectId={selectedBook}
+            onSelect={handleBookSelect}
+            placeholder={_('searchBookTopic')}
+            emptyText={_('noMatchingBooks')}
+          />
         </label>
 
-        {!sidebarCollapsed && (
+        {!sidebarCollapsed && selectedBook === 'physics-oup' && physicsChapterOptions.length > 0 && (
+          <label>
+            <span className="sidebar-label-icon">
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                <path d="M4 5h16v2H4V5zm0 6h16v2H4v-2zm0 6h10v2H4v-2z" />
+              </svg>
+              {_('physicsChapter')}
+            </span>
+            <BookAutocomplete
+              books={physicsChapterOptions}
+              currentBook={currentPhysicsChapter}
+              language={selectedLanguage}
+              subjectId="physics-oup"
+              onSelect={handlePhysicsChapterSelect}
+              placeholder={_('searchChapter')}
+              emptyText={_('noMatchingChapters')}
+            />
+          </label>
+        )}
+
+        {!sidebarCollapsed && sectionOptionsCount > 1 && (
           <label>
             <span className="sidebar-label-icon">
               <svg viewBox="0 0 24 24" role="presentation" focusable="false">
@@ -1280,6 +1470,22 @@ function App() {
                 <path d="M5 6h9v2H5V6zm2 4h5v2H7v-2zm7.5 0h2.4L20 18h-2.1l-.7-2h-3l-.7 2h-2.1l3.2-8zm.2 4h1.7l-.8-2.3-.9 2.3z" />
               </svg>
             </button>
+            {displayMode === 'scrolling' && (
+              <button
+                className="sidebar-icon-btn"
+                onClick={fitScreen}
+                data-tooltip={fitButtonTitle}
+                aria-label={fitButtonTitle}
+              >
+                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                  {fitButtonMode === 'height' ? (
+                    <path d="M12 3l3.5 3.5-1.4 1.4-1.1-1.1V17.2l1.1-1.1 1.4 1.4L12 21l-3.5-3.5 1.4-1.4 1.1 1.1V6.8L9.9 7.9 8.5 6.5 12 3zM5 5h3v2H7v10h1v2H5V5zm11 0h3v14h-3v-2h1V7h-1V5z" />
+                  ) : (
+                    <path d="M3 12l3.5-3.5 1.4 1.4-1.1 1.1h10.4l-1.1-1.1 1.4-1.4L21 12l-3.5 3.5-1.4-1.4 1.1-1.1H6.8l1.1 1.1-1.4 1.4L3 12zM5 5h14v3h-2V7H7v1H5V5zm0 11h2v1h10v-1h2v3H5v-3z" />
+                  )}
+                </svg>
+              </button>
+            )}
             <button
               className={`sidebar-icon-btn ${resourcesDrawerOpen ? 'active' : ''}`}
               onClick={() => setResourcesDrawerOpen((current) => !current)}
@@ -1312,6 +1518,13 @@ function App() {
               <svg viewBox="0 0 24 24" role="presentation" focusable="false">
                 <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" />
               </svg>
+              {aiGenerationPresent && (
+                <span className="ai-generated-tick ai-generated-tick-collapsed" aria-hidden="true">
+                  <svg viewBox="0 0 20 20" role="presentation" focusable="false">
+                    <path d="M3 10.5l4.1 4.1L17 4.8" />
+                  </svg>
+                </span>
+              )}
             </button>
 
           </div>
@@ -1347,6 +1560,26 @@ function App() {
           </label>
         )}
 
+        {!sidebarCollapsed && displayMode === 'scrolling' && (
+          <label className="toggle-row">
+            <button
+              className="toggle-btn icon-only"
+              onClick={fitScreen}
+              title={fitButtonTitle}
+              aria-label={fitButtonTitle}
+            >
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                {fitButtonMode === 'height' ? (
+                  <path d="M12 3l3.5 3.5-1.4 1.4-1.1-1.1V17.2l1.1-1.1 1.4 1.4L12 21l-3.5-3.5 1.4-1.4 1.1 1.1V6.8L9.9 7.9 8.5 6.5 12 3zM5 5h3v2H7v10h1v2H5V5zm11 0h3v14h-3v-2h1V7h-1V5z" />
+                ) : (
+                  <path d="M3 12l3.5-3.5 1.4 1.4-1.1 1.1h10.4l-1.1-1.1 1.4-1.4L21 12l-3.5 3.5-1.4-1.4 1.1-1.1H6.8l1.1 1.1-1.4 1.4L3 12zM5 5h14v3h-2V7H7v1H5V5zm0 11h2v1h10v-1h2v3H5v-3z" />
+                )}
+              </svg>
+              {fitButtonTitle}
+            </button>
+          </label>
+        )}
+
         {!sidebarCollapsed && (
           <label className="toggle-row">
             <button
@@ -1357,6 +1590,13 @@ function App() {
                 <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" />
               </svg>
               {aiLoading ? _('generating') : _('aiGeneration')}
+              {aiGenerationPresent && (
+                <span className="ai-generated-tick" aria-hidden="true">
+                  <svg viewBox="0 0 20 20" role="presentation" focusable="false">
+                    <path d="M3 10.5l4.1 4.1L17 4.8" />
+                  </svg>
+                </span>
+              )}
             </button>
           </label>
         )}
@@ -1391,6 +1631,7 @@ function App() {
                 syncId={language}
                 zoom={zoomLevel}
                 fitMode={fitMode}
+                fitRefreshToken={fitRefreshToken}
                 onRenderScaleChange={(scale) => {
                   setRenderScaleByLanguage((current) => {
                     if (current[language] === scale) {
@@ -1470,14 +1711,16 @@ function App() {
 
         {panelVisible && (
         <section
-          className="annotation-panel"
+          className={`annotation-panel ${isNarrowScreen ? 'docked-bottom' : ''}`}
           ref={panelRef}
-          style={{
-            left: panelPos.x != null ? `${panelPos.x}px` : undefined,
-            top: panelPos.y != null ? `${panelPos.y}px` : undefined,
-            right: panelPos.x == null ? '16px' : undefined,
-            bottom: panelPos.y == null ? '16px' : undefined
-          }}
+          style={isNarrowScreen
+            ? { left: '0', right: '0', bottom: '0' }
+            : {
+              left: panelPos.x != null ? `${panelPos.x}px` : undefined,
+              top: panelPos.y != null ? `${panelPos.y}px` : undefined,
+              right: panelPos.x == null ? '16px' : undefined,
+              bottom: panelPos.y == null ? '16px' : undefined
+            }}
         >
           <div className="panel-row-1">
           <span
@@ -1705,7 +1948,7 @@ function App() {
                           <line x1="12" y1="7" x2="12" y2="13" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
                           <circle cx="12" cy="16.5" r="0.8" fill="currentColor" />
                         </svg>
-                        Summary
+                        {_('summary')}
                       </h3>
                       <ul className="ai-summary">
                         {aiDisplayContent.summary.map((point, idx) => (

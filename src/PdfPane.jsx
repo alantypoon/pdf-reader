@@ -33,6 +33,7 @@ function PdfPane({
   syncId,
   zoom = 1,
   fitMode = 'auto',
+  fitRefreshToken = 0,
   onRenderScaleChange,
   language = 'en'
 }) {
@@ -190,13 +191,17 @@ function PdfPane({
       if (modeGenRef.current !== gen) return; // mode changed, abort
       const holder = canvasRef.current?.parentElement;
       if (!holder) return;
-      const fitWidth = Math.max(180, holder.clientWidth - 4);
-      const fitHeight = Math.max(180, holder.clientHeight - 4);
+      const sidebarWidth = Math.max(0, document.querySelector('.sidebar')?.getBoundingClientRect().width || 0);
+      const toolbarHeight = Math.max(0, document.querySelector('.annotation-panel')?.getBoundingClientRect().height || 0);
+      const viewportWidthCap = Math.max(180, window.innerWidth - sidebarWidth - 24);
+      const viewportHeightCap = Math.max(180, window.innerHeight - toolbarHeight - 20);
+      const fitWidth = Math.max(180, Math.min(holder.clientWidth - 4, viewportWidthCap));
+      const fitHeight = Math.max(180, Math.min(holder.clientHeight - 4, viewportHeightCap));
       const baseViewport = page.getViewport({ scale: 1 });
       const scaleW = fitWidth / baseViewport.width;
       const scaleH = fitHeight / baseViewport.height;
       const fitScale = fitMode === 'height'
-        ? scaleH
+        ? Math.min(scaleH, scaleW)
         : fitMode === 'width'
           ? scaleW
           : Math.min(scaleW, scaleH);
@@ -227,7 +232,7 @@ function PdfPane({
     };
 
     draw();
-  }, [isImageMode, pdfDoc, currentPage, numPages, mode, onPageChange, zoom, contentWidth, contentHeight, fitMode]);
+  }, [isImageMode, pdfDoc, currentPage, numPages, mode, onPageChange, zoom, contentWidth, contentHeight, fitMode, fitRefreshToken]);
 
   useEffect(() => {
     if (!isImageMode || mode !== 'pagination') return;
@@ -245,7 +250,7 @@ function PdfPane({
     });
 
     return () => cancelAnimationFrame(frame);
-  }, [isImageMode, mode, currentPage, images, zoom, fitMode, contentWidth, contentHeight, imageLoadVersion]);
+  }, [isImageMode, mode, currentPage, images, zoom, fitMode, contentWidth, contentHeight, imageLoadVersion, fitRefreshToken]);
 
   // ── Scrolling mode (PDF) ───────────────────────────────────
   useEffect(() => {

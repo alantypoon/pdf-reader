@@ -20,7 +20,7 @@ Output:
             
     2. Reads all resource files and updates <book>/contents.json by filling resources into the correct section.
 
-            <book>/contents.json e.g. data/biology-oup/1a/contents.json
+            <subject>/<book>/contents.json e.g. data/biology-oup/1a/contents.json
 
             data/biology-oup/1a/en/resources/resource-*.json
             data/biology-oup/1a/tc/resources/resource-*.json
@@ -94,6 +94,132 @@ ELECTIVE_BOOK_NAMES = {
     "e3": "Applied Ecology",
     "e4": "Biotechnology",
 }
+
+CHEMISTRY_BOOK_NAMES = {
+    "1": ("Planet Earth", "地球"),
+    "2": ("Microscopic World I", "微觀世界 I"),
+    "3": ("Metals", "金屬"),
+    "4": ("Acids and Bases", "酸和鹽基"),
+    "5": ("Fossil Fuels and Carbon Compounds", "化石燃料和碳化合物"),
+    "6": ("Microscopic World II", "微觀世界 II"),
+    "7": ("Redox Reactions, Chemical Cells and Electrolysis", "氧化還原反應、化學電池和電解"),
+    "8": ("Chemical Reactions and Energy", "化學反應和能量"),
+    "9": ("Rate of Reaction", "反應速率"),
+    "10": ("Chemical Equilibrium", "化學平衡"),
+    "11": ("Chemistry of Carbon Compounds", "碳化合物的化學"),
+    "12": ("Patterns in the Chemical World", "化學世界中的規律"),
+    "13": ("Industrial Chemistry", "工業化學"),
+    "14": ("Materials Chemistry", "物料化學"),
+    "15": ("Analytical Chemistry", "分析化學"),
+}
+
+PHYSICS_BOOK_NAMES = {
+    "1": ("Heat and Gases", "熱和氣體"),
+    "2": ("Force and Motion", "力和運動"),
+    "3a": ("Wave Motion I", "波動 I"),
+    "3b": ("Wave Motion II", "波動 II"),
+    "4": ("Electricity and Magnetism", "電和磁"),
+    "5": ("Radioactivity and Nuclear Energy", "放射現象和核能"),
+    "e1": ("Astronomy and Space Science", "天文學和航天科學"),
+    "e2": ("Atomic World", "原子世界"),
+    "e3": ("Energy and Use of Energy", "能量和能源的使用"),
+    "e4": ("Medical Physics", "醫學物理學"),
+}
+
+
+def _natural_id_sort_key(value):
+    text = str(value).strip()
+    try:
+        return (0, float(text), text)
+    except ValueError:
+        return (1, 0, text)
+
+
+def _discover_book_dirs(scope_dir):
+    """Return book directory names under a subject dir, or [None] if scope_dir is already a book."""
+    subdirs = sorted(
+        (
+            d for d in os.listdir(scope_dir)
+            if os.path.isdir(os.path.join(scope_dir, d))
+            and os.path.isdir(os.path.join(scope_dir, d, "en"))
+        ),
+        key=_natural_id_sort_key,
+    )
+    return subdirs if subdirs else [None]
+
+
+def _process_scope(scope_dir, scope_label, args, base_dir):
+    """Process either a subject directory containing multiple books or one concrete book directory."""
+    books = _discover_book_dirs(scope_dir)
+
+    for i, book in enumerate(books):
+        if book is not None:
+            book_dir = os.path.join(scope_dir, book)
+            label = f"{scope_label}/{book}"
+        else:
+            book_dir = scope_dir
+            label = scope_label
+
+        if i > 0:
+            print("\n\n")
+
+        print("#" * 60)
+        print(f"  Book: {label}")
+        print("#" * 60)
+
+        # ── Step 1: Split PDFs ──────────────────────────────────────
+        if not args.skip_pdfs:
+            print("\n" + "=" * 60)
+            print("  Step 1 — Splitting PDFs into images")
+            print("=" * 60)
+            split_pdfs(book_dir, args)
+        else:
+            print("[skip] Step 1 — PDF splitting")
+
+        # ── Step 2: Fill resources ──────────────────────────────────
+        if not args.skip_resources:
+            print("\n" + "=" * 60)
+            print("  Step 2 — Filling resources into contents.json")
+            print("=" * 60)
+            fill_resources(book_dir)
+        else:
+            print("[skip] Step 2 — Fill resources")
+
+        # ── Step 3: Fix URLs ────────────────────────────────────────
+        if not args.skip_urls:
+            print("\n" + "=" * 60)
+            print("  Step 3 — Fixing resource URLs")
+            print("=" * 60)
+            fix_urls(book_dir)
+        else:
+            print("[skip] Step 3 — Fix URLs")
+
+        # ── Step 4: Extract section names ──────────────────────────
+        if not args.skip_section_names:
+            print("\n" + "=" * 60)
+            print("  Step 4 — Extracting English section names from contents.png")
+            print("=" * 60)
+            fill_section_names_from_contents_png(book_dir, base_dir)
+        else:
+            print("[skip] Step 4 — Extract section names")
+
+        # ── Step 5: Add root book/topic names ─────────────────────
+        if not args.skip_book_names:
+            print("\n" + "=" * 60)
+            print("  Step 5 — Adding root book/topic names")
+            print("=" * 60)
+            add_root_book_name(book_dir)
+        else:
+            print("[skip] Step 5 — Add root book/topic names")
+
+        # ── Step 6: Download MP3s ─────────────────────────────────
+        if not args.skip_mp3s:
+            print("\n" + "=" * 60)
+            print("  Step 6 — Downloading MP3 resources")
+            print("=" * 60)
+            download_mp3s(book_dir)
+        else:
+            print("[skip] Step 6 — Download MP3s")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -248,6 +374,7 @@ def _create_skeleton_from_pdfs(data_dir):
 def fill_resources(data_dir):
     """Read resource-*.json files and merge them into contents.json."""
     contents_path = os.path.join(data_dir, "contents.json")
+    book_section_id = os.path.basename(os.path.normpath(data_dir))
 
     if os.path.exists(contents_path):
         try:
@@ -329,10 +456,23 @@ def fill_resources(data_dir):
                     resources = content_item.get(res_lang, {}).get("resources", [])
                     for res in resources:
                         page = res.get("page", "")
-                        if not page or "-" not in str(page):
+                        if not page:
                             continue
 
-                        section_num = str(page).split("-")[0]
+                        page_str = str(page).strip()
+                        if not page_str:
+                            continue
+
+                        # If page has no hyphen (e.g. "1"), treat it as a
+                        # whole-book resource and assign it to the book section id.
+                        # Example: physics-oup/1 -> section "1".
+                        if "-" in page_str:
+                            section_num = page_str.split("-")[0].strip()
+                        else:
+                            section_num = book_section_id
+
+                        if not section_num:
+                            continue
                         if section_num not in section_map:
                             continue
 
@@ -655,18 +795,35 @@ def fill_section_names_from_contents_png(data_dir, base_dir):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  Step 5 — Add root-level elective book names
+#  Step 5 — Add root-level book/topic names
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def add_elective_book_name(data_dir):
-    """Add a root-level name field for elective books e1-e4."""
+def _resolve_root_book_names(data_dir):
+    subject_id = os.path.basename(os.path.dirname(os.path.normpath(data_dir))).lower()
+    book_id = os.path.basename(os.path.normpath(data_dir)).lower()
+
+    if subject_id == "chemistry-winter":
+        return CHEMISTRY_BOOK_NAMES.get(book_id)
+    if subject_id == "physics-oup":
+        return PHYSICS_BOOK_NAMES.get(book_id)
+    if subject_id == "biology-oup":
+        elective_name = ELECTIVE_BOOK_NAMES.get(book_id)
+        if elective_name:
+            return (elective_name, "")
+    return None
+
+
+def add_root_book_name(data_dir):
+    """Add root-level English/Chinese book names when known."""
     contents_path = os.path.join(data_dir, "contents.json")
     chapter_code = os.path.basename(os.path.normpath(data_dir)).lower()
-    elective_name = ELECTIVE_BOOK_NAMES.get(chapter_code)
+    resolved = _resolve_root_book_names(data_dir)
 
-    if not elective_name:
-        print(f"  [skip] {chapter_code} — not an elective book")
+    if not resolved:
+        print(f"  [skip] {chapter_code} — no configured root book/topic name")
         return
+
+    name_en, name_zh = resolved
 
     if os.path.exists(contents_path):
         with open(contents_path, "r", encoding="utf-8") as f:
@@ -678,17 +835,22 @@ def add_elective_book_name(data_dir):
             return
 
     old_name = data.get("name")
-    data["name"] = elective_name
+    old_name_en = data.get("nameEn")
+    old_name_zh = data.get("nameZh")
+    data["name"] = name_en
+    data["nameEn"] = name_en
+    data["nameZh"] = name_zh
 
     with open(contents_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-    if old_name == elective_name:
-        print(f"  {contents_path} already has elective name: {elective_name}")
+    if old_name == name_en and old_name_en == name_en and old_name_zh == name_zh:
+        print(f"  {contents_path} already has root name: {name_en} / {name_zh}")
     else:
-        print(f"  Set elective book name in {contents_path}")
+        print(f"  Set root book/topic name in {contents_path}")
         print(f"    chapter: {data.get('chapter')}")
-        print(f"    name:    {elective_name}")
+        print(f"    nameEn:  {name_en}")
+        print(f"    nameZh:  {name_zh}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -773,7 +935,8 @@ def main():
     )
     parser.add_argument(
         "chapter_path",
-        help="Relative path under data/, e.g. biology-oup/1a",
+        nargs="?",
+        help="Optional relative subject/book path under data/, e.g. biology-oup/1a. Omit to process all subjects under ./data.",
     )
     parser.add_argument(
         "--dpi",
@@ -810,7 +973,7 @@ def main():
     parser.add_argument(
         "--skip-book-names",
         action="store_true",
-        help="Skip step 5 (add elective book names)",
+        help="Skip step 5 (add root book/topic names)",
     )
     parser.add_argument(
         "--skip-mp3s",
@@ -821,94 +984,37 @@ def main():
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     base_dir = os.path.dirname(script_dir)
-    data_dir = os.path.join(base_dir, "data", args.chapter_path)
+    data_root = os.path.join(base_dir, "data")
 
-    if not os.path.isdir(data_dir):
-        print(f"ERROR: directory not found: {data_dir}", file=sys.stderr)
-        sys.exit(1)
+    if args.chapter_path:
+        data_dir = os.path.join(data_root, args.chapter_path)
+        if not os.path.isdir(data_dir):
+            print(f"ERROR: directory not found: {data_dir}", file=sys.stderr)
+            sys.exit(1)
+        _process_scope(data_dir, args.chapter_path, args, base_dir)
+        print("\nDone.")
+        return
 
-    # Determine if chapter_path points to a parent directory (e.g. biology-oup)
-    # containing multiple books, or to a single book (e.g. biology-oup/1a).
-    # A book directory contains an "en/" (and optionally "tc/") subdirectory.
-    subdirs = sorted(
-        d for d in os.listdir(data_dir)
-        if os.path.isdir(os.path.join(data_dir, d))
-        and os.path.isdir(os.path.join(data_dir, d, "en"))
+    subject_dirs = sorted(
+        (
+            entry.name for entry in os.scandir(data_root)
+            if entry.is_dir()
+        ),
+        key=_natural_id_sort_key,
     )
 
-    if subdirs:
-        books = subdirs
-    else:
-        books = [None]  # single book — data_dir itself is the book
+    if not subject_dirs:
+        print(f"ERROR: no subject directories found under: {data_root}", file=sys.stderr)
+        sys.exit(1)
 
-    for i, book in enumerate(books):
-        if book is not None:
-            book_dir = os.path.join(data_dir, book)
-            label = f"{args.chapter_path}/{book}"
-        else:
-            book_dir = data_dir
-            label = args.chapter_path
-
-        if i > 0:
+    for index, subject_id in enumerate(subject_dirs):
+        if index > 0:
             print("\n\n")
-
-        print("#" * 60)
-        print(f"  Book: {label}")
-        print("#" * 60)
-
-        # ── Step 1: Split PDFs ──────────────────────────────────────
-        if not args.skip_pdfs:
-            print("\n" + "=" * 60)
-            print("  Step 1 — Splitting PDFs into images")
-            print("=" * 60)
-            split_pdfs(book_dir, args)
-        else:
-            print("[skip] Step 1 — PDF splitting")
-
-        # ── Step 2: Fill resources ──────────────────────────────────
-        if not args.skip_resources:
-            print("\n" + "=" * 60)
-            print("  Step 2 — Filling resources into contents.json")
-            print("=" * 60)
-            fill_resources(book_dir)
-        else:
-            print("[skip] Step 2 — Fill resources")
-
-        # ── Step 3: Fix URLs ────────────────────────────────────────
-        if not args.skip_urls:
-            print("\n" + "=" * 60)
-            print("  Step 3 — Fixing resource URLs")
-            print("=" * 60)
-            fix_urls(book_dir)
-        else:
-            print("[skip] Step 3 — Fix URLs")
-
-        # ── Step 4: Extract section names ──────────────────────────
-        if not args.skip_section_names:
-            print("\n" + "=" * 60)
-            print("  Step 4 — Extracting English section names from contents.png")
-            print("=" * 60)
-            fill_section_names_from_contents_png(book_dir, base_dir)
-        else:
-            print("[skip] Step 4 — Extract section names")
-
-        # ── Step 5: Add elective book names ───────────────────────
-        if not args.skip_book_names:
-            print("\n" + "=" * 60)
-            print("  Step 5 — Adding elective book name")
-            print("=" * 60)
-            add_elective_book_name(book_dir)
-        else:
-            print("[skip] Step 5 — Add elective book name")
-
-        # ── Step 6: Download MP3s ──────────────────────────────────
-        if not args.skip_mp3s:
-            print("\n" + "=" * 60)
-            print("  Step 6 — Downloading MP3 resources")
-            print("=" * 60)
-            download_mp3s(book_dir)
-        else:
-            print("[skip] Step 6 — Download MP3s")
+        subject_dir = os.path.join(data_root, subject_id)
+        print("@" * 60)
+        print(f"  Subject: {subject_id}")
+        print("@" * 60)
+        _process_scope(subject_dir, subject_id, args, base_dir)
 
     print("\nDone.")
 

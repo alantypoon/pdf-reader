@@ -1,44 +1,87 @@
 import React, { useMemo, useRef, useState } from 'react';
 
-function SectionAutocomplete({ sections, onSelect, getSectionName, currentSection, language }) {
+function compareNaturalIds(left, right) {
+  const a = String(left || '').trim();
+  const b = String(right || '').trim();
+  const aNum = Number(a);
+  const bNum = Number(b);
+  const aIsNum = a !== '' && Number.isFinite(aNum);
+  const bIsNum = b !== '' && Number.isFinite(bNum);
+
+  if (aIsNum && bIsNum) {
+    if (aNum !== bNum) return aNum - bNum;
+    return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+  }
+  if (aIsNum) return -1;
+  if (bIsNum) return 1;
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+}
+
+function stripLeadingId(label, id) {
+  const text = String(label || '').trim();
+  const normalizedId = String(id || '').trim();
+  if (!text || !normalizedId) return text;
+  const escapedId = normalizedId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return text.replace(new RegExp(`^${escapedId}\\s*[-:]\\s*`, 'i'), '').trim();
+}
+
+function getBookSeparator(subjectId) {
+  return String(subjectId || '').trim().toLowerCase() === 'chemistry-winter' ? ' ' : ' - ';
+}
+
+function getBookPrimaryLabel(item, subjectId, language) {
+  if (!item) return '';
+  const id = String(item.id || '').trim();
+  const normalizedSubjectId = String(subjectId || '').trim().toLowerCase();
+  if (normalizedSubjectId === 'biology-oup') {
+    return id.toUpperCase();
+  }
+  const fallbackName = stripLeadingId(item.name, id);
+  const nameEn = stripLeadingId(item.nameEn, id) || fallbackName;
+  const nameZh = stripLeadingId(item.nameZh, id);
+  const separator = getBookSeparator(subjectId);
+
+  let label = '';
+  if (language === 'bilingual') {
+    label = nameEn || nameZh;
+  } else if (language === 'tc') {
+    label = nameZh || nameEn;
+  } else {
+    label = nameEn || nameZh;
+  }
+
+  if (id && label) {
+    return `${id}${separator}${label}`;
+  }
+  return label || id.toUpperCase();
+}
+
+function BookAutocomplete({ books, onSelect, currentBook, language, subjectId, placeholder, emptyText }) {
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
   const [highlightIndex, setHighlightIndex] = useState(0);
   const inputRef = useRef(null);
-  const listRef = useRef(null);
 
   const filtered = useMemo(() => {
-    if (!query.trim()) return sections || [];
+    const sortedBooks = [...(books || [])].sort((a, b) => compareNaturalIds(a.id, b.id));
+    if (!query.trim()) return sortedBooks;
     const lower = query.toLowerCase();
-    return (sections || []).filter((item) => {
-      const en = (getSectionName(item, 'en') || '').toLowerCase();
-      const tc = (getSectionName(item, 'tc') || '').toLowerCase();
-      const sec = String(item.section || '').toLowerCase();
-      return en.includes(lower) || tc.includes(lower) || sec.includes(lower);
+    return sortedBooks.filter((item) => {
+      const id = String(item.id || '').toLowerCase();
+      const nameEn = String(item.nameEn || item.name || '').toLowerCase();
+      const nameZh = String(item.nameZh || '').toLowerCase();
+      return id.includes(lower) || nameEn.includes(lower) || nameZh.includes(lower);
     });
-  }, [query, sections, getSectionName]);
+  }, [query, books]);
 
-  const currentSectionName = useMemo(() => {
-    if (!currentSection || !language) return '';
-    const sectionId = String(currentSection.section || currentSection.page || '').trim();
-    let sectionLabel = '';
-    if (language === 'bilingual') {
-      const en = getSectionName(currentSection, 'en');
-      const tc = getSectionName(currentSection, 'tc');
-      sectionLabel = [en, tc].filter(Boolean).join(' / ') || '';
-    } else {
-      sectionLabel = getSectionName(currentSection, language) || '';
-    }
-    if (sectionId && sectionLabel) {
-      return `${sectionId} - ${sectionLabel}`;
-    }
-    return sectionLabel || sectionId;
-  }, [currentSection, language, getSectionName]);
+  const currentBookName = useMemo(() => {
+    return getBookPrimaryLabel(currentBook, subjectId, language);
+  }, [currentBook, subjectId, language]);
 
-  const placeholder = query ? 'Search section…' : (currentSectionName || 'Search section…');
+  const resolvedPlaceholder = query ? placeholder : (currentBookName || placeholder);
 
   const handleSelect = (item) => {
-    onSelect(Number(item.page || item.section));
+    onSelect(String(item.id || ''));
     setQuery('');
     setOpen(false);
     setHighlightIndex(0);
@@ -98,7 +141,6 @@ function SectionAutocomplete({ sections, onSelect, getSectionName, currentSectio
   };
 
   const handleBlur = () => {
-    // Delay close so click on item registers first
     setTimeout(() => setOpen(false), 180);
   };
 
@@ -113,7 +155,7 @@ function SectionAutocomplete({ sections, onSelect, getSectionName, currentSectio
           ref={inputRef}
           type="text"
           className="autocomplete-input"
-          placeholder={placeholder}
+          placeholder={resolvedPlaceholder}
           value={query}
           onChange={(event) => {
             setQuery(event.target.value);
@@ -131,7 +173,7 @@ function SectionAutocomplete({ sections, onSelect, getSectionName, currentSectio
           type="button"
           className={`autocomplete-toggle-btn ${open ? 'open' : ''}`}
           onMouseDown={handleToggleOpen}
-          aria-label="Toggle section list"
+          aria-label="Toggle book list"
           tabIndex={-1}
         >
           <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -141,10 +183,10 @@ function SectionAutocomplete({ sections, onSelect, getSectionName, currentSectio
       </div>
 
       {open && filtered.length > 0 && (
-        <ul className="autocomplete-list" ref={listRef} role="listbox">
+        <ul className="autocomplete-list" role="listbox">
           {filtered.map((item, index) => (
             <li
-              key={item.section}
+              key={item.id}
               className={`autocomplete-item ${index === highlightIndex ? 'highlighted' : ''}`}
               role="option"
               aria-selected={index === highlightIndex}
@@ -154,10 +196,9 @@ function SectionAutocomplete({ sections, onSelect, getSectionName, currentSectio
               }}
               onMouseEnter={() => setHighlightIndex(index)}
             >
-              <span className="autocomplete-section-badge">{item.section}</span>
               <div className="autocomplete-names">
-                <strong>{getSectionName(item, 'en')}</strong>
-                <small>{getSectionName(item, 'tc')}</small>
+                <strong>{getBookPrimaryLabel(item, subjectId, language)}</strong>
+                <small>{stripLeadingId(item.nameZh || '', item.id)}</small>
               </div>
             </li>
           ))}
@@ -165,10 +206,10 @@ function SectionAutocomplete({ sections, onSelect, getSectionName, currentSectio
       )}
 
       {open && query && filtered.length === 0 && (
-        <div className="autocomplete-empty">No matching sections</div>
+        <div className="autocomplete-empty">{emptyText}</div>
       )}
     </div>
   );
 }
 
-export default SectionAutocomplete;
+export default BookAutocomplete;

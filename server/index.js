@@ -30,6 +30,102 @@ let mongoClient;
 let aiGenerations;
 let userActions;
 
+function normalizeStringId(value, fallback = '') {
+  return String(value != null ? value : fallback).trim();
+}
+
+function normalizeNumberId(value) {
+  return Number(value);
+}
+
+function buildAiIdentity({ subjectId, bookId, sectionId, pageId }) {
+  const identity = {
+    subjectId: normalizeStringId(subjectId, DEFAULT_BOOK),
+    bookId: normalizeStringId(bookId),
+    sectionId: normalizeNumberId(sectionId),
+  };
+  if (pageId != null) {
+    identity.pageId = normalizeNumberId(pageId);
+  }
+  return identity;
+}
+
+function buildLegacyAiIdentity({ bookId, sectionId, pageId }) {
+  const identity = {
+    subjectId: { $exists: false },
+    bookId: normalizeStringId(bookId),
+    sectionId: normalizeNumberId(sectionId),
+  };
+  if (pageId != null) {
+    identity.pageId = normalizeNumberId(pageId);
+  }
+  return identity;
+}
+
+function parseAiRequestIdentity(source, { includePage = true } = {}) {
+  const subjectId = source?.subjectId ?? source?.subject ?? source?.book ?? DEFAULT_BOOK;
+  const bookId = source?.bookId ?? source?.chapter;
+  const sectionId = source?.sectionId ?? source?.section;
+  const pageId = includePage ? (source?.pageId ?? source?.page) : undefined;
+  return buildAiIdentity({ subjectId, bookId, sectionId, pageId });
+}
+
+async function buildBookSubjectIndex() {
+  const index = new Map();
+  const subjectEntries = await fs.readdir(DATA_PATH, { withFileTypes: true });
+  for (const subjectEntry of subjectEntries) {
+    if (!subjectEntry.isDirectory()) continue;
+    const subjectId = subjectEntry.name;
+    const subjectDir = path.join(DATA_PATH, subjectId);
+    let bookEntries = [];
+    try {
+      bookEntries = await fs.readdir(subjectDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const bookEntry of bookEntries) {
+      if (!bookEntry.isDirectory()) continue;
+      const bucket = index.get(bookEntry.name) || new Set();
+      bucket.add(subjectId);
+      index.set(bookEntry.name, bucket);
+    }
+  }
+  return index;
+}
+
+async function migrateAiGenerationSubjectIds() {
+  if (!aiGenerations) return;
+  const bookSubjectIndex = await buildBookSubjectIndex();
+  const docs = await aiGenerations.find({ subjectId: { $exists: false }, bookId: { $type: 'string' } }).toArray();
+  let migrated = 0;
+  let unresolved = 0;
+  for (const doc of docs) {
+    const matches = [...(bookSubjectIndex.get(String(doc.bookId || '')) || [])];
+    if (matches.length !== 1) {
+      unresolved += 1;
+      continue;
+    }
+    await aiGenerations.updateOne({ _id: doc._id }, { $set: { subjectId: matches[0] } });
+    migrated += 1;
+  }
+  if (migrated || unresolved) {
+    console.log(`[mongo] ai-generations subjectId migration: migrated=${migrated} unresolved=${unresolved}`);
+  }
+}
+
+async function findAiGenerationDocument(identity) {
+  if (!aiGenerations) return null;
+  let doc = await aiGenerations.findOne(identity, { sort: { updatedAt: -1 } });
+  if (doc) return doc;
+  const legacyQuery = buildLegacyAiIdentity(identity);
+  doc = await aiGenerations.findOne(legacyQuery, { sort: { updatedAt: -1 } });
+  if (doc) {
+    await aiGenerations.updateOne({ _id: doc._id }, { $set: { subjectId: identity.subjectId } });
+    doc.subjectId = identity.subjectId;
+  }
+  return doc;
+}
+
 async function connectMongo() {
   try {
     mongoClient = new MongoClient(MONGO_URI);
@@ -37,6 +133,15 @@ async function connectMongo() {
     const db = mongoClient.db('pdf-reader');
     aiGenerations = db.collection('ai-generations');
     userActions = db.collection('user-actions');
+    await migrateAiGenerationSubjectIds();
+    await aiGenerations.createIndex(
+      { subjectId: 1, bookId: 1, sectionId: 1, pageId: 1 },
+      { unique: true, name: 'ai_generations_identity_unique' }
+    );
+    await aiGenerations.createIndex(
+      { subjectId: 1, bookId: 1, sectionId: 1, updatedAt: -1 },
+      { name: 'ai_generations_lookup' }
+    );
     console.log('[mongo] connected to', MONGO_URI.replace(/\/\/.*@/, '//<credentials>@'));
   } catch (err) {
     console.warn('[mongo] connection failed, AI content persistence disabled:', err.message);
@@ -205,6 +310,30 @@ function formatBookLabel(bookId, bookName) {
   return normalizedName ? `${upperId} - ${normalizedName}` : upperId;
 }
 
+function getBookNamesFromContents(contents = {}) {
+  const nameEn = typeof contents.nameEn === 'string' && contents.nameEn.trim()
+    ? contents.nameEn.trim()
+    : (typeof contents.name === 'string' ? contents.name.trim() : '');
+  const nameZh = typeof contents.nameZh === 'string' ? contents.nameZh.trim() : '';
+  return { nameEn, nameZh };
+}
+
+function compareNaturalIds(left, right) {
+  const a = String(left || '').trim();
+  const b = String(right || '').trim();
+  const aNum = Number(a);
+  const bNum = Number(b);
+  const aIsNum = a !== '' && Number.isFinite(aNum);
+  const bIsNum = b !== '' && Number.isFinite(bNum);
+  if (aIsNum && bIsNum) {
+    if (aNum !== bNum) return aNum - bNum;
+    return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+  }
+  if (aIsNum) return -1;
+  if (bIsNum) return 1;
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+}
+
 app.get('/api/session-user', (request, response) => {
   response.json({ userId: getAuthenticatedUserId(request) });
 });
@@ -269,8 +398,9 @@ app.get('/api/catalog', asyncRoute(async (request, response) => {
   const books = dataFolders
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
-    .sort((a, b) => a.localeCompare(b));
-  const folders = await fs.readdir(dataRoot, { withFileTypes: true });
+    .sort(compareNaturalIds);
+  const folders = (await fs.readdir(dataRoot, { withFileTypes: true }))
+    .sort((a, b) => compareNaturalIds(a.name, b.name));
   console.log('[catalog] folders found:', folders.map(f => f.name));
   const chapters = await Promise.all(
     folders
@@ -281,9 +411,12 @@ app.get('/api/catalog', asyncRoute(async (request, response) => {
         const contents = await readJSON(contentsPath, { contents: [] });
         const sections = (contents.contents || []).length;
         console.log(`[catalog]   ${entry.name}: ${sections} sections`);
+        const { nameEn, nameZh } = getBookNamesFromContents(contents);
         return {
           id: entry.name,
-          name: formatBookLabel(entry.name, contents.name),
+          name: formatBookLabel(entry.name, nameEn || nameZh),
+          nameEn,
+          nameZh,
           contents: contents.contents || []
         };
       })
@@ -874,16 +1007,13 @@ async function translateGeneratedContent(chapter, sectionName, page, targetLangu
 }
 
 /** Save generated content for a language into the shared ai-generations document */
-async function saveAiContent(chapter, sectionNum, page, language, content, userId) {
+async function saveAiContent(subjectId, bookId, sectionNum, page, language, content, userId) {
   if (!aiGenerations) return;
   const langField = language === 'tc' ? 'zh' : 'en';
   const now = new Date().toISOString();
+  const identity = buildAiIdentity({ subjectId, bookId, sectionId: sectionNum, pageId: page });
   await aiGenerations.updateOne(
-    {
-      bookId: String(chapter),
-      sectionId: Number(sectionNum),
-      pageId: Number(page),
-    },
+    identity,
     {
       $set: {
         [langField]: content,
@@ -891,22 +1021,20 @@ async function saveAiContent(chapter, sectionNum, page, language, content, userI
         updatedAt: now,
         ...(userId ? { user: String(userId) } : {}),
       },
-      $setOnInsert: { createdAt: now, bookId: String(chapter), sectionId: Number(sectionNum), pageId: Number(page) },
+      $setOnInsert: { createdAt: now, ...identity },
     },
     { upsert: true }
   );
   console.log(`[ai-generate] ${language}: saved to ai-generations (field=${langField})`);
 }
 
-async function saveAlignedBilingualAiContent(chapter, sectionNum, page, enContent, zhContent, userId) {
+async function saveAlignedBilingualAiContent(subjectId, bookId, sectionNum, page, enContent, zhContent, userId) {
   if (!aiGenerations) return;
   const now = new Date().toISOString();
-  const identity = {
-    bookId: String(chapter),
-    sectionId: Number(sectionNum),
-    pageId: Number(page),
-  };
-  await aiGenerations.deleteMany(identity);
+  const identity = buildAiIdentity({ subjectId, bookId, sectionId: sectionNum, pageId: page });
+  await aiGenerations.deleteMany({
+    $or: [identity, buildLegacyAiIdentity(identity)],
+  });
   await aiGenerations.insertOne({
     ...identity,
     en: enContent,
@@ -921,13 +1049,8 @@ async function saveAlignedBilingualAiContent(chapter, sectionNum, page, enConten
   console.log('[ai-generate] saved aligned bilingual content to ai-generations');
 }
 
-async function getAiContentDocument(chapter, sectionNum, page) {
-  if (!aiGenerations) return null;
-  return aiGenerations.findOne({
-    bookId: String(chapter),
-    sectionId: Number(sectionNum),
-    pageId: Number(page),
-  });
+async function getAiContentDocument(subjectId, bookId, sectionNum, page) {
+  return findAiGenerationDocument(buildAiIdentity({ subjectId, bookId, sectionId: sectionNum, pageId: page }));
 }
 
 function hasStoredAiContent(doc) {
@@ -935,13 +1058,8 @@ function hasStoredAiContent(doc) {
 }
 
 /** Check DB for existing generated content for a language */
-async function getCachedAiContent(chapter, sectionNum, page, language) {
-  if (!aiGenerations) return null;
-  const doc = await aiGenerations.findOne({
-    bookId: String(chapter),
-    sectionId: Number(sectionNum),
-    pageId: Number(page),
-  });
+async function getCachedAiContent(subjectId, bookId, sectionNum, page, language) {
+  const doc = await findAiGenerationDocument(buildAiIdentity({ subjectId, bookId, sectionId: sectionNum, pageId: page }));
   if (!doc) return null;
   const langField = language === 'tc' ? 'zh' : 'en';
   return doc[langField] || null;
@@ -949,17 +1067,20 @@ async function getCachedAiContent(chapter, sectionNum, page, language) {
 
 app.post('/api/ai-generate', async (request, response) => {
   try {
-    const { chapter, section: sectionNum, page, sectionName, userId } = request.body;
-    const requestedBook = request.body.book || DEFAULT_BOOK;
-    const dataRoot = getDataRoot(requestedBook);
+    const identity = parseAiRequestIdentity(request.body);
+    const { subjectId, bookId, sectionId: sectionNum, pageId: page } = identity;
+    const sectionName = request.body.sectionName;
+    const userId = request.body.userId;
+    const dataRoot = getDataRoot(subjectId);
     const isTestMode = request.body.test === true || request.body.test === '1';
     const forceRegenerate = request.body.force === true || request.body.force === '1';
-    console.log(`[ai-generate] book=${requestedBook} chapter=${chapter} section=${sectionNum} page=${page} (both en + tc)`);
+    console.log(`[ai-generate] subject=${subjectId} book=${bookId} section=${sectionNum} page=${page} (both en + tc)`);
     const debugInfo = {
       request: {
-        chapter,
-        section: sectionNum,
-        page,
+        subjectId,
+        bookId,
+        sectionId: sectionNum,
+        pageId: page,
         sectionName,
         userId,
         test: request.body.test,
@@ -977,7 +1098,7 @@ app.post('/api/ai-generate', async (request, response) => {
 
     const results = {};
 
-    const cachedDoc = await getAiContentDocument(chapter, sectionNum, page);
+    const cachedDoc = await getAiContentDocument(subjectId, bookId, sectionNum, page);
     if (!forceRegenerate && hasStoredAiContent(cachedDoc)) {
       console.log('[ai-generate] using cached ai content from database');
       results.en = cachedDoc.en;
@@ -985,7 +1106,7 @@ app.post('/api/ai-generate', async (request, response) => {
       debugInfo.cache = 'existing-document-hit';
     } else {
       try {
-        const english = await generateForLanguage(dataRoot, chapter, sectionNum, page, 'en', sectionName);
+        const english = await generateForLanguage(dataRoot, bookId, sectionNum, page, 'en', sectionName);
         results.en = english.content;
         debugInfo.extractionRaw.en = english.debug?.extractionRaw || '';
         debugInfo.generationRaw.en = english.debug?.generationRaw || '';
@@ -993,7 +1114,7 @@ app.post('/api/ai-generate', async (request, response) => {
 
         let chineseReference = { extractedText: '', debug: { extractionRaw: '[no chinese reference text]', extractionMethod: 'not-used' } };
         try {
-          chineseReference = await extractPageText(dataRoot, chapter, sectionNum, page, 'tc');
+          chineseReference = await extractPageText(dataRoot, bookId, sectionNum, page, 'tc');
         } catch (err) {
           console.warn('[ai-generate] tc: reference extraction failed, continuing with translation only');
           chineseReference = {
@@ -1007,7 +1128,7 @@ app.post('/api/ai-generate', async (request, response) => {
         }
 
         const chinese = await translateGeneratedContent(
-          chapter,
+          bookId,
           sectionName,
           page,
           'tc',
@@ -1020,7 +1141,7 @@ app.post('/api/ai-generate', async (request, response) => {
         debugInfo.generationRaw.tc = chinese.debug?.generationRaw || '';
         debugInfo.extractionMethod.tc = chinese.debug?.extractionMethod || 'not-used';
 
-        await saveAlignedBilingualAiContent(chapter, sectionNum, page, english.content, chinese.content, userId);
+        await saveAlignedBilingualAiContent(subjectId, bookId, sectionNum, page, english.content, chinese.content, userId);
       } catch (err) {
         console.error('[ai-generate] aligned generation failed —', err.message);
         results.en = results.en || { error: err.message };
@@ -1045,7 +1166,7 @@ app.post('/api/ai-generate', async (request, response) => {
         generationRaw: formatLanguageDebug(debugInfo.generationRaw),
         extractionMethod: debugInfo.extractionMethod,
         errors: debugInfo.errors,
-        chapter, section: sectionNum, page,
+        subjectId, bookId, sectionId: sectionNum, pageId: page,
         languages: {
           en: !!(results.en && !results.en.error),
           zh: !!(results.tc && !results.tc.error),
@@ -1063,18 +1184,12 @@ app.post('/api/ai-generate', async (request, response) => {
 
 app.get('/api/ai-content', async (request, response) => {
   try {
-    const { chapter, section, page, language } = request.query;
+    const identity = parseAiRequestIdentity(request.query, { includePage: request.query.pageId != null || request.query.page != null });
+    const { language } = request.query;
     if (!aiGenerations) {
       return response.json({ content: null });
     }
-    const query = {
-      bookId: String(chapter),
-      sectionId: Number(section),
-    };
-    if (page != null) {
-      query.pageId = Number(page);
-    }
-    const doc = await aiGenerations.findOne(query, { sort: { updatedAt: -1 } });
+    const doc = await findAiGenerationDocument(identity);
     if (!doc) {
       return response.json({ content: null });
     }
@@ -1093,19 +1208,15 @@ app.get('/api/ai-content', async (request, response) => {
 
 app.post('/api/ai-content', async (request, response) => {
   try {
-    const { userId, chapter, section, page, language, content } = request.body;
+    const { userId, language, content } = request.body;
+    const identity = parseAiRequestIdentity(request.body);
     if (!aiGenerations) {
       return response.status(500).json({ error: 'MongoDB not connected' });
     }
     const langField = language === 'tc' ? 'zh' : 'en';
     const now = new Date().toISOString();
-    const identity = {
-      bookId: String(chapter),
-      sectionId: Number(section),
-      pageId: Number(page),
-    };
-    const existing = await aiGenerations.findOne(identity);
-    await aiGenerations.deleteMany(identity);
+    const existing = await findAiGenerationDocument(identity);
+    await aiGenerations.deleteMany({ $or: [identity, buildLegacyAiIdentity(identity)] });
     await aiGenerations.insertOne({
       ...identity,
       en: langField === 'en' ? content : existing?.en || null,
@@ -1126,14 +1237,11 @@ app.post('/api/ai-content', async (request, response) => {
 
 app.delete('/api/ai-content', async (request, response) => {
   try {
-    const { chapter, section } = request.query;
+    const identity = parseAiRequestIdentity(request.query, { includePage: false });
     if (!aiGenerations) {
       return response.status(500).json({ error: 'MongoDB not connected' });
     }
-    await aiGenerations.deleteOne({
-      bookId: String(chapter),
-      sectionId: Number(section),
-    });
+    await aiGenerations.deleteMany({ $or: [identity, buildLegacyAiIdentity(identity)] });
     response.json({ ok: true });
   } catch (err) {
     console.error('[ai-content] DELETE error:', err);

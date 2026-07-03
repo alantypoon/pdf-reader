@@ -114,17 +114,43 @@ def _to_section_id(raw):
     raise ValueError(f'Cannot convert section ID to number: {raw!r}')
 
 
-def content_exists(book_id, section_id, page_id):
+def _build_ai_identity(subject_id, book_id, section_id, page_id):
+    return {
+        'subjectId': str(subject_id),
+        'bookId': str(book_id),
+        'sectionId': _to_section_id(section_id),
+        'pageId': int(page_id),
+    }
+
+
+def _build_legacy_ai_identity(book_id, section_id, page_id):
+    return {
+        'subjectId': {'$exists': False},
+        'bookId': str(book_id),
+        'sectionId': _to_section_id(section_id),
+        'pageId': int(page_id),
+    }
+
+
+def _find_ai_doc(subject_id, book_id, section_id, page_id):
+    coll = _get_collection()
+    identity = _build_ai_identity(subject_id, book_id, section_id, page_id)
+    doc = coll.find_one(identity)
+    if doc:
+        return doc
+    legacy = coll.find_one(_build_legacy_ai_identity(book_id, section_id, page_id))
+    if legacy:
+        coll.update_one({'_id': legacy['_id']}, {'$set': {'subjectId': str(subject_id)}})
+        legacy['subjectId'] = str(subject_id)
+    return legacy
+
+
+def content_exists(subject_id, book_id, section_id, page_id):
     """Return True if a complete bilingual document already exists for this page.
 
     A complete record must have en+zh with flashcards+mcq in both languages.
     """
-    coll = _get_collection()
-    doc = coll.find_one({
-        'bookId': str(book_id),
-        'sectionId': _to_section_id(section_id),
-        'pageId': int(page_id),
-    })
+    doc = _find_ai_doc(subject_id, book_id, section_id, page_id)
     if not doc:
         return False
 
@@ -186,16 +212,12 @@ def _normalize_generated_content(content):
     return normalized
 
 
-def save_content(book_id, section_id, page_id, en_content, zh_content, user=DEFAULT_USER):
+def save_content(subject_id, book_id, section_id, page_id, en_content, zh_content, user=DEFAULT_USER):
     """Upsert bilingual content into MongoDB matching the exact schema."""
     coll = _get_collection()
     now = datetime.now(timezone.utc).isoformat()
-    identity = {
-        'bookId': str(book_id),
-        'sectionId': _to_section_id(section_id),
-        'pageId': int(page_id),
-    }
-    coll.delete_many(identity)
+    identity = _build_ai_identity(subject_id, book_id, section_id, page_id)
+    coll.delete_many({'$or': [identity, _build_legacy_ai_identity(book_id, section_id, page_id)]})
     coll.insert_one({
         **identity,
         'en': _normalize_generated_content(en_content),
@@ -631,7 +653,7 @@ def generate_for_page(subject, book, section_num, page_num, section_name, force=
     """
     label = f'{subject}/{book}/{section_num}/{page_num}'
 
-    if not force and content_exists(book, section_num, page_num):
+    if not force and content_exists(subject, book, section_num, page_num):
         return 'skipped'
 
     print(f'  [{label}] Extracting English text …')
@@ -660,7 +682,7 @@ def generate_for_page(subject, book, section_num, page_num, section_name, force=
     if 'raw' in zh_result:
         print(f'  [{label}]   ⚠  Chinese translation returned unparsed raw content')
 
-    save_content(book, section_num, page_num, en_result, zh_result)
+    save_content(subject, book, section_num, page_num, en_result, zh_result)
     print(f'  [{label}] ✓  Saved to MongoDB')
     return 'generated'
 
@@ -897,7 +919,7 @@ def main():
                         total_pages += 1
                         label = f'{subj}/{bk}/{sec_num}/{pg}'
 
-                        if content_exists(bk, sec_num, pg) and not args.force:
+                        if content_exists(subj, bk, sec_num, pg) and not args.force:
                             total_skipped += 1
                             print(f'    [skip] {label}  — {sec_name[:50]} (already in DB)')
                             continue
