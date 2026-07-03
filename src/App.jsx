@@ -3,6 +3,7 @@ import Swal from 'sweetalert2';
 import BookAutocomplete from './BookAutocomplete';
 import PdfPane from './PdfPane';
 import SectionAutocomplete from './SectionAutocomplete';
+import StepperSelect from './StepperSelect';
 import { t, uiLang } from './i18n';
 
 const PREFERENCES_KEY = 'pdfReaderPreferences';
@@ -123,12 +124,15 @@ function App() {
   const drawingRef = useRef(false);
   const currentStrokeRef = useRef(null);
   const displayModeInitializedRef = useRef(false);
-  const initialSubjectRestoreRef = useRef(false);
+  const initialSubjectRestoreRef = useRef('');
+  const restoringUserSelectsRef = useRef(false);
   const [structure, setStructure] = useState([]);
   const [dataBooks, setDataBooks] = useState([]);
   const [activeBookId, setActiveBookId] = useState('');
   const [physicsChapterCatalog, setPhysicsChapterCatalog] = useState(null);
   const [subjectSelections, setSubjectSelections] = useState({});
+  const [lastSubjectId, setLastSubjectId] = useState('');
+  const [sessionUserResolved, setSessionUserResolved] = useState(false);
   const [userSelectsLoaded, setUserSelectsLoaded] = useState(false);
   const [selectedBook, setSelectedBook] = useState('');
   const [selectedChapter, setSelectedChapter] = useState('');
@@ -253,23 +257,30 @@ function App() {
 
   useEffect(() => {
     const loadUserSelects = async () => {
+      if (!sessionUserResolved) {
+        return;
+      }
       if (!userId) {
         setUserSelectsLoaded(true);
         return;
       }
       try {
         const data = await fetchJson(`api/user-selects?userId=${encodeURIComponent(userId)}`);
+        setLastSubjectId(typeof data.lastSubjectId === 'string' ? data.lastSubjectId : '');
         setSubjectSelections(data.selections && typeof data.selections === 'object' ? data.selections : {});
       } catch (err) {
         console.error('[user-selects] failed to load:', err);
+        setLastSubjectId('');
         setSubjectSelections({});
       } finally {
         setUserSelectsLoaded(true);
       }
     };
+    initialSubjectRestoreRef.current = '';
+    restoringUserSelectsRef.current = false;
     setUserSelectsLoaded(false);
     loadUserSelects();
-  }, [userId]);
+  }, [sessionUserResolved, userId]);
 
   const applyBookSelection = useCallback((chapters, nextBookId, options = {}) => {
     const { preferredSectionId, preferredPageId, preferredPhysicsChapterId } = options;
@@ -298,8 +309,9 @@ function App() {
   }, [applyBookSelection, subjectSelections]);
 
   useEffect(() => {
-    if (!userSelectsLoaded || initialSubjectRestoreRef.current) return;
-    initialSubjectRestoreRef.current = true;
+    if (!sessionUserResolved || !userSelectsLoaded || !userId || initialSubjectRestoreRef.current === userId) return;
+    initialSubjectRestoreRef.current = userId;
+    restoringUserSelectsRef.current = true;
     const loadCatalog = async (book) => {
       try {
         const bookParam = book ? `?book=${encodeURIComponent(book)}` : '';
@@ -308,9 +320,7 @@ function App() {
         setDataBooks(Array.isArray(data.books) ? data.books : []);
         const bookId = typeof data.activeBookId === 'string' ? data.activeBookId : '';
         setActiveBookId(bookId);
-        if (!book) {
-          setSelectedBook(bookId);
-        }
+        setSelectedBook(book || bookId);
         setStructure(chapters);
         if (chapters.length) {
           applySubjectSelection(book || bookId, chapters, bookId);
@@ -325,15 +335,15 @@ function App() {
         setDataBooks([]);
         setActiveBookId('');
         setStructure([]);
+      } finally {
+        restoringUserSelectsRef.current = false;
       }
     };
 
     const storedSubjectId = typeof savedPrefs.selectedBook === 'string' ? savedPrefs.selectedBook : '';
-    const rememberedSubjectId = Object.keys(subjectSelections).length > 0
-      ? (storedSubjectId || '')
-      : storedSubjectId;
+    const rememberedSubjectId = lastSubjectId || storedSubjectId || '';
     loadCatalog(rememberedSubjectId);
-  }, [applySubjectSelection, savedPrefs.selectedBook, subjectSelections, userSelectsLoaded]);
+  }, [applySubjectSelection, lastSubjectId, savedPrefs.selectedBook, sessionUserResolved, userId, userSelectsLoaded]);
 
   useEffect(() => {
     if (selectedBook !== 'physics-oup' || physicsChapterCatalog) return;
@@ -358,6 +368,8 @@ function App() {
         }
       } catch (err) {
         console.error('[session-user] failed to load:', err);
+      } finally {
+        setSessionUserResolved(true);
       }
     };
 
@@ -456,13 +468,17 @@ function App() {
     if (explicit && page === Number(explicit.startPage || 1)) {
       return explicit;
     }
-    const exact = physicsChapterOptions.find((item) => page >= Number(item.startPage) && page <= Number(item.endPage || item.startPage));
-    if (exact) return exact;
-    const fallback = physicsChapterOptions
-      .filter((item) => page >= Number(item.startPage))
-      .sort((a, b) => Number(a.startPage) - Number(b.startPage))
-      .pop();
-    return fallback || physicsChapterOptions[0];
+    const sorted = [...physicsChapterOptions].sort((a, b) => Number(a.startPage) - Number(b.startPage));
+    for (let index = 0; index < sorted.length; index += 1) {
+      const current = sorted[index];
+      const next = sorted[index + 1];
+      const currentStart = Number(current.startPage || 1);
+      const nextStart = Number(next?.startPage || Number.POSITIVE_INFINITY);
+      if (page >= currentStart && page < nextStart) {
+        return current;
+      }
+    }
+    return sorted[sorted.length - 1] || sorted[0] || null;
   }, [physicsChapterOptions, selectedPage, selectedPhysicsChapterId]);
 
   const currentSectionHeaderId = useMemo(() => {
@@ -504,6 +520,102 @@ function App() {
     setSelectedPhysicsChapterId(String(next.id));
     setSelectedPage(Math.max(1, Number(next.startPage) || 1));
   };
+
+  const subjectOptions = useMemo(() => (
+    (dataBooks || []).map((bookId) => ({
+      id: bookId,
+      label: getSubjectLabel(bookId, selectedLanguage),
+    }))
+  ), [dataBooks, selectedLanguage]);
+
+  const currentSubjectIndex = useMemo(
+    () => subjectOptions.findIndex((item) => String(item.id) === String(selectedBook)),
+    [subjectOptions, selectedBook]
+  );
+
+  const stepSubject = async (direction) => {
+    if (!subjectOptions.length) return;
+    const currentIndex = currentSubjectIndex >= 0 ? currentSubjectIndex : 0;
+    const nextIndex = Math.max(0, Math.min(subjectOptions.length - 1, currentIndex + direction));
+    if (nextIndex === currentIndex) return;
+    const newBook = String(subjectOptions[nextIndex].id);
+    setSelectedBook(newBook);
+    setLastSubjectId(newBook);
+    setSelectedChapter('');
+    setSelectedFile(1);
+    setSelectedPage(1);
+    setSelectedPhysicsChapterId('');
+    try {
+      const data = await fetchJson(`api/catalog?book=${encodeURIComponent(newBook)}`);
+      const chapters = data.chapters || [];
+      setDataBooks(Array.isArray(data.books) ? data.books : []);
+      setActiveBookId(typeof data.activeBookId === 'string' ? data.activeBookId : newBook);
+      setStructure(chapters);
+      if (chapters.length) {
+        applySubjectSelection(newBook, chapters, newBook);
+      } else {
+        setSelectedChapter('');
+        setSelectedFile(1);
+        setSelectedPage(1);
+        setSelectedPhysicsChapterId('');
+      }
+    } catch (err) {
+      console.error('[catalog] failed to step subject:', newBook, err);
+    }
+  };
+
+  const currentBookIndex = useMemo(
+    () => bookAutocompleteOptions.findIndex((item) => String(item.id) === String(selectedChapter)),
+    [bookAutocompleteOptions, selectedChapter]
+  );
+
+  const stepBook = (direction) => {
+    if (!bookAutocompleteOptions.length) return;
+    const currentIndex = currentBookIndex >= 0 ? currentBookIndex : 0;
+    const nextIndex = Math.max(0, Math.min(bookAutocompleteOptions.length - 1, currentIndex + direction));
+    if (nextIndex === currentIndex) return;
+    handleBookSelect(String(bookAutocompleteOptions[nextIndex].id));
+  };
+
+  const currentPhysicsChapterIndex = useMemo(
+    () => physicsChapterOptions.findIndex((item) => String(item.id) === String(currentPhysicsChapter?.id || selectedPhysicsChapterId)),
+    [physicsChapterOptions, currentPhysicsChapter, selectedPhysicsChapterId]
+  );
+
+  const stepPhysicsChapter = (direction) => {
+    if (!physicsChapterOptions.length) return;
+    const currentIndex = currentPhysicsChapterIndex >= 0 ? currentPhysicsChapterIndex : 0;
+    const nextIndex = Math.max(0, Math.min(physicsChapterOptions.length - 1, currentIndex + direction));
+    if (nextIndex === currentIndex) return;
+    handlePhysicsChapterSelect(String(physicsChapterOptions[nextIndex].id));
+  };
+
+  const pageSelectOptions = useMemo(() => (
+    pageOptions.map((page) => ({ id: page, label: String(page) }))
+  ), [pageOptions]);
+
+  const currentPageIndex = useMemo(
+    () => pageOptions.findIndex((page) => Number(page) === Number(selectedPage)),
+    [pageOptions, selectedPage]
+  );
+
+  const sectionSelectOptions = useMemo(() => (
+    (currentChapter?.contents || []).map((item) => {
+      const id = Number(item.page || item.section);
+      const en = getSectionName(item, 'en');
+      const tc = getSectionName(item, 'tc');
+      const label = selectedLanguage === 'tc'
+        ? `${id} - ${tc || en || id}`
+        : `${id} - ${en || tc || id}`;
+      const secondary = selectedLanguage === 'tc' ? (en || '') : (tc || '');
+      return { id, label, secondary };
+    })
+  ), [currentChapter, selectedLanguage]);
+
+  const currentSectionIndex = useMemo(
+    () => sectionSelectOptions.findIndex((item) => Number(item.id) === Number(selectedFile)),
+    [sectionSelectOptions, selectedFile]
+  );
 
   const sectionOptionsCount = currentChapter?.contents?.length || 0;
 
@@ -591,7 +703,7 @@ function App() {
   }, [selectedBook, selectedChapter, selectedFile, selectedPage, selectedPhysicsChapterId]);
 
   useEffect(() => {
-    if (!userSelectsLoaded || !userId || !selectedBook) return;
+    if (!sessionUserResolved || !userSelectsLoaded || !userId || !selectedBook || restoringUserSelectsRef.current) return;
     const timer = window.setTimeout(() => {
       fetchJson('api/user-selects', {
         method: 'POST',
@@ -610,7 +722,7 @@ function App() {
       });
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [userId, userSelectsLoaded, selectedBook, selectedChapter, selectedFile, selectedPage, selectedPhysicsChapterId]);
+  }, [sessionUserResolved, userId, userSelectsLoaded, selectedBook, selectedChapter, selectedFile, selectedPage, selectedPhysicsChapterId]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1348,7 +1460,19 @@ function App() {
             aria-label={sidebarCollapsed ? _('expandSidebar') : _('collapseSidebar')}
             title={sidebarCollapsed ? _('expandSidebar') : _('collapseSidebar')}
           >
-            <span aria-hidden="true" className="sidebar-toggle-icon">{sidebarCollapsed ? '>>' : '<<'}</span>
+            <span aria-hidden="true" className="sidebar-toggle-icon">
+              {sidebarCollapsed ? (
+                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                  <path d="M9 7l5 5-5 5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M5 7l5 5-5 5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                  <path d="M15 7l-5 5 5 5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M19 7l-5 5 5 5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              )}
+            </span>
           </button>
         </div>
         {!sidebarCollapsed && (
@@ -1369,60 +1493,39 @@ function App() {
             <svg viewBox="0 0 24 24" role="presentation" focusable="false">
               <path d="M4 5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5zm2 0v14h12V5H6zm2 2h8v2H8V7zm0 4h8v2H8v-2zm0 4h5v2H8v-2z" />
             </svg>
-            {_('book')}
+            {_('subject')}
           </span>
-          {dataBooks.length > 0 ? (
-            <select value={selectedBook} onChange={async (event) => {
-              const newBook = event.target.value;
-              setSelectedBook(newBook);
-              setSelectedChapter('');
-              setSelectedFile(1);
-              setSelectedPage(1);
-              setSelectedPhysicsChapterId('');
-              try {
-                const data = await fetchJson(`api/catalog?book=${encodeURIComponent(newBook)}`);
-                const chapters = data.chapters || [];
-                setDataBooks(Array.isArray(data.books) ? data.books : []);
-                setActiveBookId(typeof data.activeBookId === 'string' ? data.activeBookId : newBook);
-                setStructure(chapters);
-                if (chapters.length) {
-                  applySubjectSelection(newBook, chapters, newBook);
-                } else {
-                  setSelectedChapter('');
-                  setSelectedFile(1);
-                  setSelectedPage(1);
-                  setSelectedPhysicsChapterId('');
-                }
-              } catch (err) {
-                console.error('[catalog] failed to load book:', newBook, err);
-              }
-            }}>
-              {dataBooks.map((bookId) => (
-                <option key={bookId} value={bookId}>{getSubjectLabel(bookId, selectedLanguage)}</option>
-              ))}
-            </select>
-          ) : (
-            <select value={selectedBook} disabled>
-              <option value={selectedBook}>{selectedBook ? getSubjectLabel(selectedBook, selectedLanguage) : _('noBook')}</option>
-            </select>
-          )}
+          <StepperSelect
+            items={subjectOptions}
+            value={selectedBook}
+            onChange={(value) => stepSubject(subjectOptions.findIndex((item) => String(item.id) === String(value)) - currentSubjectIndex)}
+            onPrev={() => stepSubject(-1)}
+            onNext={() => stepSubject(1)}
+            disablePrev={currentSubjectIndex <= 0}
+            disableNext={currentSubjectIndex < 0 || currentSubjectIndex >= subjectOptions.length - 1}
+            placeholder={selectedBook ? getSubjectLabel(selectedBook, selectedLanguage) : _('noBook')}
+          />
         </label>
         <label>
           <span className="sidebar-label-icon">
             <svg viewBox="0 0 24 24" role="presentation" focusable="false">
               <path d="M3 4h18v2H3V4zm0 7h18v2H3v-2zm0 7h18v2H3v-2z" />
             </svg>
-            {_('chapter')}
+            {_('book')}
           </span>
-          <BookAutocomplete
-            books={bookAutocompleteOptions}
-            currentBook={currentChapter}
-            language={selectedLanguage}
-            subjectId={selectedBook}
-            onSelect={handleBookSelect}
-            placeholder={_('searchBookTopic')}
-            emptyText={_('noMatchingBooks')}
-          />
+          <div className="selector-stepper-row">
+            <button type="button" className="selector-stepper-btn" onClick={() => stepBook(-1)} disabled={currentBookIndex <= 0}>-</button>
+            <BookAutocomplete
+              books={bookAutocompleteOptions}
+              currentBook={currentChapter}
+              language={selectedLanguage}
+              subjectId={selectedBook}
+              onSelect={handleBookSelect}
+              placeholder={_('searchBookTopic')}
+              emptyText={_('noMatchingBooks')}
+            />
+            <button type="button" className="selector-stepper-btn" onClick={() => stepBook(1)} disabled={currentBookIndex < 0 || currentBookIndex >= bookAutocompleteOptions.length - 1}>+</button>
+          </div>
         </label>
 
         {!sidebarCollapsed && selectedBook === 'physics-oup' && physicsChapterOptions.length > 0 && (
@@ -1431,17 +1534,21 @@ function App() {
               <svg viewBox="0 0 24 24" role="presentation" focusable="false">
                 <path d="M4 5h16v2H4V5zm0 6h16v2H4v-2zm0 6h10v2H4v-2z" />
               </svg>
-              {_('physicsChapter')}
+              {_('chapter')}
             </span>
-            <BookAutocomplete
-              books={physicsChapterOptions}
-              currentBook={currentPhysicsChapter}
-              language={selectedLanguage}
-              subjectId="physics-oup"
-              onSelect={handlePhysicsChapterSelect}
-              placeholder={_('searchChapter')}
-              emptyText={_('noMatchingChapters')}
-            />
+            <div className="selector-stepper-row">
+              <button type="button" className="selector-stepper-btn" onClick={() => stepPhysicsChapter(-1)} disabled={currentPhysicsChapterIndex <= 0}>-</button>
+              <BookAutocomplete
+                books={physicsChapterOptions}
+                currentBook={currentPhysicsChapter}
+                language={selectedLanguage}
+                subjectId="physics-oup"
+                onSelect={handlePhysicsChapterSelect}
+                placeholder={_('searchChapter')}
+                emptyText={_('noMatchingChapters')}
+              />
+              <button type="button" className="selector-stepper-btn" onClick={() => stepPhysicsChapter(1)} disabled={currentPhysicsChapterIndex < 0 || currentPhysicsChapterIndex >= physicsChapterOptions.length - 1}>+</button>
+            </div>
           </label>
         )}
 
@@ -1453,18 +1560,19 @@ function App() {
               </svg>
               {_('section')}
             </span>
-            <div className="toc">
-            <SectionAutocomplete
-              sections={currentChapter?.contents || []}
-              onSelect={(page) => {
-                setSelectedFile(page);
+            <StepperSelect
+              items={sectionSelectOptions}
+              value={selectedFile}
+              onChange={(value) => {
+                setSelectedFile(Number(value));
                 setSelectedPage(1);
               }}
-              getSectionName={getSectionName}
-              currentSection={currentSection}
-              language={selectedLanguage}
+              onPrev={() => currentSectionIndex > 0 && (() => { setSelectedFile(Number(sectionSelectOptions[currentSectionIndex - 1].id)); setSelectedPage(1); })()}
+              onNext={() => currentSectionIndex >= 0 && currentSectionIndex < sectionSelectOptions.length - 1 && (() => { setSelectedFile(Number(sectionSelectOptions[currentSectionIndex + 1].id)); setSelectedPage(1); })()}
+              disablePrev={currentSectionIndex <= 0}
+              disableNext={currentSectionIndex < 0 || currentSectionIndex >= sectionSelectOptions.length - 1}
+              placeholder={String(selectedFile || 1)}
             />
-          </div>
           </label>
         )}
 
@@ -1479,11 +1587,16 @@ function App() {
               </svg>
               {_('pageN')}
             </span>
-            <select value={selectedPage} onChange={(event) => setSelectedPage(Number(event.target.value))}>
-              {pageOptions.map((page) => (
-                <option key={page} value={page}>{page}</option>
-              ))}
-            </select>
+            <StepperSelect
+              items={pageSelectOptions}
+              value={selectedPage}
+              onChange={(value) => setSelectedPage(Number(value))}
+              onPrev={() => currentPageIndex > 0 && setSelectedPage(Number(pageOptions[currentPageIndex - 1]))}
+              onNext={() => currentPageIndex >= 0 && currentPageIndex < pageOptions.length - 1 && setSelectedPage(Number(pageOptions[currentPageIndex + 1]))}
+              disablePrev={currentPageIndex <= 0}
+              disableNext={currentPageIndex < 0 || currentPageIndex >= pageOptions.length - 1}
+              placeholder={String(selectedPage || 1)}
+            />
           </label>
         )}
 

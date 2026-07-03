@@ -150,9 +150,17 @@ button, input, select {
 }
 
 .sidebar-toggle-icon {
-  font-size: 0.95rem;
-  line-height: 1;
-  letter-spacing: -0.08em;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sidebar-toggle-icon svg {
+  width: 18px;
+  height: 18px;
+  display: block;
 }
 
 .sidebar-toggle:hover {
@@ -461,6 +469,54 @@ button, input, select {
 
 .section-autocomplete {
   position: relative;
+}
+
+.selector-stepper {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) 40px;
+  gap: 8px;
+  align-items: center;
+}
+
+.selector-stepper-row {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) 40px;
+  gap: 8px;
+  align-items: center;
+}
+
+.selector-stepper-main {
+  min-width: 0;
+}
+
+.selector-stepper-btn {
+  width: 40px;
+  height: 40px;
+  border: 1px solid #c9d7e3;
+  border-radius: 12px;
+  background: white;
+  color: #12324a;
+  font-size: 1.1rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.selector-stepper-btn:hover:not(:disabled) {
+  background: #e8f0fe;
+  border-color: #9fb8cc;
+}
+
+.selector-stepper-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.selector-stepper-btn:disabled:hover {
+  background: white;
 }
 
 .autocomplete-input-wrapper {
