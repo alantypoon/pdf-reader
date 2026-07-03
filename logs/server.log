@@ -1333,3 +1333,155 @@ Server running on http://localhost:3001
 [page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/2/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/2/tc/contents/pages
 [page] 448 files in pages/, looking for prefix "2-"
 [page] → returning 448 images (first: /pdf-reader/data/physics-oup/2/tc/contents/pages/2-1.png)
+[page] request: book=physics-oup chapter=3a language=tc page=NaN
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3a/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3a/tc/contents/pages
+[page] 135 files in pages/, looking for prefix "NaN-"
+[page] no images matched prefix "NaN-"
+[page] PDF not found for page: NaN
+[page] request: book=physics-oup chapter=3a language=en page=NaN
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3a/en pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3a/en/contents/pages
+[page] 135 files in pages/, looking for prefix "NaN-"
+[page] no images matched prefix "NaN-"
+[page] PDF not found for page: NaN
+[page] request: book=physics-oup chapter=5 language=en page=5
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/5/en pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/5/en/contents/pages
+[page] 123 files in pages/, looking for prefix "5-"
+[page] → returning 123 images (first: /pdf-reader/data/physics-oup/5/en/contents/pages/5-1.png)
+[page] request: book=physics-oup chapter=5 language=tc page=5
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/5/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/5/tc/contents/pages
+[page] 123 files in pages/, looking for prefix "5-"
+[page] → returning 123 images (first: /pdf-reader/data/physics-oup/5/tc/contents/pages/5-1.png)
+[page] request: book=physics-oup chapter=3a language=en page=NaN
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3a/en pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3a/en/contents/pages
+[page] 135 files in pages/, looking for prefix "NaN-"
+[page] no images matched prefix "NaN-"
+[page] PDF not found for page: NaN
+[page] request: book=physics-oup chapter=3a language=tc page=NaN
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3a/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3a/tc/contents/pages
+[page] 135 files in pages/, looking for prefix "NaN-"
+[page] no images matched prefix "NaN-"
+[page] PDF not found for page: NaN
+[catalog] dataRoot: /var/www/html/devtest/dse/pdf-reader/data/physics-oup
+[catalog] folders found: [
+  '1',
+  '2',
+  '4',
+  '5',
+  '.DS_Store',
+  '3a',
+  '3b',
+  'e3',
+  'e4',
+  'physics-chapters.json'
+]
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/physics-oup/1/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/physics-oup/2/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/physics-oup/4/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/physics-oup/5/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/physics-oup/3a/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/physics-oup/3b/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/physics-oup/e3/contents.json
+[catalog] reading: /var/www/html/devtest/dse/pdf-reader/data/physics-oup/e4/contents.json
+[catalog]   1: 1 sections
+[catalog]   2: 1 sections
+[catalog]   5: 1 sections
+[catalog]   4: 1 sections
+[catalog]   3a: 1 sections
+[catalog]   3b: 1 sections
+[catalog]   e3: 1 sections
+[catalog]   e4: 1 sections
+[catalog] returning 8 chapters
+[page] request: book=physics-oup chapter=3a language=en page=NaN
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3a/en pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3a/en/contents/pages
+[page] 135 files in pages/, looking for prefix "NaN-"
+[page] no images matched prefix "NaN-"
+[page] request: book=physics-oup chapter=3a language=tc page=NaN
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3a/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3a/tc/contents/pages
+[page] PDF not found for page: NaN
+[page] 135 files in pages/, looking for prefix "NaN-"
+[page] no images matched prefix "NaN-"
+[page] PDF not found for page: NaN
+[page] request: book=physics-oup chapter=3b language=en page=NaN
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3b/en pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3b/en/contents/pages
+[page] 198 files in pages/, looking for prefix "NaN-"
+[page] no images matched prefix "NaN-"
+[page] PDF not found for page: NaN
+[page] request: book=physics-oup chapter=3b language=tc page=NaN
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3b/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3b/tc/contents/pages
+[page] 198 files in pages/, looking for prefix "NaN-"
+[page] no images matched prefix "NaN-"
+[page] PDF not found for page: NaN
+[page] request: book=physics-oup chapter=3a language=tc page=NaN
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3a/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3a/tc/contents/pages
+[page] 135 files in pages/, looking for prefix "NaN-"
+[page] no images matched prefix "NaN-"
+[page] request: book=physics-oup chapter=3a language=en page=NaN
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3a/en pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3a/en/contents/pages
+[page] PDF not found for page: NaN
+[page] 135 files in pages/, looking for prefix "NaN-"
+[page] no images matched prefix "NaN-"
+[page] PDF not found for page: NaN
+[page] request: book=physics-oup chapter=5 language=en page=5
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/5/en pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/5/en/contents/pages
+[page] request: book=physics-oup chapter=5 language=tc page=5
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/5/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/5/tc/contents/pages
+[page] 123 files in pages/, looking for prefix "5-"
+[page] → returning 123 images (first: /pdf-reader/data/physics-oup/5/en/contents/pages/5-1.png)
+[page] 123 files in pages/, looking for prefix "5-"
+[page] → returning 123 images (first: /pdf-reader/data/physics-oup/5/tc/contents/pages/5-1.png)
+[page] request: book=physics-oup chapter=3a language=en page=NaN
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3a/en pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3a/en/contents/pages
+[page] 135 files in pages/, looking for prefix "NaN-"
+[page] no images matched prefix "NaN-"
+[page] PDF not found for page: NaN
+[page] request: book=physics-oup chapter=3a language=tc page=NaN
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3a/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3a/tc/contents/pages
+[page] 135 files in pages/, looking for prefix "NaN-"
+[page] no images matched prefix "NaN-"
+[page] PDF not found for page: NaN
+[page] request: book=physics-oup chapter=3b language=tc page=NaN
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3b/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3b/tc/contents/pages
+[page] 198 files in pages/, looking for prefix "NaN-"
+[page] no images matched prefix "NaN-"
+[page] request: book=physics-oup chapter=3b language=en page=NaN
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3b/en pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3b/en/contents/pages
+[page] PDF not found for page: NaN
+[page] 198 files in pages/, looking for prefix "NaN-"
+[page] no images matched prefix "NaN-"
+[page] PDF not found for page: NaN
+[page] request: book=physics-oup chapter=e3 language=en page=NaN
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/e3/en pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/e3/en/contents/pages
+[page] request: book=physics-oup chapter=e3 language=tc page=NaN
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/e3/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/e3/tc/contents/pages
+[page] 182 files in pages/, looking for prefix "NaN-"
+[page] no images matched prefix "NaN-"
+[page] PDF not found for page: NaN
+[page] 182 files in pages/, looking for prefix "NaN-"
+[page] no images matched prefix "NaN-"
+[page] PDF not found for page: NaN
+[page] request: book=physics-oup chapter=2 language=tc page=2
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/2/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/2/tc/contents/pages
+[page] 448 files in pages/, looking for prefix "2-"
+[page] → returning 448 images (first: /pdf-reader/data/physics-oup/2/tc/contents/pages/2-1.png)
+[page] request: book=physics-oup chapter=2 language=en page=2
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/2/en pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/2/en/contents/pages
+[page] 448 files in pages/, looking for prefix "2-"
+[page] → returning 448 images (first: /pdf-reader/data/physics-oup/2/en/contents/pages/2-1.png)
+[page] request: book=physics-oup chapter=3a language=tc page=NaN
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3a/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3a/tc/contents/pages
+[page] request: book=physics-oup chapter=3a language=en page=NaN
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3a/en pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/3a/en/contents/pages
+[page] 135 files in pages/, looking for prefix "NaN-"
+[page] no images matched prefix "NaN-"
+[page] 135 files in pages/, looking for prefix "NaN-"
+[page] no images matched prefix "NaN-"
+[page] PDF not found for page: NaN
+[page] PDF not found for page: NaN
+[page] request: book=physics-oup chapter=2 language=en page=2
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/2/en pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/2/en/contents/pages
+[page] 448 files in pages/, looking for prefix "2-"
+[page] → returning 448 images (first: /pdf-reader/data/physics-oup/2/en/contents/pages/2-1.png)
+[page] request: book=physics-oup chapter=2 language=tc page=2
+[page] langDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/2/tc pagesDir=/var/www/html/devtest/dse/pdf-reader/data/physics-oup/2/tc/contents/pages
+[page] 448 files in pages/, looking for prefix "2-"
+[page] → returning 448 images (first: /pdf-reader/data/physics-oup/2/tc/contents/pages/2-1.png)

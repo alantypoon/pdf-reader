@@ -590,15 +590,6 @@ function App() {
     handlePhysicsChapterSelect(String(physicsChapterOptions[nextIndex].id));
   };
 
-  const pageSelectOptions = useMemo(() => (
-    pageOptions.map((page) => ({ id: page, label: String(page) }))
-  ), [pageOptions]);
-
-  const currentPageIndex = useMemo(
-    () => pageOptions.findIndex((page) => Number(page) === Number(selectedPage)),
-    [pageOptions, selectedPage]
-  );
-
   const sectionSelectOptions = useMemo(() => (
     (currentChapter?.contents || []).map((item) => {
       const id = Number(item.page || item.section);
@@ -1135,6 +1126,15 @@ function App() {
       : Math.max(1, Number(selectedPage) || 1);
     return Array.from({ length: maxPage }, (_, index) => index + 1);
   }, [maxNavigablePage, selectedPage]);
+
+  const pageSelectOptions = useMemo(() => (
+    pageOptions.map((page) => ({ id: page, label: String(page) }))
+  ), [pageOptions]);
+
+  const currentPageIndex = useMemo(
+    () => pageOptions.findIndex((page) => Number(page) === Number(selectedPage)),
+    [pageOptions, selectedPage]
+  );
 
   useEffect(() => {
     if (!Number.isFinite(maxNavigablePage)) return;
