@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-generate-study-materials.py — Batch-generate AI study materials for PDF Reader.
+generate-study-materials.py — Batch-generate AI study materials for Book reader.
 
 For each page, the script:
   1. Extracts English text from page images via the AI Gateway (ett-vllm, multipart)
@@ -772,7 +772,7 @@ def _parse_target(target):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Batch-generate AI study materials for PDF Reader pages'
+        description='Batch-generate AI study materials for Book reader pages'
     )
     parser.add_argument(
         'target', nargs='?', default=None,

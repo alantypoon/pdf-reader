@@ -88,11 +88,11 @@ from urllib.request import urlretrieve
 import fitz  # PyMuPDF
 
 
-ELECTIVE_BOOK_NAMES = {
-    "e1": "Microbes and Disease",
-    "e2": "Human Physiology: Regulation and Control",
-    "e3": "Applied Ecology",
-    "e4": "Biotechnology",
+BIOLOGY_ELECTIVE_BOOK_NAMES = {
+    "e1": ("Human Physiology", "人類生理學"),
+    "e2": ("Applied Ecology", "應用生態學"),
+    "e3": ("Microorganisms and Humans", "微生物與人類"),
+    "e4": ("Biotechnology", "生物科技"),
 }
 
 CHEMISTRY_BOOK_NAMES = {
@@ -807,9 +807,7 @@ def _resolve_root_book_names(data_dir):
     if subject_id == "physics-oup":
         return PHYSICS_BOOK_NAMES.get(book_id)
     if subject_id == "biology-oup":
-        elective_name = ELECTIVE_BOOK_NAMES.get(book_id)
-        if elective_name:
-            return (elective_name, "")
+        return BIOLOGY_ELECTIVE_BOOK_NAMES.get(book_id)
     return None
 
 

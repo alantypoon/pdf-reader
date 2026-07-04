@@ -30,6 +30,7 @@ let mongoClient;
 let aiGenerations;
 let userActions;
 let userSelects;
+let annotationsCollection;
 
 function normalizeStringId(value, fallback = '') {
   return String(value != null ? value : fallback).trim();
@@ -37,6 +38,17 @@ function normalizeStringId(value, fallback = '') {
 
 function normalizeNumberId(value) {
   return Number(value);
+}
+
+function normalizeAnnotationLangId(value) {
+  return String(value || '').trim().toLowerCase() === 'tc' ? 'tc' : 'en';
+}
+
+async function listAnnotationRemarks(query) {
+  const docs = await annotationsCollection.find(query).toArray();
+  return docs
+    .flatMap((doc) => (Array.isArray(doc.remarks) ? doc.remarks : []))
+    .sort((left, right) => String(left?.createdAt || '').localeCompare(String(right?.createdAt || '')));
 }
 
 function buildAiIdentity({ subjectId, bookId, sectionId, pageId }) {
@@ -135,6 +147,7 @@ async function connectMongo() {
     aiGenerations = db.collection('ai-generations');
     userActions = db.collection('user-actions');
     userSelects = db.collection('user-selects');
+    annotationsCollection = db.collection('annotations');
     await migrateAiGenerationSubjectIds();
     await aiGenerations.createIndex(
       { subjectId: 1, bookId: 1, sectionId: 1, pageId: 1 },
@@ -147,6 +160,17 @@ async function connectMongo() {
     await userSelects.createIndex(
       { userId: 1 },
       { unique: true, name: 'user_selects_user_unique' }
+    );
+    try {
+      await annotationsCollection.dropIndex('annotations_identity_unique');
+    } catch {}
+    await annotationsCollection.createIndex(
+      { userId: 1, subjectId: 1, bookId: 1, sectionId: 1, pageId: 1, langId: 1 },
+      { unique: true, name: 'annotations_identity_lang_unique' }
+    );
+    await annotationsCollection.createIndex(
+      { userId: 1, subjectId: 1, bookId: 1, sectionId: 1, pageId: 1 },
+      { name: 'annotations_page_lookup' }
     );
     console.log('[mongo] connected to', MONGO_URI.replace(/\/\/.*@/, '//<credentials>@'));
   } catch (err) {
@@ -325,18 +349,19 @@ function getBookNamesFromContents(contents = {}) {
 }
 
 function compareNaturalIds(left, right) {
-  const a = String(left || '').trim();
-  const b = String(right || '').trim();
-  const aNum = Number(a);
-  const bNum = Number(b);
-  const aIsNum = a !== '' && Number.isFinite(aNum);
-  const bIsNum = b !== '' && Number.isFinite(bNum);
-  if (aIsNum && bIsNum) {
-    if (aNum !== bNum) return aNum - bNum;
-    return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+  const a = String(left || '').trim().toLowerCase();
+  const b = String(right || '').trim().toLowerCase();
+  const pattern = /^(\d+)([a-z]*)$/i;
+  const matchA = a.match(pattern);
+  const matchB = b.match(pattern);
+
+  if (matchA && matchB) {
+    const numDiff = Number(matchA[1]) - Number(matchB[1]);
+    if (numDiff !== 0) return numDiff;
+    return matchA[2].localeCompare(matchB[2], undefined, { sensitivity: 'base' });
   }
-  if (aIsNum) return -1;
-  if (bIsNum) return 1;
+  if (matchA) return -1;
+  if (matchB) return 1;
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
 }
 
@@ -550,55 +575,124 @@ app.get('/api/page', asyncRoute(async (request, response) => {
   }
 }));
 
-function remarksPath(userId) {
-  const safe = String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
-  return path.join(DATA_PATH, `remarks-${safe}.json`);
-}
-
 app.get('/api/remarks', asyncRoute(async (request, response) => {
-  const file = remarksPath(request.query.userId);
-  response.json(await readJSON(file, { remarks: [] }));
+  const userId = String(request.query.userId || '').trim();
+  if (!annotationsCollection || !userId) {
+    response.json({ remarks: [] });
+    return;
+  }
+  const query = { userId };
+  if (request.query.subjectId != null) query.subjectId = String(request.query.subjectId);
+  if (request.query.bookId != null) query.bookId = String(request.query.bookId);
+  if (request.query.sectionId != null) query.sectionId = Number(request.query.sectionId);
+  if (request.query.pageId != null) query.pageId = Number(request.query.pageId);
+  if (request.query.langId != null) query.langId = normalizeAnnotationLangId(request.query.langId);
+  response.json({ remarks: await listAnnotationRemarks(query) });
 }));
 
 app.post('/api/remarks', asyncRoute(async (request, response) => {
   try {
-    const { userId, ...remark } = request.body;
-    const file = remarksPath(userId);
-    const current = await readJSON(file, { remarks: [] });
-    const remarks = [...current.remarks, remark];
-    await fs.writeFile(file, JSON.stringify({ remarks }, null, 2));
-    response.json({ remarks });
+    const { userId, subjectId, bookId, sectionId, pageId, langId, ...remark } = request.body || {};
+    if (!annotationsCollection) {
+      response.status(500).json({ error: 'MongoDB not connected', remarks: [] });
+      return;
+    }
+    const identity = {
+      userId: String(userId || '').trim(),
+      subjectId: String(subjectId || '').trim(),
+      bookId: String(bookId || '').trim(),
+      sectionId: Number(sectionId),
+      pageId: Number(pageId),
+      langId: normalizeAnnotationLangId(langId),
+    };
+    const current = await annotationsCollection.findOne(identity);
+    const remarks = [...(current?.remarks || []), { ...remark, langId: identity.langId }];
+    await annotationsCollection.updateOne(
+      identity,
+      {
+        $set: { remarks, updatedAt: new Date().toISOString() },
+        $setOnInsert: { ...identity, createdAt: new Date().toISOString() },
+      },
+      { upsert: true }
+    );
+    response.json({ remarks: await listAnnotationRemarks({
+      userId: identity.userId,
+      subjectId: identity.subjectId,
+      bookId: identity.bookId,
+      sectionId: identity.sectionId,
+      pageId: identity.pageId,
+    }) });
   } catch (err) {
     console.error('[remarks] POST error:', err.message);
     response.status(500).json({ error: 'Failed to save remark', remarks: [] });
   }
 }));
 
-app.delete('/api/remarks', async (request, response) => {
+app.delete('/api/remarks', asyncRoute(async (request, response) => {
   try {
-    const { userId, chapter, page } = request.query;
-    const file = remarksPath(userId);
-    console.log(`[remarks] DELETE userId=${userId} chapter=${chapter} page=${page} file=${file}`);
-    const current = await readJSON(file, { remarks: [] });
-    console.log(`[remarks]   before: ${current.remarks.length} remarks`);
-    let remarks;
-    if (page != null) {
-      remarks = current.remarks.filter(
-        (r) => !(r.chapter === chapter && Number(r.page) === Number(page))
-      );
-    } else {
-      remarks = current.remarks.filter(
-        (r) => r.chapter !== chapter
-      );
+    if (!annotationsCollection) {
+      response.status(500).json({ error: 'MongoDB not connected', remarks: [] });
+      return;
     }
-    console.log(`[remarks]   after: ${remarks.length} remarks`);
-    await fs.writeFile(file, JSON.stringify({ remarks }, null, 2));
-    response.json({ remarks });
+    const { userId, subjectId, bookId, sectionId, pageId, createdAt, langId } = request.query;
+    const identity = {
+      userId: String(userId || '').trim(),
+      subjectId: String(subjectId || '').trim(),
+      bookId: String(bookId || '').trim(),
+      sectionId: Number(sectionId),
+    };
+    const resolvedLangId = langId != null ? normalizeAnnotationLangId(langId) : null;
+    if (createdAt != null) {
+      const pageIdentity = {
+        ...identity,
+        pageId: Number(pageId),
+      };
+      const pageQueries = resolvedLangId != null
+        ? [{ ...pageIdentity, langId: resolvedLangId }]
+        : await annotationsCollection.find(pageIdentity, { projection: { langId: 1 } }).toArray();
+      for (const query of pageQueries) {
+        const scopedIdentity = resolvedLangId != null ? query : { ...pageIdentity, langId: query.langId };
+        const current = await annotationsCollection.findOne(scopedIdentity);
+        const remarks = (current?.remarks || []).filter((remark) => String(remark.createdAt || '') !== String(createdAt));
+        if ((current?.remarks || []).length === remarks.length) {
+          continue;
+        }
+        if (remarks.length > 0) {
+          await annotationsCollection.updateOne(scopedIdentity, {
+            $set: { remarks, updatedAt: new Date().toISOString() },
+          });
+        } else {
+          await annotationsCollection.deleteOne(scopedIdentity);
+        }
+      }
+      response.json({ remarks: await listAnnotationRemarks(pageIdentity) });
+      return;
+    }
+    if (pageId != null) {
+      identity.pageId = Number(pageId);
+      if (resolvedLangId != null) {
+        identity.langId = resolvedLangId;
+        await annotationsCollection.deleteOne(identity);
+        response.json({ remarks: await listAnnotationRemarks({
+          userId: identity.userId,
+          subjectId: identity.subjectId,
+          bookId: identity.bookId,
+          sectionId: identity.sectionId,
+          pageId: identity.pageId,
+        }) });
+        return;
+      }
+      await annotationsCollection.deleteMany(identity);
+      response.json({ remarks: [] });
+      return;
+    }
+    await annotationsCollection.deleteMany(identity);
+    response.json({ remarks: [] });
   } catch (err) {
     console.error('[remarks] DELETE error:', err);
     response.status(500).json({ error: 'Failed to erase remarks' });
   }
-});
+}));
 
 // ── Proxy for OUP resources (bypasses X-Frame-Options) ──────
 const ALLOWED_PROXY_HOSTS = [
@@ -620,7 +714,7 @@ app.get('/api/proxy', async (request, response) => {
 
     const upstream = await fetch(targetUrl, {
       redirect: 'follow',
-      headers: { 'User-Agent': 'PDF Reader Proxy/1.0' },
+      headers: { 'User-Agent': 'Book reader Proxy/1.0' },
     });
 
     const contentType = upstream.headers.get('content-type') || '';

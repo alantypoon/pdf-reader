@@ -16,7 +16,7 @@ rm -f "$PID_FILE"
 echo "=== Building frontend ==="
 sh build.sh
 
-echo "=== Starting PDF Reader server ==="
+echo "=== Starting Book reader server ==="
 mkdir -p "$LOG_DIR"
 nohup node server/index.js > "$LOG_FILE" 2>&1 &
 SERVER_PID=$!

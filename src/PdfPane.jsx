@@ -26,8 +26,6 @@ function PdfPane({
   onPageChange,
   onPageCountChange,
   thumbnailsOpen,
-  thumbCols = 4,
-  onThumbColsChange,
   onThumbnailClick,
   syncGroup,
   syncId,
@@ -35,7 +33,8 @@ function PdfPane({
   fitMode = 'auto',
   fitRefreshToken = 0,
   onRenderScaleChange,
-  language = 'en'
+  language = 'en',
+  paneLanguage = 'en'
 }) {
   const lang = uiLang(language);
   const _ = (key) => t(key, lang);
@@ -74,14 +73,16 @@ function PdfPane({
     setThumbs(thumbData);
   }, [isImageMode, images]);
 
-  // Keep renderedPage in sync with currentPage for paginated image mode
+  // Keep renderedPage in sync with currentPage
   useEffect(() => {
-    if (!isImageMode || mode !== 'pagination') return;
+    // In pagination mode, PdfPane manages its own page tracking via the draw effect.
+    // In other modes (thumbnails, scrolling), sync from the parent's currentPage.
+    if (mode === 'pagination') return;
     setRenderedPage((prev) => {
       const page = Math.max(1, Math.min(currentPage, numPages || 1));
       return prev !== page ? page : prev;
     });
-  }, [isImageMode, mode, currentPage, numPages]);
+  }, [mode, currentPage, numPages]);
 
   useEffect(() => {
     const node = contentRef.current;
@@ -484,7 +485,7 @@ function PdfPane({
   const titleSuffix = useMemo(() => `${renderedPage}${numPages ? ` / ${numPages}` : ''}`, [renderedPage, numPages]);
 
   return (
-    <section className="page-frame page-card pdf-pane">
+    <section className="page-frame page-card pdf-pane" data-annotation-language={paneLanguage}>
       <header className="page-card-header">
         <strong className="header-book">{title}</strong>
         {section != null && (
@@ -495,19 +496,6 @@ function PdfPane({
         )}
         <span className="header-sep">·</span>
         <span className="header-page-num">{titleSuffix}</span>
-        {thumbnailsOpen && (
-          <label className="thumb-cols-label header-thumb-cols">
-            <span>{_('cols')} {thumbCols}</span>
-            <input
-              type="range"
-              min="1"
-              max="10"
-              value={thumbCols}
-              onChange={(e) => onThumbColsChange?.(Number(e.target.value))}
-              className="thumb-cols-slider"
-            />
-          </label>
-        )}
       </header>
       <div className={`pdf-pane-shell ${thumbnailsOpen ? 'thumbs-open' : 'thumbs-closed'}`}>
         {!thumbnailsOpen && (
@@ -538,7 +526,7 @@ function PdfPane({
 
         <div className="pdf-content" ref={contentRef} key={mode}>
           {thumbnailsOpen ? (
-            <div className="thumbnail-grid" style={{ gridTemplateColumns: `repeat(${thumbCols}, 1fr)` }}>
+            <div className="thumbnail-grid" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${Math.round(zoom * 800)}px, 1fr))` }}>
                 {thumbs.map((thumb) => (
                   <button
                     key={thumb.page}
@@ -554,7 +542,7 @@ function PdfPane({
                       }
                     }}
                   >
-                    <img src={thumb.url} alt={`${_('pageN')} ${thumb.page}`} />
+                    <img src={thumb.url} alt={`${_('pageN')} ${thumb.page}`} data-page={thumb.page} />
                     <span>{thumb.page}</span>
                   </button>
                 ))}

@@ -56,3 +56,36 @@ why the book 1a, section 1, page 1, 1-1.png always starts new ai generation when
 when contents.json contains /name, append it to the book's label text, e.g. E1 - Microbes and Disease while the value is still e1.
 
 use upper case for the book's ID, for example 1A, 1B, etc. while the value is still using the lower case.
+
+///
+
+1. when zooming, the text should be changed proportionally.
+
+2. when color button is clicked, show a dialog with the most frequently used 12 colors for pen and highlighter. Next to them, there is a customized button to open an extended panel to choose any color.
+
+
+///
+
+rename erase all to erase book and ask for sweetalert2 confirmation before proceeding
+
+///
+
+instead of using the cols slider, can we use the same percentage zooming slider on the button panel to control the size of thumbnails?
+
+///
+
+keystroke navigation: always allow left and right arrows key to turn to previous and next page. ctrl left and right to previous and next section, shift left and right to previous and next book. it should allow even when ai generation drawer is open.
+
+///
+
+advise how to implement the search function, it should be able to do it:
+- on all/one subject, book, section, page
+- where should the search field be placed?
+- how to handle the various cases above?
+- should find the filter value in the database collection ai-generations summary field value
+- should the results be shown inline, modal or drawer? 
+
+////
+
+should i remove the hythen character - in book and section on physics and biology to save space?
+

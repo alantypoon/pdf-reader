@@ -1,4 +1,5 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useMemo } from 'react';
+import AutocompleteDropdown from './components/AutocompleteDropdown';
 
 function StepperSelect({
   items,
@@ -10,9 +11,6 @@ function StepperSelect({
   disableNext,
   placeholder,
 }) {
-  const [open, setOpen] = useState(false);
-  const inputRef = useRef(null);
-
   const currentItem = useMemo(
     () => (items || []).find((item) => String(item.id) === String(value)) || null,
     [items, value]
@@ -20,15 +18,14 @@ function StepperSelect({
 
   const displayValue = currentItem?.label || placeholder || '';
 
-  const handleToggleOpen = (event) => {
-    event.preventDefault();
-    setOpen((current) => !current);
-    inputRef.current?.focus();
-  };
-
-  const handleBlur = () => {
-    setTimeout(() => setOpen(false), 180);
-  };
+  const dropdownItems = useMemo(() => (
+    (items || []).map((item) => ({
+      id: item.id,
+      primary: item.label,
+      secondary: item.secondary || '',
+      searchText: [item.id, item.label, item.secondary].filter(Boolean).join('\n'),
+    }))
+  ), [items]);
 
   return (
     <div className="selector-stepper">
@@ -41,55 +38,19 @@ function StepperSelect({
       >
         -
       </button>
-      <div className="section-autocomplete selector-stepper-main">
-        <div className="autocomplete-input-wrapper selector-stepper-input-wrapper">
-          <input
-            ref={inputRef}
-            type="text"
-            className="autocomplete-input selector-stepper-input"
-            value={displayValue}
-            readOnly
-            onFocus={() => setOpen(true)}
-            onBlur={handleBlur}
-            aria-expanded={open}
-            role="combobox"
-          />
-          <button
-            type="button"
-            className={`autocomplete-toggle-btn ${open ? 'open' : ''}`}
-            onMouseDown={handleToggleOpen}
-            aria-label="Toggle option list"
-            tabIndex={-1}
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path d="M7 10l5 5 5-5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </button>
-        </div>
-
-        {open && items?.length > 0 && (
-          <ul className="autocomplete-list" role="listbox">
-            {items.map((item) => (
-              <li
-                key={item.id}
-                className={`autocomplete-item ${String(item.id) === String(value) ? 'highlighted' : ''}`}
-                role="option"
-                aria-selected={String(item.id) === String(value)}
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                  onChange(item.id);
-                  setOpen(false);
-                }}
-              >
-                <div className="autocomplete-names">
-                  <strong>{item.label}</strong>
-                  {item.secondary ? <small>{item.secondary}</small> : null}
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      <AutocompleteDropdown
+        items={dropdownItems}
+        value={value}
+        onSelect={(id) => onChange(id)}
+        selectedDisplay={displayValue}
+        placeholder={placeholder || 'Search...'}
+        emptyText="No matching options"
+        toggleAriaLabel="Toggle option list"
+        showSearchIcon={false}
+        containerClassName="selector-stepper-main"
+        inputWrapperClassName="selector-stepper-input-wrapper"
+        inputClassName="selector-stepper-input"
+      />
       <button
         type="button"
         className="selector-stepper-btn"

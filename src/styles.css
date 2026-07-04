@@ -525,6 +525,41 @@ button, input, select {
   align-items: center;
 }
 
+.autocomplete-input-wrapper.has-stepper {
+  gap: 6px;
+}
+
+.autocomplete-stepper-btn {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  border: 1px solid #c9d7e3;
+  border-radius: 10px;
+  background: white;
+  color: #12324a;
+  font-size: 1rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.autocomplete-stepper-btn:hover:not(:disabled) {
+  background: #e8f0fe;
+  border-color: #9fb8cc;
+}
+
+.autocomplete-stepper-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.autocomplete-input-wrapper.no-search-icon .autocomplete-input {
+  padding-left: 14px;
+}
+
 .autocomplete-search-icon {
   position: absolute;
   left: 12px;
@@ -536,13 +571,29 @@ button, input, select {
 
 .autocomplete-input {
   width: 100%;
-  padding: 10px 44px 10px 36px;
+  padding: 10px 44px 10px 14px;
   border: 1px solid #c9d7e3;
   border-radius: 14px;
   background: white;
   font-size: 0.92rem;
+  color: #102033;
   outline: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.autocomplete-input::placeholder {
+  color: #9fb8cc;
+}
+
+.autocomplete-input.has-selected {
+  color: #102033;
+}
+
+.autocomplete-input.has-selected::placeholder {
+  color: #9fb8cc;
 }
 
 .autocomplete-toggle-btn {
@@ -587,21 +638,54 @@ button, input, select {
   box-shadow: 0 0 0 3px rgba(47, 111, 159, 0.12);
 }
 
-.autocomplete-list {
+.autocomplete-dropdown {
   position: absolute;
   left: 0;
   right: 0;
   top: calc(100% + 6px);
   z-index: 20;
-  max-height: 340px;
-  overflow-y: auto;
-  margin: 0;
-  padding: 6px;
-  list-style: none;
   border: 1px solid #c9d7e3;
   border-radius: 14px;
   background: white;
   box-shadow: 0 14px 36px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+}
+
+.autocomplete-dropdown-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #e8eef3;
+}
+
+.autocomplete-dropdown-filter-icon {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  color: #7b95ac;
+}
+
+.autocomplete-dropdown-filter-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font-size: 0.85rem;
+  color: #102033;
+}
+
+.autocomplete-dropdown-filter-input::placeholder {
+  color: #9fb8cc;
+}
+
+.autocomplete-list {
+  max-height: 280px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
 }
 
 .autocomplete-item {
@@ -616,6 +700,14 @@ button, input, select {
 
 .autocomplete-item.highlighted {
   background: #eef5fb;
+}
+
+.autocomplete-item.selected {
+  background: #dce9f5;
+}
+
+.autocomplete-item.selected.highlighted {
+  background: #c9ddf0;
 }
 
 .autocomplete-section-badge {
@@ -639,20 +731,30 @@ button, input, select {
 .autocomplete-names strong {
   font-size: 0.88rem;
   color: #102033;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  word-break: break-word;
 }
 
 .autocomplete-names small {
   font-size: 0.78rem;
   color: #5d7184;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  word-break: break-word;
 }
 
 .autocomplete-empty {
+  padding: 14px;
+  color: #5d7184;
+  text-align: center;
+  font-size: 0.85rem;
+}
+
+.autocomplete-dropdown .autocomplete-empty {
+  position: static;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.autocomplete-empty--standalone {
   position: absolute;
   left: 0;
   right: 0;
@@ -704,7 +806,35 @@ button, input, select {
   position: absolute;
   inset: 0;
   z-index: 2;
-  touch-action: none;
+}
+
+.text-annotation-textarea {
+  position: absolute;
+  z-index: 10;
+  min-width: 160px;
+  max-width: 380px;
+  padding: 8px 12px;
+  border: 2px solid;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(4px);
+  font-family: Inter, system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  color: inherit;
+  resize: both;
+  outline: none;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15), 0 1px 4px rgba(0, 0, 0, 0.08);
+  transition: box-shadow 150ms ease;
+}
+
+.text-annotation-textarea:focus {
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.22), 0 1px 6px rgba(0, 0, 0, 0.12);
+}
+
+.text-annotation-textarea::placeholder {
+  color: #94a3b8;
+  font-size: 0.85em;
 }
 
 .book-stage {
@@ -876,22 +1006,6 @@ button, input, select {
 
 /* ── Full-width thumbnail grid ──────────────────────────── */
 
-.thumb-cols-label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: #5d7184;
-  white-space: nowrap;
-}
-
-.thumb-cols-slider {
-  width: 100px;
-  accent-color: #5c8eb5;
-  cursor: pointer;
-}
-
 .thumbnail-grid {
   display: grid;
   gap: 14px;
@@ -900,16 +1014,6 @@ button, input, select {
   height: 100%;
   overflow-y: auto;
   align-content: start;
-}
-
-.header-thumb-cols {
-  margin-left: auto;
-  padding-left: 16px;
-  border-left: 1px solid #d7e0e8;
-}
-
-.header-thumb-cols .thumb-cols-slider {
-  width: 80px;
 }
 
 .thumb-grid-item {

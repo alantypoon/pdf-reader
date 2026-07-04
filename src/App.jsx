@@ -8,6 +8,7 @@ import { t, uiLang } from './i18n';
 
 const PREFERENCES_KEY = 'pdfReaderPreferences';
 const DEFAULT_ANNOTATION_COLOR = '#9acd32';
+const ANNOTATION_TOOLS = new Set(['pen', 'highlight', 'text', 'eraser', 'move']);
 
 function loadPreferences() {
   if (typeof window === 'undefined') {
@@ -121,8 +122,12 @@ function App() {
     return params.get('test') === '1';
   }, []);
   const canvasRef = useRef(null);
+  const stageRef = useRef(null);
   const drawingRef = useRef(false);
   const currentStrokeRef = useRef(null);
+  const moveAnnotationRef = useRef(null);
+  const moveStartPointRef = useRef(null);
+  const moveHasMovedRef = useRef(false);
   const displayModeInitializedRef = useRef(false);
   const initialSubjectRestoreRef = useRef('');
   const restoringUserSelectsRef = useRef(false);
@@ -141,26 +146,35 @@ function App() {
   const [selectedPhysicsChapterId, setSelectedPhysicsChapterId] = useState('');
   const [displayMode, setDisplayMode] = useState(savedPrefs.displayMode || 'scrolling');
   const showThumbnails = displayMode === 'thumbnails';
+  const displayModeRef = useRef(displayMode);
+  const selectedPageRef = useRef(selectedPage);
   const [selectedLanguage, setSelectedLanguage] = useState(savedPrefs.selectedLanguage || 'bilingual');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(Boolean(savedPrefs.sidebarCollapsed));
   const [pageSources, setPageSources] = useState({});
   const [remarks, setRemarks] = useState([]);
   const [pageAnnotations, setPageAnnotations] = useState([]);
-  const [tool, setTool] = useState('hand');
+  const [tool, setTool] = useState(() => {
+    if (!savedPrefs.annotationToolsOpen) return 'hand';
+    return ANNOTATION_TOOLS.has(savedPrefs.tool) ? savedPrefs.tool : 'pen';
+  });
   const [annotationToolsOpen, setAnnotationToolsOpen] = useState(Boolean(savedPrefs.annotationToolsOpen));
   const [textColor, setTextColor] = useState(initialTextColor);
-  const [noteText, setNoteText] = useState('');
+  const [textInputState, setTextInputState] = useState(null);
+  const textInputRef = useRef(null);
+  const textInputCommittedRef = useRef(false);
+  const textInputBlurFlagRef = useRef(false);
   const [clearedTimestamps, setClearedTimestamps] = useState([]);
   const [undoStack, setUndoStack] = useState([]);
   const [redoStack, setRedoStack] = useState([]);
-  const [thumbCols, setThumbCols] = useState(Number(savedPrefs.thumbCols || 4));
   const [zoomLevel, setZoomLevel] = useState(Number(savedPrefs.zoomLevel || 1));
   const [fitMode, setFitMode] = useState(
     savedPrefs.fitMode === 'height' ? 'height' : 'width'
   );
   const [renderScaleByLanguage, setRenderScaleByLanguage] = useState({});
   const [pageCounts, setPageCounts] = useState({});
+  const [redrawTick, setRedrawTick] = useState(0);
   const [modalInfo, setModalInfo] = useState(null);
+  const [activeAnnotationLangId, setActiveAnnotationLangId] = useState('en');
   const [resourcesDrawerOpen, setResourcesDrawerOpen] = useState(false);
   const [aiDrawerOpen, setAiDrawerOpen] = useState(false);
   const [aiDrawerLanguage, setAiDrawerLanguage] = useState('en');
@@ -199,7 +213,7 @@ function App() {
   const fitButtonMode = fitMode === 'height' ? 'height' : 'width';
   const fitButtonTitle = fitButtonMode === 'height' ? _('fitHeight') : _('fitWidth');
   const regenerateConfirmMessage = _('confirmRegenerate');
-  const fitDisabled = displayMode === 'scrolling';
+  const fitDisabled = displayMode === 'scrolling' || displayMode === 'thumbnails';
 
   const fitScreen = () => {
     if (fitDisabled) return;
@@ -382,11 +396,33 @@ function App() {
     logUserAction('login');
   }, [userId]);
 
+  const visibleLanguages = useMemo(() => {
+    if (selectedLanguage !== 'bilingual') {
+      if (hasRenderableSource(pageSources[selectedLanguage])) {
+        return [selectedLanguage];
+      }
+      const fallbackLanguage = selectedLanguage === 'en' ? 'tc' : 'en';
+      return hasRenderableSource(pageSources[fallbackLanguage]) ? [fallbackLanguage] : [];
+    }
+    return ['en', 'tc'].filter((language) => hasRenderableSource(pageSources[language]));
+  }, [selectedLanguage, pageSources]);
+
   useEffect(() => {
     const loadRemarks = async () => {
+      const langTargets = selectedLanguage === 'bilingual'
+        ? visibleLanguages
+        : visibleLanguages.slice(0, 1);
+      if (!langTargets.length) {
+        setRemarks([]);
+        return;
+      }
       try {
-        const data = await fetchJson(`api/remarks?userId=${userId}`);
-        setRemarks(data.remarks || []);
+        const responses = await Promise.all(
+          langTargets.map((langId) => fetchJson(
+            `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&sectionId=${selectedFile}&pageId=${selectedPage}&langId=${encodeURIComponent(langId)}`
+          ))
+        );
+        setRemarks(responses.flatMap((data) => data.remarks || []));
       } catch (err) {
         console.error('[remarks] failed to load:', err);
         setRemarks([]);
@@ -394,7 +430,7 @@ function App() {
     };
 
     loadRemarks();
-  }, [userId]);
+  }, [userId, selectedBook, selectedChapter, selectedFile, selectedLanguage, selectedPage, visibleLanguages]);
 
   useEffect(() => {
     const existing = remarks.filter(
@@ -403,8 +439,25 @@ function App() {
         Number(remark.page) === Number(selectedPage) &&
         !clearedTimestamps.includes(remark.createdAt)
     );
-    setPageAnnotations(existing);
+    setPageAnnotations(existing.map((remark) => ({
+      ...remark,
+      langId: remark.langId === 'tc' ? 'tc' : 'en'
+    })));
   }, [remarks, selectedChapter, selectedPage, clearedTimestamps]);
+
+  // All annotations for the current section (all pages) — used in thumbnails mode
+  const allSectionAnnotations = useMemo(() => {
+    if (displayMode !== 'thumbnails') return [];
+    return remarks
+      .filter((remark) =>
+        remark.chapter === selectedChapter &&
+        !clearedTimestamps.includes(remark.createdAt)
+      )
+      .map((remark) => ({
+        ...remark,
+        langId: remark.langId === 'tc' ? 'tc' : 'en'
+      }));
+  }, [remarks, selectedChapter, clearedTimestamps, displayMode]);
 
   const currentChapter = useMemo(
     () => structure.find((chapter) => chapter.id === selectedChapter),
@@ -521,24 +574,16 @@ function App() {
     setSelectedPage(Math.max(1, Number(next.startPage) || 1));
   };
 
-  const subjectOptions = useMemo(() => (
-    (dataBooks || []).map((bookId) => ({
-      id: bookId,
-      label: getSubjectLabel(bookId, selectedLanguage),
-    }))
-  ), [dataBooks, selectedLanguage]);
+  const subjectToggleOptions = useMemo(() => {
+    const desiredOrder = ['physics-oup', 'chemistry-winter', 'biology-oup'];
+    const existing = new Set((dataBooks || []).map((item) => String(item)));
+    return desiredOrder
+      .filter((id) => existing.has(id))
+      .map((id) => ({ id, label: getSubjectLabel(id, selectedLanguage) }));
+  }, [dataBooks, selectedLanguage]);
 
-  const currentSubjectIndex = useMemo(
-    () => subjectOptions.findIndex((item) => String(item.id) === String(selectedBook)),
-    [subjectOptions, selectedBook]
-  );
-
-  const stepSubject = async (direction) => {
-    if (!subjectOptions.length) return;
-    const currentIndex = currentSubjectIndex >= 0 ? currentSubjectIndex : 0;
-    const nextIndex = Math.max(0, Math.min(subjectOptions.length - 1, currentIndex + direction));
-    if (nextIndex === currentIndex) return;
-    const newBook = String(subjectOptions[nextIndex].id);
+  const handleSubjectChange = async (newBook) => {
+    if (!newBook || String(newBook) === String(selectedBook)) return;
     setSelectedBook(newBook);
     setLastSubjectId(newBook);
     setSelectedChapter('');
@@ -672,6 +717,14 @@ function App() {
   }, [displayMode]);
 
   useEffect(() => {
+    displayModeRef.current = displayMode;
+  }, [displayMode]);
+
+  useEffect(() => {
+    selectedPageRef.current = selectedPage;
+  }, [selectedPage]);
+
+  useEffect(() => {
     if (!selectedBook) return;
     setSubjectSelections((current) => {
       const nextEntry = {
@@ -724,7 +777,6 @@ function App() {
       tool,
       annotationToolsOpen,
       textColor,
-      thumbCols,
       zoomLevel,
       fitMode,
       panelPos,
@@ -738,7 +790,6 @@ function App() {
     tool,
     annotationToolsOpen,
     textColor,
-    thumbCols,
     zoomLevel,
     fitMode,
     panelPos,
@@ -757,21 +808,115 @@ function App() {
       canvas.style.width = `${rect.width}px`;
       canvas.style.height = `${rect.height}px`;
       context.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
-      redraw(context, rect.width, rect.height, pageAnnotations);
+      const annotationsToDraw = displayMode === 'thumbnails' ? allSectionAnnotations : pageAnnotations;
+      redraw(context, rect.width, rect.height, annotationsToDraw);
     };
 
     resize();
     window.addEventListener('resize', resize);
     return () => window.removeEventListener('resize', resize);
-  }, [pageAnnotations]);
+  }, [pageAnnotations, allSectionAnnotations, displayMode]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const context = canvas.getContext('2d');
-    const rect = canvas.getBoundingClientRect();
-    redraw(context, rect.width, rect.height, pageAnnotations);
-  }, [pageAnnotations, pageSources]);
+    // Use rAF so the DOM has settled after a layout change before
+    // we measure page image rects in getPageImageRects()
+    const raf = requestAnimationFrame(() => {
+      const context = canvas.getContext('2d');
+      const rect = canvas.getBoundingClientRect();
+      const annotationsToDraw = displayMode === 'thumbnails' ? allSectionAnnotations : pageAnnotations;
+      redraw(context, rect.width, rect.height, annotationsToDraw);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [pageAnnotations, allSectionAnnotations, pageSources, displayMode, selectedLanguage, sidebarCollapsed, zoomLevel, fitMode, fitRefreshToken, visibleLanguages, redrawTick]);
+
+  useEffect(() => {
+    if (!annotationToolsOpen) {
+      if (tool !== 'hand') {
+        setTool('hand');
+      }
+      return;
+    }
+    if (!ANNOTATION_TOOLS.has(tool)) {
+      setTool('pen');
+    }
+  }, [annotationToolsOpen, tool]);
+
+  // Pass through wheel events on annotation canvas to scroll the stage
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const stage = stageRef.current;
+    if (!canvas || !stage) return;
+    const onWheel = (e) => {
+      e.preventDefault();
+      stage.scrollBy({ left: e.deltaX, top: e.deltaY, behavior: 'auto' });
+    };
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', onWheel);
+  }, []);
+
+  // Re-trigger canvas redraw when thumbnail images finish loading
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const onImageLoad = (e) => {
+      const img = e.target;
+      if (img.tagName === 'IMG' && img.hasAttribute('data-page')) {
+        setRedrawTick((t) => t + 1);
+      }
+    };
+    stage.addEventListener('load', onImageLoad, true); // capture phase
+    return () => stage.removeEventListener('load', onImageLoad, true);
+  }, []);
+
+  // Close annotation tools when entering thumbnails mode
+  // Default zoom to 25% for thumbnails, restore to 100% when leaving
+  useEffect(() => {
+    if (displayMode === 'thumbnails') {
+      setAnnotationToolsOpen(false);
+      setTool('hand');
+      setZoomLevel((prev) => {
+        // Clamp to 100% max for thumbnails; default to 25% if at pagination default
+        const clamped = Math.min(prev, 1.0);
+        if (clamped >= 0.95 && clamped <= 1.05) return 0.25;
+        return clamped;
+      });
+    } else {
+      setZoomLevel((prev) => {
+        // Clamp to 200% max for pagination/scrolling; restore 100% if at thumbnail default
+        const clamped = Math.min(prev, 2.0);
+        if (Math.abs(clamped - 0.25) < 0.01) return 1.0;
+        return clamped;
+      });
+    }
+  }, [displayMode]);
+
+  // Scroll page containers to top when page changes in pagination mode
+  useEffect(() => {
+    if (displayMode !== 'pagination') return;
+    const stage = stageRef.current;
+    if (!stage) return;
+    requestAnimationFrame(() => {
+      const pages = stage.querySelectorAll('.pdf-single-page');
+      pages.forEach((el) => {
+        el.scrollTo({ top: 0, behavior: 'instant' });
+      });
+    });
+  }, [selectedPage, displayMode]);
+
+  // Track mousedown on stage (outside textarea) to flag reposition intent
+  useEffect(() => {
+    const onMouseDown = (e) => {
+      const stage = stageRef.current;
+      const textarea = textInputRef.current;
+      if (stage && stage.contains(e.target) && !(textarea && textarea.contains(e.target))) {
+        textInputBlurFlagRef.current = true;
+      }
+    };
+    document.addEventListener('mousedown', onMouseDown, true);
+    return () => document.removeEventListener('mousedown', onMouseDown, true);
+  }, []);
 
   const changePage = (direction) => {
     setSelectedPage((current) => {
@@ -792,6 +937,28 @@ function App() {
     const nextIndex = Math.max(0, Math.min(sections.length - 1, currentIndex + direction));
     setSelectedFile(sections[nextIndex]);
     setSelectedPage(1);
+  };
+
+  const changePageSeamless = (direction) => {
+    if (direction < 0 && selectedPage <= 1) {
+      // First page → go to last page of previous section
+      if (!currentChapter?.contents?.length) return;
+      const sections = currentChapter.contents.map((item) => Number(item.page || item.section));
+      const currentIndex = sections.findIndex((page) => page === Number(selectedFile));
+      if (currentIndex <= 0) return;
+      setSelectedFile(sections[currentIndex - 1]);
+      setSelectedPage(Number.MAX_SAFE_INTEGER); // clamped to actual max by useEffect
+    } else if (direction > 0 && selectedPage >= maxNavigablePage) {
+      // Last page → go to first page of next section
+      if (!currentChapter?.contents?.length) return;
+      const sections = currentChapter.contents.map((item) => Number(item.page || item.section));
+      const currentIndex = sections.findIndex((page) => page === Number(selectedFile));
+      if (currentIndex < 0 || currentIndex >= sections.length - 1) return;
+      setSelectedFile(sections[currentIndex + 1]);
+      setSelectedPage(1);
+    } else {
+      changePage(direction);
+    }
   };
 
   const changeZoom = (delta) => {
@@ -848,14 +1015,22 @@ function App() {
     const data = await fetchJson('api/remarks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, ...remark })
+      body: JSON.stringify({
+        userId,
+        subjectId: selectedBook,
+        bookId: selectedChapter,
+        sectionId: selectedFile,
+        pageId: selectedPage,
+        langId: remark.langId,
+        ...remark,
+      })
     });
     setRemarks(data.remarks || []);
   };
 
   const clearPageRemarks = async () => {
     const data = await fetchJson(
-      `api/remarks?userId=${userId}&chapter=${selectedChapter}&page=${selectedPage}`,
+      `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&sectionId=${selectedFile}&pageId=${selectedPage}&langId=${encodeURIComponent(annotationScopeLangId)}`,
       { method: 'DELETE' }
     );
     setRemarks(data.remarks || []);
@@ -864,8 +1039,22 @@ function App() {
   };
 
   const clearAllRemarks = async () => {
+    if (typeof window !== 'undefined') {
+      const result = await Swal.fire({
+        icon: 'warning',
+        text: _('confirmEraseBook'),
+        showCancelButton: true,
+        confirmButtonText: _('confirm'),
+        cancelButtonText: _('cancel'),
+        reverseButtons: true,
+        focusCancel: true,
+      });
+      if (!result.isConfirmed) {
+        return;
+      }
+    }
     const data = await fetchJson(
-      `api/remarks?userId=${userId}&chapter=${selectedChapter}`,
+      `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&sectionId=${selectedFile}`,
       { method: 'DELETE' }
     );
     setRemarks(data.remarks || []);
@@ -873,22 +1062,27 @@ function App() {
     setRedoStack([]);
   };
 
+  const deleteRemarkByCreatedAt = async (createdAtValue, langId = annotationScopeLangId) => {
+    const data = await fetchJson(
+      `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&sectionId=${selectedFile}&pageId=${selectedPage}&langId=${encodeURIComponent(langId)}&createdAt=${encodeURIComponent(createdAtValue)}`,
+      { method: 'DELETE' }
+    );
+    setRemarks(data.remarks || []);
+    return data.remarks || [];
+  };
+
   const undoRemark = async () => {
     const pageRemarks = remarks.filter(
-      (r) => r.chapter === selectedChapter && Number(r.page) === Number(selectedPage)
+      (r) => r.chapter === selectedChapter
+        && Number(r.page) === Number(selectedPage)
+        && (r.langId === annotationScopeLangId || (!r.langId && annotationScopeLangId === 'en'))
     );
     if (!pageRemarks.length) return;
     const last = pageRemarks[pageRemarks.length - 1];
-    // Delete from server
-    await fetchJson(
-      `api/remarks?userId=${userId}&chapter=${selectedChapter}&page=${selectedPage}`,
-      { method: 'DELETE' }
-    );
+    await deleteRemarkByCreatedAt(last.createdAt, last.langId || annotationScopeLangId);
     // But keep track for redo
     setUndoStack((prev) => [...prev, last]);
     setRedoStack([]);
-    // Remove from local state
-    setRemarks((prev) => prev.filter((r) => r !== last));
   };
 
   const redoRemark = async () => {
@@ -898,71 +1092,450 @@ function App() {
     const data = await fetchJson('api/remarks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, ...last })
+      body: JSON.stringify({
+        userId,
+        subjectId: selectedBook,
+        bookId: selectedChapter,
+        sectionId: selectedFile,
+        pageId: selectedPage,
+        langId: last.langId || annotationScopeLangId,
+        ...last,
+      })
     });
     setRemarks(data.remarks || []);
     setUndoStack((prev) => prev.slice(0, -1));
     setRedoStack((prev) => [...prev, last]);
   };
 
-  const getPoint = (event) => {
+  /**
+   * Get the bounding rect (relative to the annotation canvas) of the
+   * rendered page IMAGE (canvas or img) inside each language pane.
+   *
+   * This is the authoritative source for coordinate normalization —
+   * the page image dimensions stay proportional to the PDF page
+   * regardless of container size / header height / layout mode.
+   */
+  const getPageImageRects = useCallback(() => {
     const canvas = canvasRef.current;
+    const stage = stageRef.current;
+    if (!canvas || !stage) return {};
+    const canvasRect = canvas.getBoundingClientRect();
+    const panes = stage.querySelectorAll('[data-annotation-language]');
+    const result = {};
+    for (const pane of panes) {
+      const langId = pane.getAttribute('data-annotation-language');
+      if (!langId) continue;
+
+      // Pagination mode: the single rendered page inside .pdf-single-page
+      let pageImage = pane.querySelector('.pdf-single-page canvas, .pdf-single-page img.page-img');
+      // Scrolling mode: find the image matching the current selected page
+      if (!pageImage) {
+        const currentPage = selectedPageRef.current;
+        // Try exact match first
+        const candidates = pane.querySelectorAll('canvas[data-page], img[data-page]');
+        for (const el of candidates) {
+          const elPage = Number(el.getAttribute('data-page'));
+          if (elPage === currentPage) {
+            const r = el.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) {
+              pageImage = el;
+              break;
+            }
+          }
+        }
+        // Fallback: first visible image
+        if (!pageImage) {
+          for (const el of candidates) {
+            const r = el.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) {
+              pageImage = el;
+              break;
+            }
+          }
+        }
+      }
+      // Thumbnail mode: active thumbnail image
+      if (!pageImage) {
+        const activeThumb = pane.querySelector('.thumb-grid-item.active img');
+        if (activeThumb) {
+          const r = activeThumb.getBoundingClientRect();
+          if (r.width > 0 && r.height > 0) {
+            pageImage = activeThumb;
+          }
+        }
+      }
+      // Fallback: the content area div (excludes header), never the full pane
+      if (!pageImage) {
+        pageImage = pane.querySelector('.pdf-content');
+      }
+
+      if (!pageImage) continue; // skip if nothing found — don't draw annotations
+
+      const rect = pageImage.getBoundingClientRect();
+      result[langId] = {
+        left: rect.left - canvasRect.left,
+        top: rect.top - canvasRect.top,
+        width: rect.width,
+        height: rect.height,
+      };
+    }
+    return result;
+  }, []);
+
+  /**
+   * In thumbnails mode, get rects for ALL thumbnail images keyed by "langId-pageNum".
+   */
+  const getAllThumbnailRects = useCallback(() => {
+    const canvas = canvasRef.current;
+    const stage = stageRef.current;
+    if (!canvas || !stage) return {};
+    const canvasRect = canvas.getBoundingClientRect();
+    const panes = stage.querySelectorAll('[data-annotation-language]');
+    const result = {};
+    for (const pane of panes) {
+      const langId = pane.getAttribute('data-annotation-language');
+      if (!langId) continue;
+      const thumbImgs = pane.querySelectorAll('.thumb-grid-item img[data-page]');
+      for (const img of thumbImgs) {
+        const page = Number(img.getAttribute('data-page'));
+        if (!page) continue;
+        const r = img.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) {
+          result[`${langId}-${page}`] = {
+            left: r.left - canvasRect.left,
+            top: r.top - canvasRect.top,
+            width: r.width,
+            height: r.height,
+          };
+        }
+      }
+    }
+    return result;
+  }, []);
+
+  /**
+   * Convert annotation page-image-relative pixel coordinates to percentages
+   * relative to the page image size (image width/height).
+   * Stores a coordsNormalized flag so the renderer knows to denormalize.
+   */
+  const normalizeAnnotationCoords = useCallback((annotation, imageRect) => {
+    if (!imageRect || !imageRect.width || !imageRect.height) return annotation;
+    const normalized = { ...annotation, coordsNormalized: true };
+    if (annotation.type === 'stroke' && Array.isArray(annotation.points)) {
+      normalized.points = annotation.points.map((p) => ({
+        x: (p.x / imageRect.width) * 100,
+        y: (p.y / imageRect.height) * 100,
+      }));
+    }
+    if (annotation.type === 'text') {
+      normalized.x = (annotation.x / imageRect.width) * 100;
+      normalized.y = (annotation.y / imageRect.height) * 100;
+    }
+    return normalized;
+  }, []);
+
+  /**
+   * Convert stored percentage coordinates back to page-image-relative pixel
+   * coordinates based on the current image dimensions.
+   * Returns a new object (does not mutate the original).
+   */
+  const denormalizeAnnotationCoords = useCallback((annotation, imageRect) => {
+    if (!annotation.coordsNormalized || !imageRect || !imageRect.width || !imageRect.height) {
+      return annotation;
+    }
+    const denorm = { ...annotation };
+    delete denorm.coordsNormalized;
+    if (annotation.type === 'stroke' && Array.isArray(annotation.points)) {
+      denorm.points = annotation.points.map((p) => ({
+        x: (p.x / 100) * imageRect.width,
+        y: (p.y / 100) * imageRect.height,
+      }));
+    }
+    if (annotation.type === 'text') {
+      denorm.x = (annotation.x / 100) * imageRect.width;
+      denorm.y = (annotation.y / 100) * imageRect.height;
+    }
+    return denorm;
+  }, []);
+
+  const resolveAnnotationTarget = useCallback((event) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
     const rect = canvas.getBoundingClientRect();
-    return {
+    const canvasPoint = {
       x: event.clientX - rect.left,
       y: event.clientY - rect.top
     };
-  };
+    const pageImageRects = getPageImageRects();
+    const langId = visibleLanguages.find((language) => {
+      const imageRect = pageImageRects[language];
+      return imageRect
+        && canvasPoint.x >= imageRect.left
+        && canvasPoint.x <= imageRect.left + imageRect.width
+        && canvasPoint.y >= imageRect.top
+        && canvasPoint.y <= imageRect.top + imageRect.height;
+    });
+    if (!langId) return null;
+    const imageRect = pageImageRects[langId];
+    return {
+      langId,
+      // Coordinates relative to the page image top-left corner
+      point: {
+        x: canvasPoint.x - imageRect.left,
+        y: canvasPoint.y - imageRect.top
+      },
+      // Page image dimensions for percentage normalization
+      imageRect: { width: imageRect.width, height: imageRect.height },
+    };
+  }, [getPageImageRects, visibleLanguages]);
 
-  const redraw = (context, width, height, annotations) => {
+  const redraw = useCallback((context, width, height, annotations) => {
     if (!context) return;
     context.clearRect(0, 0, width, height);
+
+    const isThumbMode = displayModeRef.current === 'thumbnails';
+
+    if (isThumbMode) {
+      // Thumbnails mode: draw each page's annotations on its own thumbnail
+      const thumbRects = getAllThumbnailRects();
+      for (const annotation of annotations) {
+        const langId = annotation.langId === 'tc' ? 'tc' : 'en';
+        const page = Number(annotation.page);
+        const key = `${langId}-${page}`;
+        const imageRect = thumbRects[key];
+        if (!imageRect) continue;
+
+        context.save();
+        context.beginPath();
+        context.rect(imageRect.left, imageRect.top, imageRect.width, imageRect.height);
+        context.clip();
+
+        const denorm = annotation.coordsNormalized
+          ? denormalizeAnnotationCoords(annotation, imageRect)
+          : annotation;
+
+        if (denorm.type === 'stroke') {
+          const points = denorm.points || [];
+          if (points.length < 2) { context.restore(); continue; }
+          context.save();
+          context.lineJoin = 'round';
+          context.lineCap = 'round';
+          context.strokeStyle = denorm.color;
+          context.globalAlpha = denorm.mode === 'highlight' ? 0.28 : 1;
+          const strokeScale = Math.max(0.2, imageRect.width / 800);
+          context.lineWidth = (denorm.mode === 'highlight' ? 18 : 4) * strokeScale;
+          context.beginPath();
+          context.moveTo(imageRect.left + points[0].x, imageRect.top + points[0].y);
+          for (const point of points.slice(1)) {
+            context.lineTo(imageRect.left + point.x, imageRect.top + point.y);
+          }
+          context.stroke();
+          context.restore();
+        }
+
+        if (denorm.type === 'text') {
+          context.save();
+          context.fillStyle = denorm.color;
+          const fontSize = Math.max(1, Math.round(18 * (imageRect.width / 800)));
+          context.font = `${fontSize}px Inter, system-ui, sans-serif`;
+          context.fillText(denorm.text, imageRect.left + denorm.x, imageRect.top + denorm.y);
+          context.restore();
+        }
+
+        context.restore();
+      }
+      return;
+    }
+
+    // Normal mode: draw annotations on the current page image
+    const pageImageRects = getPageImageRects();
     for (const annotation of annotations) {
-      if (annotation.type === 'stroke') {
-        const points = annotation.points || [];
-        if (points.length < 2) continue;
+      const langId = annotation.langId === 'tc' ? 'tc' : 'en';
+      const imageRect = pageImageRects[langId];
+      if (!imageRect) continue;
+
+      // Clip to the page image area so annotations don't bleed outside
+      context.save();
+      context.beginPath();
+      context.rect(imageRect.left, imageRect.top, imageRect.width, imageRect.height);
+      context.clip();
+
+      // Denormalize if stored as percentages
+      const denorm = annotation.coordsNormalized
+        ? denormalizeAnnotationCoords(annotation, imageRect)
+        : annotation;
+
+      if (denorm.type === 'stroke') {
+        const points = denorm.points || [];
+        if (points.length < 2) { context.restore(); continue; }
         context.save();
         context.lineJoin = 'round';
         context.lineCap = 'round';
-        context.strokeStyle = annotation.color;
-        context.globalAlpha = annotation.mode === 'highlight' ? 0.28 : 1;
-        context.lineWidth = annotation.mode === 'highlight' ? 18 : 4;
+        context.strokeStyle = denorm.color;
+        context.globalAlpha = denorm.mode === 'highlight' ? 0.28 : 1;
+        const strokeScale = Math.max(0.2, imageRect.width / 800);
+        context.lineWidth = (denorm.mode === 'highlight' ? 18 : 4) * strokeScale;
         context.beginPath();
-        context.moveTo(points[0].x, points[0].y);
+        context.moveTo(imageRect.left + points[0].x, imageRect.top + points[0].y);
         for (const point of points.slice(1)) {
-          context.lineTo(point.x, point.y);
+          context.lineTo(imageRect.left + point.x, imageRect.top + point.y);
         }
         context.stroke();
         context.restore();
       }
 
-      if (annotation.type === 'text') {
+      if (denorm.type === 'text') {
         context.save();
-        context.fillStyle = annotation.color;
-        context.font = '18px Inter, system-ui, sans-serif';
-        context.fillText(annotation.text, annotation.x, annotation.y);
+        context.fillStyle = denorm.color;
+        const fontSize = Math.max(1, Math.round(18 * (imageRect.width / 800)));
+        context.font = `${fontSize}px Inter, system-ui, sans-serif`;
+        context.fillText(denorm.text, imageRect.left + denorm.x, imageRect.top + denorm.y);
         context.restore();
       }
+
+      context.restore(); // restore clip
     }
+  }, [getPageImageRects, denormalizeAnnotationCoords, getAllThumbnailRects]);
+
+  const pointToSegmentDistance = (point, start, end) => {
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    if (dx === 0 && dy === 0) {
+      return Math.hypot(point.x - start.x, point.y - start.y);
+    }
+    const t = Math.max(0, Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / (dx * dx + dy * dy)));
+    const projX = start.x + t * dx;
+    const projY = start.y + t * dy;
+    return Math.hypot(point.x - projX, point.y - projY);
+  };
+
+  const findAnnotationAtPoint = (langId, point) => {
+    const pageRemarks = remarks.filter(
+      (r) => r.chapter === selectedChapter
+        && Number(r.page) === Number(selectedPage)
+        && (r.langId === 'tc' ? 'tc' : 'en') === langId
+    );
+    // Get current page image rect for denormalizing stored percentage coords
+    const pageImageRects = getPageImageRects();
+    const imageRect = pageImageRects[langId] || null;
+
+    const ordered = [...pageRemarks].reverse();
+    for (const annotation of ordered) {
+      // Denormalize if stored as percentages, so we can compare against raw pixel point
+      const denorm = (annotation.coordsNormalized && imageRect)
+        ? denormalizeAnnotationCoords(annotation, imageRect)
+        : annotation;
+
+      if (denorm.type === 'text') {
+        const text = String(denorm.text || '');
+        const approxWidth = Math.max(24, text.length * 9);
+        const approxHeight = 24;
+        if (
+          point.x >= denorm.x - 4 && point.x <= denorm.x + approxWidth &&
+          point.y <= denorm.y + 4 && point.y >= denorm.y - approxHeight
+        ) {
+          return annotation;
+        }
+      }
+
+      if (denorm.type === 'stroke') {
+        const points = denorm.points || [];
+        const tolerance = (denorm.mode === 'highlight' ? 18 : 4) / 2 + 8;
+        for (let index = 1; index < points.length; index += 1) {
+          if (pointToSegmentDistance(point, points[index - 1], points[index]) <= tolerance) {
+            return annotation;
+          }
+        }
+      }
+    }
+    return null;
   };
 
   const handlePointerDown = (event) => {
-    if (tool !== 'pen' && tool !== 'highlight') return;
+    if (tool !== 'pen' && tool !== 'highlight' && tool !== 'move') return;
+    const target = resolveAnnotationTarget(event);
+    if (!target) return;
+    setActiveAnnotationLangId(target.langId);
+
+    if (tool === 'move') {
+      const pageImageRects = getPageImageRects();
+      const imageRect = pageImageRects[target.langId];
+      const existing = findAnnotationAtPoint(target.langId, target.point);
+      if (existing) {
+        moveAnnotationRef.current = existing;
+        moveStartPointRef.current = target.point;
+        moveHasMovedRef.current = false;
+      }
+      return;
+    }
+
     drawingRef.current = true;
+    // Prevent browser from interpreting this drag as a scroll
+    event.preventDefault();
+    if (event.target && typeof event.target.setPointerCapture === 'function') {
+      event.target.setPointerCapture(event.pointerId);
+    }
     currentStrokeRef.current = {
       type: 'stroke',
       chapter: selectedChapter,
       page: selectedPage,
+      langId: target.langId,
       mode: tool,
-      color: tool === 'highlight' ? '#fbbf24' : textColor,
-      points: [getPoint(event)],
+      color: textColor,
+      points: [target.point],
       createdAt: new Date().toISOString()
     };
   };
 
   const handlePointerMove = (event) => {
+    // Handle move tool dragging
+    if (moveAnnotationRef.current && moveStartPointRef.current) {
+      const target = resolveAnnotationTarget(event);
+      if (!target || target.langId !== moveAnnotationRef.current.langId) return;
+      const dx = target.point.x - moveStartPointRef.current.x;
+      const dy = target.point.y - moveStartPointRef.current.y;
+      moveStartPointRef.current = target.point;
+      moveHasMovedRef.current = true;
+
+      const pageImageRects = getPageImageRects();
+      const imageRect = pageImageRects[moveAnnotationRef.current.langId];
+      if (!imageRect) return;
+
+      // Update the annotation in-place for live preview
+      const moved = { ...moveAnnotationRef.current };
+      if (moved.type === 'text') {
+        // Denormalize first, apply delta, then re-normalize
+        const denorm = (moved.coordsNormalized && imageRect)
+          ? denormalizeAnnotationCoords(moved, imageRect)
+          : moved;
+        denorm.x = (denorm.x || 0) + dx;
+        denorm.y = (denorm.y || 0) + dy;
+        const renormalized = normalizeAnnotationCoords({ ...denorm, langId: moved.langId, type: 'text', text: moved.text, color: moved.color }, imageRect);
+        moveAnnotationRef.current = { ...moved, ...renormalized, createdAt: moved.createdAt };
+      } else if (moved.type === 'stroke' && Array.isArray(moved.points)) {
+        const denorm = (moved.coordsNormalized && imageRect)
+          ? denormalizeAnnotationCoords(moved, imageRect)
+          : moved;
+        denorm.points = (denorm.points || []).map((p) => ({ x: p.x + dx, y: p.y + dy }));
+        const renormalized = normalizeAnnotationCoords({ ...denorm, langId: moved.langId, type: 'stroke', mode: moved.mode, color: moved.color, points: denorm.points }, imageRect);
+        moveAnnotationRef.current = { ...moved, ...renormalized, createdAt: moved.createdAt };
+      }
+
+      // Redraw with the moved annotation
+      const context = canvasRef.current?.getContext('2d');
+      const rect = canvasRef.current?.getBoundingClientRect();
+      if (context && rect) {
+        const withoutMoved = pageAnnotations.filter((a) => a.createdAt !== moved.createdAt || a.langId !== moved.langId);
+        redraw(context, rect.width, rect.height, [...withoutMoved, moveAnnotationRef.current]);
+      }
+      return;
+    }
+
+    // Handle drawing stroke
     if (!drawingRef.current || !currentStrokeRef.current) return;
-    const nextPoint = getPoint(event);
+    const target = resolveAnnotationTarget(event);
+    if (!target || target.langId !== currentStrokeRef.current.langId) return;
+    const nextPoint = target.point;
     currentStrokeRef.current.points.push(nextPoint);
     const context = canvasRef.current.getContext('2d');
     const rect = canvasRef.current.getBoundingClientRect();
@@ -970,28 +1543,208 @@ function App() {
   };
 
   const handlePointerUp = async () => {
+    // Handle move tool drop
+    if (moveAnnotationRef.current) {
+      const moved = moveAnnotationRef.current;
+      moveAnnotationRef.current = null;
+      moveStartPointRef.current = null;
+      // Only save if the annotation was actually moved
+      if (moveHasMovedRef.current) {
+        moveHasMovedRef.current = false;
+        // Delete old annotation and save moved version
+        if (moved.createdAt) {
+          await deleteRemarkByCreatedAt(moved.createdAt, moved.langId || annotationScopeLangId);
+        }
+        // Re-save with updated coordinates
+        const remarkToSave = {
+          type: moved.type,
+          chapter: selectedChapter,
+          page: selectedPage,
+          langId: moved.langId,
+          color: moved.color,
+          text: moved.text,
+          points: moved.points,
+          mode: moved.mode,
+          x: moved.x,
+          y: moved.y,
+          coordsNormalized: moved.coordsNormalized,
+          createdAt: new Date().toISOString()
+        };
+        await saveRemark(remarkToSave);
+      }
+      return;
+    }
+
     if (!drawingRef.current || !currentStrokeRef.current) return;
     drawingRef.current = false;
     const stroke = currentStrokeRef.current;
     currentStrokeRef.current = null;
-    await saveRemark(stroke);
+    // Release pointer capture so scrolling resumes
+    if (event.target && typeof event.target.releasePointerCapture === 'function') {
+      try { event.target.releasePointerCapture(event.pointerId); } catch {}
+    }
+    // Normalize coordinates to percentages relative to page image size
+    const pageImageRects = getPageImageRects();
+    const imageRect = pageImageRects[stroke.langId];
+    const normalizedStroke = imageRect
+      ? normalizeAnnotationCoords(stroke, imageRect)
+      : stroke;
+    await saveRemark(normalizedStroke);
   };
 
-  const handleCanvasClick = async (event) => {
-    if (tool !== 'text' || !noteText.trim()) return;
-    const point = getPoint(event);
+  const commitTextAnnotation = async () => {
+    const el = textInputRef.current;
+    const state = textInputState;
+    if (!el || !state) return;
+    const text = el.value.trim();
+    if (!text) {
+      textInputCommittedRef.current = true;
+      setTextInputState(null);
+      return;
+    }
+    // If editing an existing annotation, delete the old one first
+    if (state.existingCreatedAt) {
+      await deleteRemarkByCreatedAt(state.existingCreatedAt, state.existingLangId || state.langId);
+    }
     const remark = {
       type: 'text',
       chapter: selectedChapter,
       page: selectedPage,
-      x: point.x,
-      y: point.y,
+      langId: state.langId,
+      x: state.point.x,
+      y: state.point.y,
       color: textColor,
-      text: noteText.trim(),
+      text,
       createdAt: new Date().toISOString()
     };
-    await saveRemark(remark);
-    setNoteText('');
+    const normalizedRemark = state.imageRect
+      ? normalizeAnnotationCoords(remark, state.imageRect)
+      : remark;
+    textInputCommittedRef.current = true;
+    await saveRemark(normalizedRemark);
+    setTextInputState(null);
+  };
+
+  const cancelTextAnnotation = () => {
+    textInputCommittedRef.current = true;
+    setTextInputState(null);
+  };
+
+  // Cancel active text input when switching away from text tool
+  useEffect(() => {
+    if (tool !== 'text' && textInputState) {
+      cancelTextAnnotation();
+    }
+  }, [tool]);
+
+  // Cancel active text input when navigating away
+  useEffect(() => {
+    if (textInputState) {
+      cancelTextAnnotation();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedChapter, selectedFile, selectedPage]);
+
+  // Redraw annotations when scrolling (capture scroll events on the stage)
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    let rafId = null;
+    const onScroll = () => {
+      if (rafId) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const context = canvas.getContext('2d');
+        const rect = canvas.getBoundingClientRect();
+        const annotationsToDraw = displayMode === 'thumbnails' ? allSectionAnnotations : pageAnnotations;
+        redraw(context, rect.width, rect.height, annotationsToDraw);
+      });
+    };
+    stage.addEventListener('scroll', onScroll, { capture: true, passive: true });
+    return () => {
+      stage.removeEventListener('scroll', onScroll, { capture: true });
+      if (rafId) cancelAnimationFrame(rafId);
+    };
+  }, [pageAnnotations, allSectionAnnotations, displayMode, redraw]);
+
+  const handleCanvasClick = async (event) => {
+    // If a text input is already active, handle reposition or ignore
+    if (textInputState) {
+      // Check if this click is a reposition (blur flag was set by mousedown listener)
+      if (textInputBlurFlagRef.current) {
+        textInputBlurFlagRef.current = false;
+        const target = resolveAnnotationTarget(event);
+        if (!target) {
+          // Clicked outside page image area — commit as-is
+          commitTextAnnotation();
+          return;
+        }
+        const stage = stageRef.current;
+        const stageRect = stage ? stage.getBoundingClientRect() : null;
+        if (!stageRect) return;
+        // Reposition the textarea to the new click location
+        setTextInputState((prev) => prev ? {
+          ...prev,
+          canvasX: event.clientX - stageRect.left,
+          canvasY: event.clientY - stageRect.top,
+          langId: target.langId,
+          point: target.point,
+          imageRect: target.imageRect,
+        } : null);
+        // Refocus the textarea after React re-renders
+        setTimeout(() => textInputRef.current?.focus(), 0);
+        return;
+      }
+      return;
+    }
+
+    const target = resolveAnnotationTarget(event);
+    if (!target) return;
+    setActiveAnnotationLangId(target.langId);
+    if (tool === 'eraser') {
+      const annotation = findAnnotationAtPoint(target.langId, target.point);
+      if (!annotation?.createdAt) return;
+      await deleteRemarkByCreatedAt(annotation.createdAt, annotation.langId || target.langId);
+      return;
+    }
+    if (tool === 'text') {
+      // Check if clicking on an existing text annotation (to re-edit it)
+      const existing = findAnnotationAtPoint(target.langId, target.point);
+      const stage = stageRef.current;
+      const stageRect = stage ? stage.getBoundingClientRect() : null;
+      if (!stageRect) return;
+      textInputCommittedRef.current = false;
+
+      // When editing existing text, use its original position (denormalized)
+      let editPoint = target.point;
+      if (existing && existing.type === 'text') {
+        const pageImageRects = getPageImageRects();
+        const imageRect = pageImageRects[target.langId];
+        if (imageRect && existing.coordsNormalized) {
+          const denorm = denormalizeAnnotationCoords(existing, imageRect);
+          editPoint = { x: denorm.x || 0, y: denorm.y || 0 };
+        } else if (existing.x != null && existing.y != null) {
+          editPoint = { x: existing.x, y: existing.y };
+        }
+      }
+
+      const newState = {
+        canvasX: event.clientX - stageRect.left,
+        canvasY: event.clientY - stageRect.top,
+        langId: target.langId,
+        point: editPoint,
+        imageRect: target.imageRect,
+      };
+      if (existing && existing.type === 'text') {
+        // Re-edit: pre-fill with existing text and store reference to delete old on save
+        newState.existingCreatedAt = existing.createdAt;
+        newState.existingLangId = existing.langId || target.langId;
+        newState.initialText = existing.text || '';
+      }
+      setTextInputState(newState);
+    }
   };
 
   // ── Panel drag ─────────────────────────────────────────────
@@ -1092,16 +1845,6 @@ function App() {
     };
   }, [isNarrowScreen]);
 
-  const visibleLanguages = useMemo(() => {
-    if (selectedLanguage !== 'bilingual') {
-      if (hasRenderableSource(pageSources[selectedLanguage])) {
-        return [selectedLanguage];
-      }
-      const fallbackLanguage = selectedLanguage === 'en' ? 'tc' : 'en';
-      return hasRenderableSource(pageSources[fallbackLanguage]) ? [fallbackLanguage] : [];
-    }
-    return ['en', 'tc'].filter((language) => hasRenderableSource(pageSources[language]));
-  }, [selectedLanguage, pageSources]);
   const isBilingualView = selectedLanguage === 'bilingual' && visibleLanguages.length > 1;
   const displayZoomPercent = useMemo(() => {
     const scales = visibleLanguages
@@ -1130,6 +1873,30 @@ function App() {
   const pageSelectOptions = useMemo(() => (
     pageOptions.map((page) => ({ id: page, label: String(page) }))
   ), [pageOptions]);
+
+  const annotationScopeLangId = useMemo(() => {
+    if (selectedLanguage === 'bilingual') {
+      return visibleLanguages.includes(activeAnnotationLangId)
+        ? activeAnnotationLangId
+        : (visibleLanguages[0] || 'en');
+    }
+    if (visibleLanguages[0]) {
+      return visibleLanguages[0];
+    }
+    return selectedLanguage === 'tc' ? 'tc' : 'en';
+  }, [activeAnnotationLangId, selectedLanguage, visibleLanguages]);
+
+  useEffect(() => {
+    setActiveAnnotationLangId((current) => {
+      if (selectedLanguage !== 'bilingual') {
+        return visibleLanguages[0] || (selectedLanguage === 'tc' ? 'tc' : 'en');
+      }
+      if (visibleLanguages.includes(current)) {
+        return current;
+      }
+      return visibleLanguages[0] || current || 'en';
+    });
+  }, [selectedLanguage, visibleLanguages]);
 
   const currentPageIndex = useMemo(
     () => pageOptions.findIndex((page) => Number(page) === Number(selectedPage)),
@@ -1495,16 +2262,19 @@ function App() {
             </svg>
             {_('subject')}
           </span>
-          <StepperSelect
-            items={subjectOptions}
-            value={selectedBook}
-            onChange={(value) => stepSubject(subjectOptions.findIndex((item) => String(item.id) === String(value)) - currentSubjectIndex)}
-            onPrev={() => stepSubject(-1)}
-            onNext={() => stepSubject(1)}
-            disablePrev={currentSubjectIndex <= 0}
-            disableNext={currentSubjectIndex < 0 || currentSubjectIndex >= subjectOptions.length - 1}
-            placeholder={selectedBook ? getSubjectLabel(selectedBook, selectedLanguage) : _('noBook')}
-          />
+          <div className="toggle-group subject-toggle-group">
+            {subjectToggleOptions.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={`toggle-btn ${selectedBook === item.id ? 'active' : ''}`}
+                onClick={() => handleSubjectChange(item.id)}
+                aria-pressed={selectedBook === item.id}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
         </label>
         <label>
           <span className="sidebar-label-icon">
@@ -1560,19 +2330,20 @@ function App() {
               </svg>
               {_('section')}
             </span>
-            <StepperSelect
-              items={sectionSelectOptions}
-              value={selectedFile}
-              onChange={(value) => {
-                setSelectedFile(Number(value));
-                setSelectedPage(1);
-              }}
-              onPrev={() => currentSectionIndex > 0 && (() => { setSelectedFile(Number(sectionSelectOptions[currentSectionIndex - 1].id)); setSelectedPage(1); })()}
-              onNext={() => currentSectionIndex >= 0 && currentSectionIndex < sectionSelectOptions.length - 1 && (() => { setSelectedFile(Number(sectionSelectOptions[currentSectionIndex + 1].id)); setSelectedPage(1); })()}
-              disablePrev={currentSectionIndex <= 0}
-              disableNext={currentSectionIndex < 0 || currentSectionIndex >= sectionSelectOptions.length - 1}
-              placeholder={String(selectedFile || 1)}
-            />
+            <div className="selector-stepper-row">
+              <button type="button" className="selector-stepper-btn" onClick={() => { if (currentSectionIndex > 0) { setSelectedFile(Number(sectionSelectOptions[currentSectionIndex - 1].id)); setSelectedPage(1); } }} disabled={currentSectionIndex <= 0}>-</button>
+              <SectionAutocomplete
+                sections={currentChapter?.contents || []}
+                currentSection={currentSection}
+                language={selectedLanguage}
+                getSectionName={getSectionName}
+                onSelect={(sectionId) => {
+                  setSelectedFile(Number(sectionId));
+                  setSelectedPage(1);
+                }}
+              />
+              <button type="button" className="selector-stepper-btn" onClick={() => { if (currentSectionIndex >= 0 && currentSectionIndex < sectionSelectOptions.length - 1) { setSelectedFile(Number(sectionSelectOptions[currentSectionIndex + 1].id)); setSelectedPage(1); } }} disabled={currentSectionIndex < 0 || currentSectionIndex >= sectionSelectOptions.length - 1}>+</button>
+            </div>
           </label>
         )}
 
@@ -1755,23 +2526,6 @@ function App() {
                 <path d="M5 6h9v2H5V6zm2 4h5v2H7v-2zm7.5 0h2.4L20 18h-2.1l-.7-2h-3l-.7 2h-2.1l3.2-8zm.2 4h1.7l-.8-2.3-.9 2.3z" />
               </svg>
             </button>
-            {displayMode === 'scrolling' && (
-              <button
-                className="sidebar-icon-btn"
-                onClick={fitScreen}
-                data-tooltip={fitButtonTitle}
-                aria-label={fitButtonTitle}
-                disabled={fitDisabled}
-              >
-                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                  {fitButtonMode === 'height' ? (
-                    <path d="M12 3l3.5 3.5-1.4 1.4-1.1-1.1V17.2l1.1-1.1 1.4 1.4L12 21l-3.5-3.5 1.4-1.4 1.1 1.1V6.8L9.9 7.9 8.5 6.5 12 3zM5 5h3v2H7v10h1v2H5V5zm11 0h3v14h-3v-2h1V7h-1V5z" />
-                  ) : (
-                    <path d="M3 12l3.5-3.5 1.4 1.4-1.1 1.1h10.4l-1.1-1.1 1.4-1.4L21 12l-3.5 3.5-1.4-1.4 1.1-1.1H6.8l1.1 1.1-1.4 1.4L3 12zM5 5h14v3h-2V7H7v1H5V5zm0 11h2v1h10v-1h2v3H5v-3z" />
-                  )}
-                </svg>
-              </button>
-            )}
             <button
               className={`sidebar-icon-btn ${resourcesDrawerOpen ? 'active' : ''}`}
               onClick={() => setResourcesDrawerOpen((current) => !current)}
@@ -1846,27 +2600,6 @@ function App() {
           </label>
         )}
 
-        {!sidebarCollapsed && displayMode === 'scrolling' && (
-          <label className="toggle-row">
-            <button
-              className="toggle-btn icon-only"
-              onClick={fitScreen}
-              title={fitButtonTitle}
-              aria-label={fitButtonTitle}
-              disabled={fitDisabled}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                {fitButtonMode === 'height' ? (
-                  <path d="M12 3l3.5 3.5-1.4 1.4-1.1-1.1V17.2l1.1-1.1 1.4 1.4L12 21l-3.5-3.5 1.4-1.4 1.1 1.1V6.8L9.9 7.9 8.5 6.5 12 3zM5 5h3v2H7v10h1v2H5V5zm11 0h3v14h-3v-2h1V7h-1V5z" />
-                ) : (
-                  <path d="M3 12l3.5-3.5 1.4 1.4-1.1 1.1h10.4l-1.1-1.1 1.4-1.4L21 12l-3.5 3.5-1.4-1.4 1.1-1.1H6.8l1.1 1.1-1.4 1.4L3 12zM5 5h14v3h-2V7H7v1H5V5zm0 11h2v1h10v-1h2v3H5v-3z" />
-                )}
-              </svg>
-              {fitButtonTitle}
-            </button>
-          </label>
-        )}
-
         {!sidebarCollapsed && (
           <label className="toggle-row">
             <button
@@ -1892,13 +2625,14 @@ function App() {
       </aside>
 
       <main className="reader">
-        <div className={`book-stage ${displayMode} ${isBilingualView ? 'bilingual-layout' : ''}`}>
+        <div className={`book-stage ${displayMode} ${isBilingualView ? 'bilingual-layout' : ''}`} ref={stageRef} onClick={tool === 'text' ? handleCanvasClick : undefined}>
           {visibleLanguages.map((language) => {
             const src = pageSources[language];
             const isImages = Array.isArray(src);
             return (
               <PdfPane
                 key={language}
+                paneLanguage={language}
                 source={isImages ? '' : (src || '')}
                 images={isImages ? src : null}
                 title={`${language === 'en' ? _('english') : _('chinese')} · ${currentBookHeaderName}`}
@@ -1908,8 +2642,6 @@ function App() {
                 onPageChange={setSelectedPage}
                 onPageCountChange={(count) => setPageCounts((current) => ({ ...current, [language]: count }))}
                 thumbnailsOpen={showThumbnails}
-                thumbCols={thumbCols}
-                onThumbColsChange={setThumbCols}
                 onThumbnailClick={(page) => {
                   setSelectedPage(page);
                   setDisplayMode('pagination');
@@ -1934,13 +2666,50 @@ function App() {
           <canvas
             ref={canvasRef}
             className="annotation-canvas"
-            style={{ pointerEvents: tool === 'hand' ? 'none' : 'auto' }}
+            style={{
+              pointerEvents: tool === 'hand' ? 'none' : 'auto',
+              touchAction: 'pan-x pan-y',
+              cursor: tool === 'move' ? 'move' : tool === 'eraser' ? 'pointer' : tool === 'text' ? 'text' : tool === 'pen' || tool === 'highlight' ? 'crosshair' : 'default'
+            }}
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
             onPointerLeave={handlePointerUp}
             onClick={handleCanvasClick}
           />
+          {textInputState && (
+            <textarea
+              ref={textInputRef}
+              className="text-annotation-textarea"
+              style={{
+                left: textInputState.canvasX,
+                top: textInputState.canvasY,
+                color: textColor,
+                borderColor: textColor,
+              }}
+              placeholder={_('textPlaceholder')}
+              defaultValue={textInputState.initialText || ''}
+              rows={2}
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  commitTextAnnotation();
+                }
+                if (e.key === 'Escape') {
+                  e.preventDefault();
+                  cancelTextAnnotation();
+                }
+              }}
+              onBlur={() => {
+                if (textInputCommittedRef.current) {
+                  textInputCommittedRef.current = false;
+                  return;
+                }
+                commitTextAnnotation();
+              }}
+            />
+          )}
         </div>
 
         {resourcesDrawerOpen && currentSection && (
@@ -2027,9 +2796,10 @@ function App() {
           </span>
           <div className="toolbar-group toolbar-primary">
             <button onClick={() => moveSection(-1)} title={_('prevSection')} aria-label={_('prevSection')}>|&lt;</button>
-            <button onClick={() => changePage(-1)} title={_('prevPage')} aria-label={_('prevPage')}>&lt;</button>
-            <button onClick={() => changePage(1)} title={_('nextPage')} aria-label={_('nextPage')}>&gt;</button>
+            <button onClick={() => displayMode === 'thumbnails' ? changePageSeamless(-1) : changePage(-1)} title={_('prevPage')} aria-label={_('prevPage')}>&lt;</button>
+            <button onClick={() => displayMode === 'thumbnails' ? changePageSeamless(1) : changePage(1)} title={_('nextPage')} aria-label={_('nextPage')}>&gt;</button>
             <button onClick={() => moveSection(1)} title={_('nextSection')} aria-label={_('nextSection')}>&gt;|</button>
+            {!fitDisabled && (
             <button className="icon-btn active" onClick={fitScreen} title={fitButtonTitle} aria-label={fitButtonTitle} disabled={fitDisabled}>
               <svg viewBox="0 0 24 24" role="presentation" focusable="false">
                 {fitButtonMode === 'height' ? (
@@ -2039,12 +2809,13 @@ function App() {
                 )}
               </svg>
             </button>
+            )}
             <span className="toolbar-sep" />
             <input
               type="range"
               className="zoom-slider"
               min="5"
-              max="400"
+              max={showThumbnails ? "100" : "200"}
               value={Math.round(zoomLevel * 100)}
               onChange={(e) => setZoomLevel(Number(e.target.value) / 100)}
               title={_('zoomLevel')}
@@ -2052,12 +2823,14 @@ function App() {
             />
             <span className="zoom-label">{displayZoomPercent}%</span>
           </div>
+          {displayMode !== 'thumbnails' && (
           <button
             className={`tool-btn annotation-toggle-btn ${annotationToolsOpen ? 'active' : ''}`}
             onClick={() => {
               setAnnotationToolsOpen((prev) => {
-                if (prev) setTool('hand');
-                return !prev;
+                const next = !prev;
+                setTool(next ? 'pen' : 'hand');
+                return next;
               });
             }}
             title={_('toggleAnnotations')}
@@ -2067,6 +2840,7 @@ function App() {
               <path d="M4 16.5V20h3.5L18 9.5 14.5 6 4 16.5zm2.2 1.3h-.7v-.7l8.6-8.6.7.7-8.6 8.6zM19.7 7.8c.4-.4.4-1 0-1.4l-2.1-2.1c-.4-.4-1-.4-1.4 0l-1.2 1.2 3.5 3.5 1.2-1.2z" />
             </svg>
           </button>
+          )}
           <button
             className="tool-btn panel-close-btn panel-close-accent"
             onClick={() => setPanelVisible(false)}
@@ -2078,7 +2852,7 @@ function App() {
             </svg>
           </button>
           </div>
-          {annotationToolsOpen && (
+          {annotationToolsOpen && displayMode !== 'thumbnails' && (
           <div className="panel-row-2 annotation-row">
           <div className="toolbar-group toolbar-secondary">
             <button
@@ -2092,6 +2866,17 @@ function App() {
               </svg>
             </button>
             <button
+              className={`tool-btn ${tool === 'highlight' ? 'active' : ''}`}
+              onClick={() => setTool('highlight')}
+              title={_('highlighter')}
+              aria-label={_('highlighter')}
+            >
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                <path d="M15.24 2.36l-11 11a1 1 0 0 0-.24.59V17a1 1 0 0 0 1 1h3.05a1 1 0 0 0 .59-.24l11-11a1 1 0 0 0 0-1.41l-3.4-3.4a1 1 0 0 0-1.41 0zM5 16v-2.5l9-9L16.5 7l-9 9H5z" />
+                <rect x="2" y="18" width="20" height="3" rx="1" />
+              </svg>
+            </button>
+            <button
               className={`tool-btn ${tool === 'text' ? 'active' : ''}`}
               onClick={() => setTool('text')}
               title={_('textTool')}
@@ -2102,14 +2887,24 @@ function App() {
               </svg>
             </button>
             <button
-              className={`tool-btn ${tool === 'highlight' ? 'active' : ''}`}
-              onClick={() => setTool('highlight')}
-              title={_('highlighter')}
-              aria-label={_('highlighter')}
+              className={`tool-btn ${tool === 'eraser' ? 'active' : ''}`}
+              onClick={() => setTool('eraser')}
+              title={_('eraser')}
+              aria-label={_('eraser')}
             >
               <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <path d="M15.24 2.36l-11 11a1 1 0 0 0-.24.59V17a1 1 0 0 0 1 1h3.05a1 1 0 0 0 .59-.24l11-11a1 1 0 0 0 0-1.41l-3.4-3.4a1 1 0 0 0-1.41 0zM5 16v-2.5l9-9L16.5 7l-9 9H5z" />
-                <rect x="2" y="18" width="20" height="3" rx="1" />
+                <path d="M16.24 3.56a2 2 0 0 1 2.83 0l1.37 1.37a2 2 0 0 1 0 2.83l-8.49 8.48H8.71L3.56 10.9a2 2 0 0 1 0-2.83l7.85-7.85a2 2 0 0 1 2.83 0l2 2.34zM5.68 9.49l4.28 4.27h1.16l7.9-7.9-1.36-1.37-1.44-1.44-1.31-1.54L5.68 9.49z" />
+                <path d="M3 20h18v2H3z" />
+              </svg>
+            </button>
+            <button
+              className={`tool-btn ${tool === 'move' ? 'active' : ''}`}
+              onClick={() => setTool('move')}
+              title={_('moveTool')}
+              aria-label={_('moveTool')}
+            >
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                <path d="M12 2l3 3h-2v4h4V7l3 3-3 3v-2h-4v4h2l-3 3-3-3h2v-4H7v2l-3-3 3-3v2h4V5H9l3-3z" />
               </svg>
             </button>
             <span className="toolbar-sep" />
@@ -2151,8 +2946,8 @@ function App() {
             <button
               className="tool-btn"
               onClick={clearAllRemarks}
-              title={_('eraseAll')}
-              aria-label={_('eraseAll')}
+              title={_('eraseBook')}
+              aria-label={_('eraseBook')}
             >
               <svg viewBox="0 0 24 24" role="presentation" focusable="false">
                 <path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM8 9h8v10H8V9zm7.5-5l-1-1h-5l-1 1H5v2h14V4h-3.5z" />
