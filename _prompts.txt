@@ -78,7 +78,7 @@ should i remove the hythen character - in book and section on physics and biolog
 
 ///
 
-keystroke navigation: always allow left and right arrows key to turn to previous and next page. ctrl left and right to previous and next section, shift left and right to previous and next book. it should allow even when ai generation drawer is open.
+add keystroke navigation: always allow left and right arrows key to turn to previous and next page. ctrl left and right to previous and next section, shift left and right to previous and next book. it should allow even when ai generation drawer is open.
 
 ///
 

@@ -939,6 +939,17 @@ function App() {
     setSelectedPage(1);
   };
 
+  const moveBook = (direction) => {
+    if (!structure?.length) return;
+    const currentIndex = structure.findIndex((ch) => ch.id === selectedChapter);
+    if (currentIndex < 0) return;
+    const nextIndex = Math.max(0, Math.min(structure.length - 1, currentIndex + direction));
+    const nextBook = structure[nextIndex];
+    if (nextBook) {
+      handleBookSelect(nextBook.id);
+    }
+  };
+
   const changePageSeamless = (direction) => {
     if (direction < 0 && selectedPage <= 1) {
       // First page → go to last page of previous section
@@ -2171,17 +2182,40 @@ function App() {
     pageId: selectedPage,
   }), [selectedBook, selectedChapter, selectedFile, selectedPage]);
 
-  // ── Escape key closes modal then drawers ───────────────────
+  // ── Keyboard navigation ─────────────────────────────────
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key !== 'Escape') return;
-      if (modalInfo) { setModalInfo(null); return; }
-      if (resourcesDrawerOpen) { setResourcesDrawerOpen(false); return; }
-      if (aiDrawerOpen) { setAiDrawerOpen(false); return; }
+      // Ignore if user is typing in an input/textarea
+      const tag = (e.target.tagName || '').toLowerCase();
+      const isInput = tag === 'input' || tag === 'textarea' || e.target.isContentEditable;
+      if (isInput) return;
+
+      // Escape: close modals & drawers
+      if (e.key === 'Escape') {
+        if (modalInfo) { setModalInfo(null); return; }
+        if (resourcesDrawerOpen) { setResourcesDrawerOpen(false); return; }
+        if (aiDrawerOpen) { setAiDrawerOpen(false); return; }
+        return;
+      }
+
+      // Arrow key navigation
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        const dir = e.key === 'ArrowRight' ? 1 : -1;
+        if (e.shiftKey) {
+          e.preventDefault();
+          moveBook(dir);
+        } else if (e.ctrlKey || e.metaKey) {
+          e.preventDefault();
+          moveSection(dir);
+        } else {
+          e.preventDefault();
+          changePage(dir);
+        }
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [modalInfo, resourcesDrawerOpen, aiDrawerOpen]);
+  }, [modalInfo, resourcesDrawerOpen, aiDrawerOpen, selectedChapter, structure]);
 
   // Derive modal content type
   const modalType = useMemo(() => {
