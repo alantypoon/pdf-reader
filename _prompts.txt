@@ -72,6 +72,10 @@ rename erase all to erase book and ask for sweetalert2 confirmation before proce
 
 instead of using the cols slider, can we use the same percentage zooming slider on the button panel to control the size of thumbnails?
 
+////
+
+should i remove the hythen character - in book and section on physics and biology to save space?
+
 ///
 
 keystroke navigation: always allow left and right arrows key to turn to previous and next page. ctrl left and right to previous and next section, shift left and right to previous and next book. it should allow even when ai generation drawer is open.
@@ -85,7 +89,4 @@ advise how to implement the search function, it should be able to do it:
 - should find the filter value in the database collection ai-generations summary field value
 - should the results be shown inline, modal or drawer? 
 
-////
-
-should i remove the hythen character - in book and section on physics and biology to save space?
 

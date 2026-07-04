@@ -52,8 +52,8 @@ function stripLeadingId(label, id) {
   return text.replace(new RegExp(`^${escapedId}\\s*[-:]\\s*`, 'i'), '').trim();
 }
 
-function getBookSeparator(subjectId) {
-  return String(subjectId || '').trim().toLowerCase() === 'chemistry-winter' ? ' ' : ' - ';
+function getBookSeparator() {
+  return ' - ';
 }
 
 function getBookPrimaryLabel(item, subjectId, language) {
@@ -66,7 +66,7 @@ function getBookPrimaryLabel(item, subjectId, language) {
   const fallbackName = stripLeadingId(item.name, id);
   const nameEn = stripLeadingId(item.nameEn, id) || fallbackName;
   const nameZh = stripLeadingId(item.nameZh, id);
-  const separator = getBookSeparator(subjectId);
+  const separator = getBookSeparator();
 
   let label = '';
   if (language === 'bilingual') {
