@@ -1338,6 +1338,116 @@ app.post('/api/ai-generate', async (request, response) => {
   }
 });
 
+// ── Search (MongoDB ai-generations + annotations) ────────
+
+app.get('/api/search', async (request, response) => {
+  try {
+    const { q, subjectId, bookId, sectionId, pageId, includeAnnotations } = request.query;
+    if (!q || !String(q).trim()) {
+      return response.json({ results: [] });
+    }
+    if (!aiGenerations) {
+      return response.json({ results: [] });
+    }
+
+    const escaped = String(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = { $regex: escaped, $options: 'i' };
+
+    const scopeFilter = {};
+    if (subjectId && String(subjectId).trim()) scopeFilter.subjectId = String(subjectId).trim();
+    if (bookId && String(bookId).trim()) scopeFilter.bookId = String(bookId).trim();
+    if (sectionId != null) scopeFilter.sectionId = Number(sectionId);
+    if (pageId != null) scopeFilter.pageId = Number(pageId);
+
+    // Search ai-generations (summary + raw)
+    const aiFilter = { ...scopeFilter, $or: [
+      { 'en.summary': regex },
+      { 'zh.summary': regex },
+      { 'en.raw': regex },
+      { 'zh.raw': regex },
+    ]};
+
+    const aiDocs = await aiGenerations
+      .find(aiFilter)
+      .project({
+        subjectId: 1, bookId: 1, sectionId: 1, pageId: 1,
+        'en.summary': 1, 'zh.summary': 1, updatedAt: 1
+      })
+      .limit(50)
+      .toArray();
+
+    const results = aiDocs.map((doc) => {
+      const enText = Array.isArray(doc?.en?.summary) ? doc.en.summary.join(' ') : (typeof doc?.en?.summary === 'string' ? doc.en.summary : '');
+      const zhText = Array.isArray(doc?.zh?.summary) ? doc.zh.summary.join(' ') : (typeof doc?.zh?.summary === 'string' ? doc.zh.summary : '');
+      const enSnippet = extractSnippet(enText, q);
+      const zhSnippet = extractSnippet(zhText, q);
+      return {
+        _id: doc._id,
+        subjectId: doc.subjectId,
+        bookId: doc.bookId,
+        sectionId: doc.sectionId,
+        pageId: doc.pageId,
+        snippet: enSnippet || zhSnippet || '',
+        source: 'ai',
+        updatedAt: doc.updatedAt,
+      };
+    });
+
+    // Optionally search annotations collection
+    if (includeAnnotations === '1' && annotationsCollection) {
+      const annoFilter = { ...scopeFilter, 'remarks.text': regex };
+      const annoDocs = await annotationsCollection
+        .find(annoFilter)
+        .project({
+          subjectId: 1, bookId: 1, sectionId: 1, pageId: 1, langId: 1,
+          remarks: 1
+        })
+        .limit(50)
+        .toArray();
+
+      for (const doc of annoDocs) {
+        const matchingRemark = (doc.remarks || []).find(
+          (r) => typeof r.text === 'string' && r.text.toLowerCase().includes(String(q).toLowerCase())
+        );
+        const snippet = matchingRemark?.text
+          ? extractSnippet(matchingRemark.text, q)
+          : '';
+        results.push({
+          _id: doc._id,
+          subjectId: doc.subjectId,
+          bookId: doc.bookId,
+          sectionId: doc.sectionId,
+          pageId: doc.pageId,
+          snippet,
+          source: 'annotation',
+          langId: doc.langId,
+          updatedAt: doc.updatedAt,
+        });
+      }
+    }
+
+    response.json({ results });
+  } catch (err) {
+    console.error('[search] error:', err);
+    response.status(500).json({ error: err.message });
+  }
+});
+
+/** Extract a short snippet around the first match of query in text */
+function extractSnippet(text, query) {
+  const safeText = typeof text === 'string' ? text : '';
+  const safeQuery = typeof query === 'string' ? query : '';
+  if (!safeText || !safeQuery) return '';
+  const idx = safeText.toLowerCase().indexOf(safeQuery.toLowerCase());
+  if (idx < 0) return '';
+  const start = Math.max(0, idx - 40);
+  const end = Math.min(safeText.length, idx + safeQuery.length + 80);
+  let snippet = safeText.slice(start, end);
+  if (start > 0) snippet = '…' + snippet;
+  if (end < safeText.length) snippet = snippet + '…';
+  return snippet;
+}
+
 // ── AI Content CRUD (MongoDB) ────────────────────────────
 
 app.get('/api/ai-content', async (request, response) => {

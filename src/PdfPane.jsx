@@ -33,6 +33,7 @@ function PdfPane({
   fitMode = 'auto',
   fitRefreshToken = 0,
   onRenderScaleChange,
+  onScrollCanvasesReady,
   language = 'en',
   paneLanguage = 'en'
 }) {
@@ -262,18 +263,24 @@ function PdfPane({
 
     let disposed = false;
     const gen = modeGenRef.current;
-    mount.innerHTML = '';
-    mount.scrollTop = 0;
+    mount.style.justifyItems = 'center';
 
     const drawAll = async () => {
+      let lastScale = zoom;
+      // Capture container dimensions once at draw time (getBoundingClientRect is more accurate)
+      const mountRect = mount.getBoundingClientRect();
+      const containerHeight = Math.max(180, mountRect.height);
+      const containerWidth = Math.max(180, mountRect.width);
+      const fragment = document.createDocumentFragment();
       for (let i = 1; i <= numPages; i += 1) {
         if (disposed || modeGenRef.current !== gen) return;
         const page = await pdfDoc.getPage(i);
         if (disposed || modeGenRef.current !== gen) return;
         const viewportBase = page.getViewport({ scale: 1 });
-        const fitWidth = Math.max(180, mount.clientWidth - 6);
-        const scale = Math.max(0.001, (fitWidth / viewportBase.width) * zoom);
-        const viewport = page.getViewport({ scale });
+        const fitDim = fitMode === 'height' ? containerHeight : containerWidth;
+        const fitBase = fitMode === 'height' ? viewportBase.height : viewportBase.width;
+        lastScale = Math.max(0.001, (fitDim / fitBase) * zoom);
+        const viewport = page.getViewport({ scale: lastScale });
         const canvas = document.createElement('canvas');
         const context = canvas.getContext('2d');
         const ratio = safeDevicePixelRatio(viewport.width, viewport.height);
@@ -281,14 +288,26 @@ function PdfPane({
         canvas.height = Math.floor(viewport.height * ratio);
         canvas.style.width = `${viewport.width}px`;
         canvas.style.height = `${viewport.height}px`;
+        canvas.style.display = 'block';
         canvas.dataset.page = String(i);
         context.setTransform(ratio, 0, 0, ratio, 0, 0);
         await page.render({ canvasContext: context, viewport }).promise;
         if (disposed || modeGenRef.current !== gen) return;
-        mount.appendChild(canvas);
+        fragment.appendChild(canvas);
       }
 
       if (disposed || modeGenRef.current !== gen) return;
+      // Atomic replacement — no gap where old canvases are gone but new ones aren't ready
+      mount.innerHTML = '';
+      mount.appendChild(fragment);
+
+      if (typeof onRenderScaleChange === 'function') {
+        onRenderScaleChange(lastScale);
+      }
+      // Trigger annotation redraw in parent after canvases are in the DOM
+      if (typeof onScrollCanvasesReady === 'function') {
+        requestAnimationFrame(() => onScrollCanvasesReady());
+      }
       const nodes = [...mount.querySelectorAll('canvas[data-page]')];
       const targetPage = Math.max(1, Math.min(currentPage, numPages || 1));
       const targetNode = nodes.find((node) => Number(node.dataset.page) === targetPage);
@@ -339,7 +358,7 @@ function PdfPane({
       disposed = true;
       cleanup();
     };
-  }, [isImageMode, pdfDoc, numPages, mode, onPageChange, currentPage, zoom, contentWidth]);
+  }, [isImageMode, pdfDoc, numPages, mode, onPageChange, currentPage, zoom, fitMode, fitRefreshToken, contentWidth]);
 
   useEffect(() => {
     if (!syncGroup || mode !== 'scrolling') return;
@@ -376,8 +395,12 @@ function PdfPane({
     lastImagesRef.current = images;
 
     mount.innerHTML = '';
+    mount.style.justifyItems = 'center';
 
     // Create all img elements first (without src) so DOM order is fixed
+    const mountRect = mount.getBoundingClientRect();
+    const containerHeight = Math.max(180, mountRect.height);
+    const containerWidth = Math.max(180, mountRect.width);
     const imgElements = images.map((url, idx) => {
       const pageNum = idx + 1;
       const img = document.createElement('img');
@@ -385,7 +408,13 @@ function PdfPane({
       img.dataset.page = String(pageNum);
       img.dataset.src = url;
       img.className = 'page-img';
-      img.style.width = `${100 * zoom}%`;
+      if (fitMode === 'height') {
+        img.style.height = `${containerHeight * zoom}px`;
+        img.style.width = 'auto';
+      } else {
+        img.style.width = `${containerWidth * zoom}px`;
+        img.style.height = 'auto';
+      }
       img.style.display = 'block';
       img.style.minHeight = '120px';
       return img;
@@ -465,22 +494,25 @@ function PdfPane({
     if (!isImageMode || mode !== 'scrolling') return;
     const mount = scrollRef.current;
     if (!mount) return;
+    const mountRect = mount.getBoundingClientRect();
+    const containerHeight = Math.max(180, mountRect.height);
+    const containerWidth = Math.max(180, mountRect.width);
     const imgs = mount.querySelectorAll('img.page-img');
     imgs.forEach((img) => {
-      img.style.width = `${100 * zoom}%`;
+      if (fitMode === 'height') {
+        img.style.height = `${containerHeight * zoom}px`;
+        img.style.width = 'auto';
+      } else {
+        img.style.width = `${containerWidth * zoom}px`;
+        img.style.height = 'auto';
+      }
     });
-  }, [isImageMode, mode, zoom]);
-
-  // ── Scroll to currentPage (external navigation) ────────────
-  useEffect(() => {
-    if (!isImageMode || mode !== 'scrolling') return;
-    const mount = scrollRef.current;
-    if (!mount) return;
-    const targetNode = mount.querySelector(`img[data-page="${currentPage}"]`);
-    if (targetNode) {
-      mount.scrollTop = targetNode.offsetTop;
+    if (typeof onRenderScaleChange === 'function') {
+      onRenderScaleChange(zoom);
     }
-  }, [isImageMode, mode, currentPage]);
+  }, [isImageMode, mode, zoom, fitMode]);
+
+  // Scroll position in scrolling mode is user-controlled — no auto-scroll on page change
 
   const titleSuffix = useMemo(() => `${renderedPage}${numPages ? ` / ${numPages}` : ''}`, [renderedPage, numPages]);
 

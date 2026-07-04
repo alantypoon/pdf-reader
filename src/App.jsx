@@ -184,6 +184,12 @@ function App() {
   const [flippedCards, setFlippedCards] = useState({});
   const [mcqAnswers, setMcqAnswers] = useState({});
   const [aiDebug, setAiDebug] = useState(null);
+  const [searchDrawerOpen, setSearchDrawerOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchScope, setSearchScope] = useState('book');
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [includeAnnotations, setIncludeAnnotations] = useState(false);
   const [panelVisible, setPanelVisible] = useState(savedPrefs.panelVisible !== false);
   const [panelReservedHeight, setPanelReservedHeight] = useState(0);
   const [fitRefreshToken, setFitRefreshToken] = useState(0);
@@ -213,7 +219,7 @@ function App() {
   const fitButtonMode = fitMode === 'height' ? 'height' : 'width';
   const fitButtonTitle = fitButtonMode === 'height' ? _('fitHeight') : _('fitWidth');
   const regenerateConfirmMessage = _('confirmRegenerate');
-  const fitDisabled = displayMode === 'scrolling' || displayMode === 'thumbnails';
+  const fitDisabled = displayMode === 'thumbnails';
 
   const fitScreen = () => {
     if (fitDisabled) return;
@@ -445,9 +451,8 @@ function App() {
     })));
   }, [remarks, selectedChapter, selectedPage, clearedTimestamps]);
 
-  // All annotations for the current section (all pages) — used in thumbnails mode
+  // All annotations for the current section (all pages) — used in thumbnails & scrolling modes
   const allSectionAnnotations = useMemo(() => {
-    if (displayMode !== 'thumbnails') return [];
     return remarks
       .filter((remark) =>
         remark.chapter === selectedChapter &&
@@ -457,7 +462,7 @@ function App() {
         ...remark,
         langId: remark.langId === 'tc' ? 'tc' : 'en'
       }));
-  }, [remarks, selectedChapter, clearedTimestamps, displayMode]);
+  }, [remarks, selectedChapter, clearedTimestamps]);
 
   const currentChapter = useMemo(
     () => structure.find((chapter) => chapter.id === selectedChapter),
@@ -808,7 +813,7 @@ function App() {
       canvas.style.width = `${rect.width}px`;
       canvas.style.height = `${rect.height}px`;
       context.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
-      const annotationsToDraw = displayMode === 'thumbnails' ? allSectionAnnotations : pageAnnotations;
+      const annotationsToDraw = (displayMode === 'thumbnails' || displayMode === 'scrolling') ? allSectionAnnotations : pageAnnotations;
       redraw(context, rect.width, rect.height, annotationsToDraw);
     };
 
@@ -825,7 +830,7 @@ function App() {
     const raf = requestAnimationFrame(() => {
       const context = canvas.getContext('2d');
       const rect = canvas.getBoundingClientRect();
-      const annotationsToDraw = displayMode === 'thumbnails' ? allSectionAnnotations : pageAnnotations;
+      const annotationsToDraw = (displayMode === 'thumbnails' || displayMode === 'scrolling') ? allSectionAnnotations : pageAnnotations;
       redraw(context, rect.width, rect.height, annotationsToDraw);
     });
     return () => cancelAnimationFrame(raf);
@@ -1040,13 +1045,21 @@ function App() {
   };
 
   const clearPageRemarks = async () => {
+    // Save current page remarks for undo before deleting
+    const currentPageRemarks = remarks.filter(
+      (r) => r.chapter === selectedChapter
+        && Number(r.page) === Number(selectedPage)
+        && (r.langId === annotationScopeLangId || (!r.langId && annotationScopeLangId === 'en'))
+    );
     const data = await fetchJson(
       `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&sectionId=${selectedFile}&pageId=${selectedPage}&langId=${encodeURIComponent(annotationScopeLangId)}`,
       { method: 'DELETE' }
     );
     setRemarks(data.remarks || []);
-    setUndoStack([]);
-    setRedoStack([]);
+    if (currentPageRemarks.length > 0) {
+      setUndoStack((prev) => [...prev, { type: 'erasePage', remarks: currentPageRemarks }]);
+      setRedoStack([]);
+    }
   };
 
   const clearAllRemarks = async () => {
@@ -1064,13 +1077,19 @@ function App() {
         return;
       }
     }
+    // Save current book remarks for undo before deleting
+    const currentBookRemarks = remarks.filter(
+      (r) => r.chapter === selectedChapter
+    );
     const data = await fetchJson(
       `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&sectionId=${selectedFile}`,
       { method: 'DELETE' }
     );
     setRemarks(data.remarks || []);
-    setUndoStack([]);
-    setRedoStack([]);
+    if (currentBookRemarks.length > 0) {
+      setUndoStack((prev) => [...prev, { type: 'eraseBook', remarks: currentBookRemarks }]);
+      setRedoStack([]);
+    }
   };
 
   const deleteRemarkByCreatedAt = async (createdAtValue, langId = annotationScopeLangId) => {
@@ -1083,6 +1102,57 @@ function App() {
   };
 
   const undoRemark = async () => {
+    // If there are actions on the undo stack, reverse the last one
+    if (undoStack.length > 0) {
+      const action = undoStack[undoStack.length - 1];
+
+      if (action.type === 'delete') {
+        // Re-add a deleted remark
+        const data = await fetchJson('api/remarks', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId,
+            subjectId: selectedBook,
+            bookId: selectedChapter,
+            sectionId: selectedFile,
+            pageId: selectedPage,
+            langId: action.remark.langId || annotationScopeLangId,
+            ...action.remark,
+          })
+        });
+        setRemarks(data.remarks || []);
+        setUndoStack((prev) => prev.slice(0, -1));
+        setRedoStack((prev) => [...prev, action]);
+        return;
+      }
+
+      if (action.type === 'erasePage' || action.type === 'eraseBook') {
+        // Re-add all erased remarks
+        for (const r of action.remarks) {
+          await fetchJson('api/remarks', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              userId,
+              subjectId: selectedBook,
+              bookId: selectedChapter,
+              sectionId: selectedFile,
+              pageId: r.page || selectedPage,
+              langId: r.langId || annotationScopeLangId,
+              ...r,
+            })
+          });
+        }
+        // Reload remarks
+        setRemarks([...remarks, ...action.remarks]);
+        setUndoStack((prev) => prev.slice(0, -1));
+        setRedoStack((prev) => [...prev, action]);
+        return;
+      }
+    }
+
+    // No undo stack — undo the last individual remark on current page
     const pageRemarks = remarks.filter(
       (r) => r.chapter === selectedChapter
         && Number(r.page) === Number(selectedPage)
@@ -1091,31 +1161,35 @@ function App() {
     if (!pageRemarks.length) return;
     const last = pageRemarks[pageRemarks.length - 1];
     await deleteRemarkByCreatedAt(last.createdAt, last.langId || annotationScopeLangId);
-    // But keep track for redo
-    setUndoStack((prev) => [...prev, last]);
-    setRedoStack([]);
+    setUndoStack((prev) => [...prev, { type: 'delete', remark: last }]);
+    setRedoStack([{ type: 'delete', remark: last }]);
   };
 
   const redoRemark = async () => {
-    if (!undoStack.length) return;
-    const last = undoStack[undoStack.length - 1];
-    // Re-add to server
-    const data = await fetchJson('api/remarks', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        userId,
-        subjectId: selectedBook,
-        bookId: selectedChapter,
-        sectionId: selectedFile,
-        pageId: selectedPage,
-        langId: last.langId || annotationScopeLangId,
-        ...last,
-      })
-    });
-    setRemarks(data.remarks || []);
-    setUndoStack((prev) => prev.slice(0, -1));
-    setRedoStack((prev) => [...prev, last]);
+    if (!redoStack.length) return;
+    const action = redoStack[redoStack.length - 1];
+
+    if (action.type === 'delete') {
+      // Re-delete the remark
+      await deleteRemarkByCreatedAt(action.remark.createdAt, action.remark.langId || annotationScopeLangId);
+      setUndoStack((prev) => [...prev, action]);
+      setRedoStack((prev) => prev.slice(0, -1));
+      return;
+    }
+
+    if (action.type === 'erasePage' || action.type === 'eraseBook') {
+      // Re-erase all remarks
+      for (const r of action.remarks) {
+        await fetchJson(
+          `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&sectionId=${selectedFile}&pageId=${r.page || selectedPage}&langId=${encodeURIComponent(r.langId || annotationScopeLangId)}&createdAt=${encodeURIComponent(r.createdAt)}`,
+          { method: 'DELETE' }
+        );
+      }
+      setRemarks((prev) => prev.filter((r) => !action.remarks.some((er) => er.createdAt === r.createdAt)));
+      setUndoStack((prev) => [...prev, action]);
+      setRedoStack((prev) => prev.slice(0, -1));
+      return;
+    }
   };
 
   /**
@@ -1132,18 +1206,38 @@ function App() {
     if (!canvas || !stage) return {};
     const canvasRect = canvas.getBoundingClientRect();
     const panes = stage.querySelectorAll('[data-annotation-language]');
+    const isScrolling = displayModeRef.current === 'scrolling';
     const result = {};
+
     for (const pane of panes) {
       const langId = pane.getAttribute('data-annotation-language');
       if (!langId) continue;
 
       // Pagination mode: the single rendered page inside .pdf-single-page
       let pageImage = pane.querySelector('.pdf-single-page canvas, .pdf-single-page img.page-img');
-      // Scrolling mode: find the image matching the current selected page
+
       if (!pageImage) {
-        const currentPage = selectedPageRef.current;
-        // Try exact match first
+        // Scrolling mode: collect ALL page canvases/images, keyed by langId-pageNum
         const candidates = pane.querySelectorAll('canvas[data-page], img[data-page]');
+        if (candidates.length > 1 && isScrolling) {
+          for (const el of candidates) {
+            const elPage = Number(el.getAttribute('data-page'));
+            if (!elPage) continue;
+            const r = el.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) {
+              result[`${langId}-${elPage}`] = {
+                left: r.left - canvasRect.left,
+                top: r.top - canvasRect.top,
+                width: r.width,
+                height: r.height,
+              };
+            }
+          }
+          continue; // handled all scrolling candidates for this pane
+        }
+
+        // Fallback: find the image matching the current selected page (pagination or edge case)
+        const currentPage = selectedPageRef.current;
         for (const el of candidates) {
           const elPage = Number(el.getAttribute('data-page'));
           if (elPage === currentPage) {
@@ -1154,7 +1248,7 @@ function App() {
             }
           }
         }
-        // Fallback: first visible image
+        // Last-resort fallback: first visible image
         if (!pageImage) {
           for (const el of candidates) {
             const r = el.getBoundingClientRect();
@@ -1180,7 +1274,7 @@ function App() {
         pageImage = pane.querySelector('.pdf-content');
       }
 
-      if (!pageImage) continue; // skip if nothing found — don't draw annotations
+      if (!pageImage) continue;
 
       const rect = pageImage.getBoundingClientRect();
       result[langId] = {
@@ -1278,6 +1372,34 @@ function App() {
       y: event.clientY - rect.top
     };
     const pageImageRects = getPageImageRects();
+    const isScrollMode = displayModeRef.current === 'scrolling';
+
+    if (isScrollMode) {
+      // In scrolling mode, rects are keyed by "langId-pageNum"
+      for (const langId of visibleLanguages) {
+        // Check all page rects for this language; find the one containing the click
+        for (const [key, imageRect] of Object.entries(pageImageRects)) {
+          if (!key.startsWith(langId + '-')) continue;
+          if (canvasPoint.x >= imageRect.left
+            && canvasPoint.x <= imageRect.left + imageRect.width
+            && canvasPoint.y >= imageRect.top
+            && canvasPoint.y <= imageRect.top + imageRect.height) {
+            return {
+              langId,
+              point: {
+                x: canvasPoint.x - imageRect.left,
+                y: canvasPoint.y - imageRect.top
+              },
+              imageRect: { width: imageRect.width, height: imageRect.height },
+              pageNum: Number(key.split('-')[1]),
+            };
+          }
+        }
+      }
+      return null;
+    }
+
+    // Pagination / thumbnails mode: rects are keyed by langId
     const langId = visibleLanguages.find((language) => {
       const imageRect = pageImageRects[language];
       return imageRect
@@ -1305,6 +1427,7 @@ function App() {
     context.clearRect(0, 0, width, height);
 
     const isThumbMode = displayModeRef.current === 'thumbnails';
+    const isScrollMode = displayModeRef.current === 'scrolling';
 
     if (isThumbMode) {
       // Thumbnails mode: draw each page's annotations on its own thumbnail
@@ -1358,7 +1481,59 @@ function App() {
       return;
     }
 
-    // Normal mode: draw annotations on the current page image
+    if (isScrollMode) {
+      // Scrolling mode: draw each page's annotations on its own page canvas
+      const pageRects = getPageImageRects();
+      for (const annotation of annotations) {
+        const langId = annotation.langId === 'tc' ? 'tc' : 'en';
+        const page = Number(annotation.page);
+        const key = `${langId}-${page}`;
+        const imageRect = pageRects[key];
+        if (!imageRect) continue;
+
+        context.save();
+        context.beginPath();
+        context.rect(imageRect.left, imageRect.top, imageRect.width, imageRect.height);
+        context.clip();
+
+        const denorm = annotation.coordsNormalized
+          ? denormalizeAnnotationCoords(annotation, imageRect)
+          : annotation;
+
+        if (denorm.type === 'stroke') {
+          const points = denorm.points || [];
+          if (points.length < 2) { context.restore(); continue; }
+          context.save();
+          context.lineJoin = 'round';
+          context.lineCap = 'round';
+          context.strokeStyle = denorm.color;
+          context.globalAlpha = denorm.mode === 'highlight' ? 0.28 : 1;
+          const strokeScale = Math.max(0.2, imageRect.width / 800);
+          context.lineWidth = (denorm.mode === 'highlight' ? 18 : 4) * strokeScale;
+          context.beginPath();
+          context.moveTo(imageRect.left + points[0].x, imageRect.top + points[0].y);
+          for (const point of points.slice(1)) {
+            context.lineTo(imageRect.left + point.x, imageRect.top + point.y);
+          }
+          context.stroke();
+          context.restore();
+        }
+
+        if (denorm.type === 'text') {
+          context.save();
+          context.fillStyle = denorm.color;
+          const fontSize = Math.max(1, Math.round(18 * (imageRect.width / 800)));
+          context.font = `${fontSize}px Inter, system-ui, sans-serif`;
+          context.fillText(denorm.text, imageRect.left + denorm.x, imageRect.top + denorm.y);
+          context.restore();
+        }
+
+        context.restore();
+      }
+      return;
+    }
+
+    // Pagination mode: draw annotations on the current page image
     const pageImageRects = getPageImageRects();
     for (const annotation of annotations) {
       const langId = annotation.langId === 'tc' ? 'tc' : 'en';
@@ -1428,7 +1603,9 @@ function App() {
     );
     // Get current page image rect for denormalizing stored percentage coords
     const pageImageRects = getPageImageRects();
-    const imageRect = pageImageRects[langId] || null;
+    const isScrollMode = displayModeRef.current === 'scrolling';
+    const rectKey = isScrollMode ? `${langId}-${selectedPage}` : langId;
+    const imageRect = pageImageRects[rectKey] || null;
 
     const ordered = [...pageRemarks].reverse();
     for (const annotation of ordered) {
@@ -1469,8 +1646,7 @@ function App() {
     setActiveAnnotationLangId(target.langId);
 
     if (tool === 'move') {
-      const pageImageRects = getPageImageRects();
-      const imageRect = pageImageRects[target.langId];
+      const imageRect = target.imageRect;
       const existing = findAnnotationAtPoint(target.langId, target.point);
       if (existing) {
         moveAnnotationRef.current = existing;
@@ -1489,7 +1665,7 @@ function App() {
     currentStrokeRef.current = {
       type: 'stroke',
       chapter: selectedChapter,
-      page: selectedPage,
+      page: target.pageNum || selectedPage,
       langId: target.langId,
       mode: tool,
       color: textColor,
@@ -1509,7 +1685,10 @@ function App() {
       moveHasMovedRef.current = true;
 
       const pageImageRects = getPageImageRects();
-      const imageRect = pageImageRects[moveAnnotationRef.current.langId];
+      const moveLangId = moveAnnotationRef.current.langId;
+      const movePage = moveAnnotationRef.current.page;
+      const rectKey = displayModeRef.current === 'scrolling' ? `${moveLangId}-${movePage}` : moveLangId;
+      const imageRect = pageImageRects[rectKey];
       if (!imageRect) return;
 
       // Update the annotation in-place for live preview
@@ -1550,7 +1729,7 @@ function App() {
     currentStrokeRef.current.points.push(nextPoint);
     const context = canvasRef.current.getContext('2d');
     const rect = canvasRef.current.getBoundingClientRect();
-    redraw(context, rect.width, rect.height, [...pageAnnotations, currentStrokeRef.current]);
+    redraw(context, rect.width, rect.height, [...(displayMode === 'scrolling' ? allSectionAnnotations : pageAnnotations), currentStrokeRef.current]);
   };
 
   const handlePointerUp = async () => {
@@ -1596,7 +1775,9 @@ function App() {
     }
     // Normalize coordinates to percentages relative to page image size
     const pageImageRects = getPageImageRects();
-    const imageRect = pageImageRects[stroke.langId];
+    const isScrollMode = displayModeRef.current === 'scrolling';
+    const rectKey = isScrollMode ? `${stroke.langId}-${stroke.page || selectedPage}` : stroke.langId;
+    const imageRect = pageImageRects[rectKey];
     const normalizedStroke = imageRect
       ? normalizeAnnotationCoords(stroke, imageRect)
       : stroke;
@@ -1669,7 +1850,7 @@ function App() {
         if (!canvas) return;
         const context = canvas.getContext('2d');
         const rect = canvas.getBoundingClientRect();
-        const annotationsToDraw = displayMode === 'thumbnails' ? allSectionAnnotations : pageAnnotations;
+        const annotationsToDraw = (displayMode === 'thumbnails' || displayMode === 'scrolling') ? allSectionAnnotations : pageAnnotations;
         redraw(context, rect.width, rect.height, annotationsToDraw);
       });
     };
@@ -1731,8 +1912,10 @@ function App() {
       // When editing existing text, use its original position (denormalized)
       let editPoint = target.point;
       if (existing && existing.type === 'text') {
-        const pageImageRects = getPageImageRects();
-        const imageRect = pageImageRects[target.langId];
+        const existRectKey = displayModeRef.current === 'scrolling'
+          ? `${target.langId}-${existing.page || selectedPage}`
+          : target.langId;
+        const imageRect = pageImageRects[existRectKey] || target.imageRect;
         if (imageRect && existing.coordsNormalized) {
           const denorm = denormalizeAnnotationCoords(existing, imageRect);
           editPoint = { x: denorm.x || 0, y: denorm.y || 0 };
@@ -2194,6 +2377,7 @@ function App() {
       if (e.key === 'Escape') {
         if (modalInfo) { setModalInfo(null); return; }
         if (resourcesDrawerOpen) { setResourcesDrawerOpen(false); return; }
+        if (searchDrawerOpen) { setSearchDrawerOpen(false); return; }
         if (aiDrawerOpen) { setAiDrawerOpen(false); return; }
         return;
       }
@@ -2215,7 +2399,40 @@ function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [modalInfo, resourcesDrawerOpen, aiDrawerOpen, selectedChapter, structure]);
+  }, [modalInfo, resourcesDrawerOpen, searchDrawerOpen, aiDrawerOpen, selectedChapter, structure]);
+
+  // ── Debounced search ────────────────────────────────────
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      setSearchResults([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setSearchLoading(true);
+      try {
+        const params = new URLSearchParams({ q: searchQuery.trim() });
+        if (searchScope !== 'all' && selectedBook) params.set('subjectId', selectedBook);
+        if (searchScope === 'book' || searchScope === 'section' || searchScope === 'page') {
+          if (selectedChapter) params.set('bookId', selectedChapter);
+        }
+        if (searchScope === 'section' || searchScope === 'page') {
+          if (selectedFile) params.set('sectionId', selectedFile);
+        }
+        if (searchScope === 'page') {
+          if (selectedPage) params.set('pageId', selectedPage);
+        }
+        if (includeAnnotations) params.set('includeAnnotations', '1');
+        const data = await fetchJson(`api/search?${params.toString()}`);
+        setSearchResults(data.results || []);
+      } catch (err) {
+        console.error('[search] error:', err);
+        setSearchResults([]);
+      } finally {
+        setSearchLoading(false);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery, searchScope, selectedBook, selectedChapter, selectedFile, selectedPage, includeAnnotations]);
 
   // Derive modal content type
   const modalType = useMemo(() => {
@@ -2693,6 +2910,7 @@ function App() {
                     return { ...current, [language]: scale };
                   });
                 }}
+                onScrollCanvasesReady={() => setRedrawTick((t) => t + 1)}
                 language={selectedLanguage}
               />
             );
@@ -2876,6 +3094,20 @@ function App() {
           </button>
           )}
           <button
+            className="tool-btn search-btn"
+            onClick={() => {
+              if (aiDrawerOpen) setAiDrawerOpen(false);
+              if (resourcesDrawerOpen) setResourcesDrawerOpen(false);
+              setSearchDrawerOpen(true);
+            }}
+            title={_('search')}
+            aria-label={_('search')}
+          >
+            <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+              <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
+            </svg>
+          </button>
+          <button
             className="tool-btn panel-close-btn panel-close-accent"
             onClick={() => setPanelVisible(false)}
             title={_('closePanel')}
@@ -2946,7 +3178,7 @@ function App() {
             <span className="toolbar-sep" />
             <button
               className="tool-btn"
-              disabled={!remarks.filter(r => r.chapter === selectedChapter && Number(r.page) === Number(selectedPage)).length}
+              disabled={!undoStack.length && !remarks.filter(r => r.chapter === selectedChapter && Number(r.page) === Number(selectedPage)).length}
               onClick={undoRemark}
               title={_('undo')}
               aria-label={_('undo')}
@@ -2957,7 +3189,7 @@ function App() {
             </button>
             <button
               className="tool-btn"
-              disabled={!undoStack.length}
+              disabled={!redoStack.length}
               onClick={redoRemark}
               title={_('redo')}
               aria-label={_('redo')}
@@ -3220,6 +3452,106 @@ function App() {
                   </svg>
                   <p>{_('aiEmptyPrompt')}</p>
                 </div>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
+
+      {searchDrawerOpen && (
+        <div className="resources-drawer-overlay" onClick={() => setSearchDrawerOpen(false)}>
+          <section className="ai-drawer search-drawer" onClick={(e) => e.stopPropagation()}>
+            <div className="ai-drawer-header">
+              <h2>
+                <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="ai-header-icon">
+                  <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
+                </svg>
+                {_('search')}
+              </h2>
+              <button className="modal-close" onClick={() => setSearchDrawerOpen(false)} aria-label={_('close')}>✕</button>
+            </div>
+            <div className="ai-drawer-body">
+              <div className="search-controls-sticky">
+                <input
+                  type="text"
+                  className="search-input"
+                  placeholder={_('searchPlaceholder')}
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  autoFocus
+                />
+                <div className="search-scope-row">
+                  <select
+                    className="search-scope-select"
+                    value={searchScope}
+                    onChange={(e) => setSearchScope(e.target.value)}
+                  >
+                    <option value="page">{_('searchScopePage')}</option>
+                    <option value="section">{_('searchScopeSection')}</option>
+                    <option value="book">{_('searchScopeBook')}</option>
+                    <option value="subject">{_('searchScopeSubject')}</option>
+                    <option value="all">{_('searchScopeAll')}</option>
+                  </select>
+                  <label className="search-checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={includeAnnotations}
+                      onChange={(e) => setIncludeAnnotations(e.target.checked)}
+                    />
+                    <span>{_('searchIncludeAnnotations')}</span>
+                  </label>
+                </div>
+              </div>
+              {searchLoading && (
+                <div className="ai-loading">
+                  <div className="ai-spinner" />
+                  <p>{_('searching')}</p>
+                </div>
+              )}
+              {!searchLoading && searchResults.length > 0 && (
+                <div className="search-results">
+                  <p className="search-results-count">{_('searchResultsCount').replace('{count}', searchResults.length)}</p>
+                  {searchResults.map((result, idx) => (
+                    <button
+                      key={result._id || idx}
+                      className="search-result-item"
+                      onClick={() => {
+                        // Navigate to the result's page
+                        const subjectChanged = result.subjectId && result.subjectId !== selectedBook;
+                        if (subjectChanged) {
+                          setSelectedBook(result.subjectId);
+                        }
+                        setSelectedChapter(result.bookId);
+                        setSelectedFile(result.sectionId);
+                        if (result.pageId) setSelectedPage(Number(result.pageId));
+                        // Keep drawer open so user can try another result
+                      }}
+                    >
+                      <div className="search-result-breadcrumb">
+                        <span>{getSubjectLabel(result.subjectId, selectedLanguage)}</span>
+                        <span className="breadcrumb-sep">›</span>
+                        <span>{String(result.bookId || '').toUpperCase()}</span>
+                        <span className="breadcrumb-sep">›</span>
+                        <span>§{result.sectionId}</span>
+                        {result.pageId != null && (
+                          <>
+                            <span className="breadcrumb-sep">›</span>
+                            <span>p.{result.pageId}</span>
+                          </>
+                        )}
+                        {result.source === 'annotation' && (
+                          <span className="search-result-badge">{_('searchAnnotationBadge')}</span>
+                        )}
+                      </div>
+                      {result.snippet && (
+                        <p className="search-result-snippet">{result.snippet}</p>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {!searchLoading && searchQuery.trim() && searchResults.length === 0 && (
+                <p className="search-no-results">{_('searchNoResults')}</p>
               )}
             </div>
           </section>

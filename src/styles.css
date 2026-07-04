@@ -303,6 +303,9 @@ button, input, select {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  white-space: nowrap;
+  font-size: 27px;
+
 }
 
 .sidebar-logo {
@@ -938,6 +941,7 @@ button, input, select {
 .pdf-pane-shell {
   display: grid;
   grid-template-columns: minmax(70px, 15%) 1fr;
+  grid-template-rows: minmax(0, 1fr);
   gap: 0;
   flex: 1 1 auto;
   min-height: 0;
@@ -1094,7 +1098,7 @@ button, input, select {
   overflow: auto;
   display: grid;
   gap: 10px;
-  justify-items: stretch;
+  justify-items: center;
 }
 
 .pdf-scroll-pages canvas,
@@ -1763,6 +1767,48 @@ button, input, select {
   }
 }
 
+@media (max-width: 550px) {
+  .annotation-panel button {
+    padding: 6px 8px;
+    font-size: 0.75rem;
+  }
+
+  .annotation-panel button svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  .annotation-panel button[title]::after {
+    display: none;
+  }
+
+  .annotation-panel button[title]::before {
+    display: none;
+  }
+
+  .annotation-panel input[type="color"] {
+    width: 22px;
+    height: 22px;
+  }
+
+  .annotation-panel .toolbar-sep {
+    margin: 0 4px;
+  }
+
+  .annotation-panel input[type="range"].zoom-slider {
+    width: 48px;
+  }
+
+  .zoom-label {
+    font-size: 0.7rem;
+    min-width: 32px;
+  }
+
+  .annotation-panel .toolbar-group.toolbar-primary {
+    gap: 2px;
+  }
+}
+
 /* ── AI Generation Drawer ──────────────────────────────── */
 
 .ai-generate-btn {
@@ -2383,4 +2429,169 @@ button, input, select {
   color: #334155;
   resize: vertical;
   outline: none;
+}
+
+/* ── Search Drawer ─────────────────────────────────────── */
+
+.search-drawer {
+  width: 480px;
+  max-width: 92vw;
+}
+
+.search-input {
+  width: 100%;
+  padding: 12px 16px;
+  margin-bottom: 10px;
+  border: 1.5px solid #d7e0e8;
+  border-radius: 10px;
+  font-size: 0.95rem;
+  color: #102033;
+  background: #fff;
+  outline: none;
+  transition: border-color 160ms ease;
+}
+
+.search-input:focus {
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
+}
+
+.search-controls-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: #f8fafc;
+  padding-bottom: 12px;
+  margin-bottom: 4px;
+}
+
+.search-scope-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.search-scope-select {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1.5px solid #d7e0e8;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  color: #475569;
+  background: #fff;
+  cursor: pointer;
+  outline: none;
+}
+
+.search-scope-select:focus {
+  border-color: #667eea;
+}
+
+.search-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: #475569;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.search-checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #667eea;
+  cursor: pointer;
+}
+
+.search-result-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  margin-left: 6px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #92400e;
+  background: #fef3c7;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+
+.search-results {
+  display: grid;
+  gap: 8px;
+}
+
+.search-results-count {
+  margin: 0 0 4px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #5d7184;
+}
+
+.search-result-item {
+  display: block;
+  width: 100%;
+  padding: 14px 16px;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.search-result-item:hover {
+  border-color: #667eea;
+  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.12);
+}
+
+.search-result-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #667eea;
+  margin-bottom: 6px;
+}
+
+.breadcrumb-sep {
+  color: #cbd5e1;
+  font-weight: 400;
+}
+
+.search-result-snippet {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #475569;
+  line-height: 1.5;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+.search-no-results {
+  text-align: center;
+  color: #94a3b8;
+  font-size: 0.9rem;
+  padding: 24px 0;
+}
+
+/* ── Search toolbar button ─────────────────────────────── */
+
+.tool-btn.search-btn {
+  background: #f4f9fc;
+  border: 1.5px solid #d7e0e8;
+}
+
+.tool-btn.search-btn:hover {
+  background: #eef2ff;
+  border-color: #667eea;
+}
+
+.tool-btn.search-btn svg {
+  width: 18px;
+  height: 18px;
+  fill: #475569;
 }
