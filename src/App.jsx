@@ -414,22 +414,42 @@ function App() {
     return ['en', 'tc'].filter((language) => hasRenderableSource(pageSources[language]));
   }, [selectedLanguage, pageSources]);
 
+  const sectionScopedAnnotations = displayMode === 'scrolling' || displayMode === 'thumbnails';
+
+  const loadRemarksForCurrentScope = useCallback(async () => {
+    const langTargets = selectedLanguage === 'bilingual'
+      ? visibleLanguages
+      : visibleLanguages.slice(0, 1);
+    if (!langTargets.length) {
+      setRemarks([]);
+      return [];
+    }
+
+    const responses = await Promise.all(
+      langTargets.map((langId) => {
+        const params = new URLSearchParams({
+          userId,
+          subjectId: selectedBook,
+          bookId: selectedChapter,
+          sectionId: String(selectedFile),
+          langId,
+        });
+        if (!sectionScopedAnnotations) {
+          params.set('pageId', String(selectedPage));
+        }
+        return fetchJson(`api/remarks?${params.toString()}`);
+      })
+    );
+
+    const nextRemarks = responses.flatMap((data) => data.remarks || []);
+    setRemarks(nextRemarks);
+    return nextRemarks;
+  }, [userId, selectedBook, selectedChapter, selectedFile, selectedLanguage, selectedPage, visibleLanguages, sectionScopedAnnotations]);
+
   useEffect(() => {
     const loadRemarks = async () => {
-      const langTargets = selectedLanguage === 'bilingual'
-        ? visibleLanguages
-        : visibleLanguages.slice(0, 1);
-      if (!langTargets.length) {
-        setRemarks([]);
-        return;
-      }
       try {
-        const responses = await Promise.all(
-          langTargets.map((langId) => fetchJson(
-            `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&sectionId=${selectedFile}&pageId=${selectedPage}&langId=${encodeURIComponent(langId)}`
-          ))
-        );
-        setRemarks(responses.flatMap((data) => data.remarks || []));
+        await loadRemarksForCurrentScope();
       } catch (err) {
         console.error('[remarks] failed to load:', err);
         setRemarks([]);
@@ -437,7 +457,7 @@ function App() {
     };
 
     loadRemarks();
-  }, [userId, selectedBook, selectedChapter, selectedFile, selectedLanguage, selectedPage, visibleLanguages]);
+  }, [loadRemarksForCurrentScope]);
 
   useEffect(() => {
     const existing = remarks.filter(
@@ -849,54 +869,113 @@ function App() {
     }
   }, [annotationToolsOpen, tool]);
 
+  const getScrollTargetForGesture = useCallback((event) => {
+    const stage = stageRef.current;
+    if (!stage) return null;
+
+    if (displayModeRef.current !== 'scrolling') {
+      return stage;
+    }
+
+    const source = event?.touches?.[0] || event?.changedTouches?.[0] || event;
+    const clientX = source?.clientX;
+    const clientY = source?.clientY;
+    const panes = stage.querySelectorAll('[data-annotation-language]');
+
+    if (Number.isFinite(clientX) && Number.isFinite(clientY)) {
+      for (const pane of panes) {
+        const rect = pane.getBoundingClientRect();
+        if (
+          clientX >= rect.left
+          && clientX <= rect.right
+          && clientY >= rect.top
+          && clientY <= rect.bottom
+        ) {
+          return pane.querySelector('.pdf-scroll-pages') || pane;
+        }
+      }
+    }
+
+    return stage.querySelector('.pdf-scroll-pages') || stage;
+  }, []);
+
   // Pass through wheel events on annotation canvas to scroll the stage
   useEffect(() => {
     const canvas = canvasRef.current;
-    const stage = stageRef.current;
-    if (!canvas || !stage) return;
+    if (!canvas) return;
     const onWheel = (e) => {
+      const scrollTarget = getScrollTargetForGesture(e);
+      if (!scrollTarget) return;
       e.preventDefault();
-      stage.scrollBy({ left: e.deltaX, top: e.deltaY, behavior: 'auto' });
+      scrollTarget.scrollBy({ left: e.deltaX, top: e.deltaY, behavior: 'auto' });
     };
     canvas.addEventListener('wheel', onWheel, { passive: false });
     return () => canvas.removeEventListener('wheel', onWheel);
-  }, []);
+  }, [getScrollTargetForGesture]);
 
-  // In scrolling mode: forward touch scrolls on annotation canvas to the stage
-  // so the user can scroll even when annotation tools are active.
+  // In scrolling mode on touch devices: one finger draws, two fingers scroll.
   useEffect(() => {
-    if (displayMode !== 'scrolling') return;
+    if (displayMode !== 'scrolling' || tool === 'hand') return;
     const canvas = canvasRef.current;
-    const stage = stageRef.current;
-    if (!canvas || !stage) return;
+    if (!canvas) return;
 
+    let touchStartX = 0;
     let touchStartY = 0;
     let touchActive = false;
+    let touchScrollTarget = null;
+
+    const getTouchMidpoint = (touches) => {
+      if (!touches || touches.length < 2) return null;
+      return {
+        x: (touches[0].clientX + touches[1].clientX) / 2,
+        y: (touches[0].clientY + touches[1].clientY) / 2,
+      };
+    };
 
     const onTouchStart = (e) => {
-      // Only handle single-finger touch scrolling (not drawing)
-      if (e.touches.length === 1 && !drawingRef.current) {
-        touchStartY = e.touches[0].clientY;
+      if (e.touches.length === 2) {
+        const midpoint = getTouchMidpoint(e.touches);
+        if (!midpoint) return;
+        e.preventDefault();
+        touchStartX = midpoint.x;
+        touchStartY = midpoint.y;
         touchActive = true;
+        touchScrollTarget = getScrollTargetForGesture(e);
+
+        if (drawingRef.current && currentStrokeRef.current) {
+          drawingRef.current = false;
+          currentStrokeRef.current = null;
+        }
       } else {
         touchActive = false;
+        touchScrollTarget = null;
       }
     };
 
     const onTouchMove = (e) => {
-      if (!touchActive || drawingRef.current) return;
-      if (e.touches.length !== 1) { touchActive = false; return; }
-      const deltaY = touchStartY - e.touches[0].clientY;
-      touchStartY = e.touches[0].clientY;
-      stage.scrollBy({ left: 0, top: deltaY, behavior: 'auto' });
+      if (!touchActive) return;
+      if (e.touches.length !== 2) {
+        touchActive = false;
+        touchScrollTarget = null;
+        return;
+      }
+      const midpoint = getTouchMidpoint(e.touches);
+      if (!midpoint) return;
+      e.preventDefault();
+      const deltaX = touchStartX - midpoint.x;
+      const deltaY = touchStartY - midpoint.y;
+      touchStartX = midpoint.x;
+      touchStartY = midpoint.y;
+      touchScrollTarget?.scrollBy({ left: deltaX, top: deltaY, behavior: 'auto' });
     };
 
     const onTouchEnd = () => {
       touchActive = false;
+      touchScrollTarget = null;
     };
 
-    canvas.addEventListener('touchstart', onTouchStart, { passive: true });
-    canvas.addEventListener('touchmove', onTouchMove, { passive: true });
+    canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+    canvas.addEventListener('touchmove', onTouchMove, { passive: false });
     canvas.addEventListener('touchend', onTouchEnd, { passive: true });
     canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
     return () => {
@@ -905,7 +984,7 @@ function App() {
       canvas.removeEventListener('touchend', onTouchEnd);
       canvas.removeEventListener('touchcancel', onTouchEnd);
     };
-  }, [displayMode]);
+  }, [displayMode, getScrollTargetForGesture, tool]);
 
   // Re-trigger canvas redraw when thumbnail images finish loading
   useEffect(() => {
@@ -1082,11 +1161,15 @@ function App() {
         subjectId: selectedBook,
         bookId: selectedChapter,
         sectionId: selectedFile,
-        pageId: selectedPage,
+        pageId: remark.page || selectedPage,
         langId: remark.langId,
         ...remark,
       })
     });
+    if (sectionScopedAnnotations) {
+      await loadRemarksForCurrentScope();
+      return;
+    }
     setRemarks(data.remarks || []);
   };
 
@@ -1101,7 +1184,11 @@ function App() {
       `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&sectionId=${selectedFile}&pageId=${selectedPage}&langId=${encodeURIComponent(annotationScopeLangId)}`,
       { method: 'DELETE' }
     );
-    setRemarks(data.remarks || []);
+    if (sectionScopedAnnotations) {
+      await loadRemarksForCurrentScope();
+    } else {
+      setRemarks(data.remarks || []);
+    }
     if (currentPageRemarks.length > 0) {
       setUndoStack((prev) => [...prev, { type: 'erasePage', remarks: currentPageRemarks }]);
       setRedoStack([]);
@@ -1143,6 +1230,9 @@ function App() {
       `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&sectionId=${selectedFile}&pageId=${selectedPage}&langId=${encodeURIComponent(langId)}&createdAt=${encodeURIComponent(createdAtValue)}`,
       { method: 'DELETE' }
     );
+    if (sectionScopedAnnotations) {
+      return loadRemarksForCurrentScope();
+    }
     setRemarks(data.remarks || []);
     return data.remarks || [];
   };
@@ -1167,7 +1257,11 @@ function App() {
             ...action.remark,
           })
         });
-        setRemarks(data.remarks || []);
+        if (sectionScopedAnnotations) {
+          await loadRemarksForCurrentScope();
+        } else {
+          setRemarks(data.remarks || []);
+        }
         setUndoStack((prev) => prev.slice(0, -1));
         setRedoStack((prev) => [...prev, action]);
         return;
@@ -1190,8 +1284,7 @@ function App() {
             })
           });
         }
-        // Reload remarks
-        setRemarks([...remarks, ...action.remarks]);
+        await loadRemarksForCurrentScope();
         setUndoStack((prev) => prev.slice(0, -1));
         setRedoStack((prev) => [...prev, action]);
         return;
@@ -1231,7 +1324,7 @@ function App() {
           { method: 'DELETE' }
         );
       }
-      setRemarks((prev) => prev.filter((r) => !action.remarks.some((er) => er.createdAt === r.createdAt)));
+      await loadRemarksForCurrentScope();
       setUndoStack((prev) => [...prev, action]);
       setRedoStack((prev) => prev.slice(0, -1));
       return;
@@ -1688,9 +1781,6 @@ function App() {
   const handlePointerDown = (event) => {
     if (tool !== 'pen' && tool !== 'highlight' && tool !== 'move') return;
 
-    // In scrolling mode, finger touches scroll — only pen/stylus draws
-    if (displayMode === 'scrolling' && event.pointerType !== 'pen') return;
-
     // Multi-touch: if another pointer is already down, cancel any in-progress
     // drawing and let both fingers scroll (don't draw).
     activePointersRef.current.add(event.pointerId);
@@ -1912,7 +2002,7 @@ function App() {
     const stage = stageRef.current;
     if (!stage) return;
     let rafId = null;
-    const onScroll = () => {
+    const scheduleRedraw = () => {
       if (rafId) return;
       rafId = requestAnimationFrame(() => {
         rafId = null;
@@ -1924,12 +2014,23 @@ function App() {
         redraw(context, rect.width, rect.height, annotationsToDraw);
       });
     };
-    stage.addEventListener('scroll', onScroll, { capture: true, passive: true });
+
+    const scrollTargets = [
+      stage,
+      ...stage.querySelectorAll('.pdf-scroll-pages, .thumbnail-grid, .thumbnail-list, .pdf-single-page')
+    ];
+
+    for (const target of scrollTargets) {
+      target.addEventListener('scroll', scheduleRedraw, { passive: true });
+    }
+
     return () => {
-      stage.removeEventListener('scroll', onScroll, { capture: true });
+      for (const target of scrollTargets) {
+        target.removeEventListener('scroll', scheduleRedraw);
+      }
       if (rafId) cancelAnimationFrame(rafId);
     };
-  }, [pageAnnotations, allSectionAnnotations, displayMode, redraw]);
+  }, [pageAnnotations, allSectionAnnotations, displayMode, pageSources, redraw, visibleLanguages]);
 
   const handleCanvasClick = async (event) => {
     // If a text input is already active, handle reposition or ignore
@@ -3042,6 +3143,7 @@ function App() {
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
             onPointerLeave={handlePointerUp}
             onClick={handleCanvasClick}
           />
