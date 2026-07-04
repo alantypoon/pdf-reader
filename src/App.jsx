@@ -128,6 +128,7 @@ function App() {
   const moveAnnotationRef = useRef(null);
   const moveStartPointRef = useRef(null);
   const moveHasMovedRef = useRef(false);
+  const activePointersRef = useRef(new Set()); // track active pointer IDs for multi-touch detection
   const displayModeInitializedRef = useRef(false);
   const initialSubjectRestoreRef = useRef('');
   const restoringUserSelectsRef = useRef(false);
@@ -860,6 +861,51 @@ function App() {
     canvas.addEventListener('wheel', onWheel, { passive: false });
     return () => canvas.removeEventListener('wheel', onWheel);
   }, []);
+
+  // In scrolling mode: forward touch scrolls on annotation canvas to the stage
+  // so the user can scroll even when annotation tools are active.
+  useEffect(() => {
+    if (displayMode !== 'scrolling') return;
+    const canvas = canvasRef.current;
+    const stage = stageRef.current;
+    if (!canvas || !stage) return;
+
+    let touchStartY = 0;
+    let touchActive = false;
+
+    const onTouchStart = (e) => {
+      // Only handle single-finger touch scrolling (not drawing)
+      if (e.touches.length === 1 && !drawingRef.current) {
+        touchStartY = e.touches[0].clientY;
+        touchActive = true;
+      } else {
+        touchActive = false;
+      }
+    };
+
+    const onTouchMove = (e) => {
+      if (!touchActive || drawingRef.current) return;
+      if (e.touches.length !== 1) { touchActive = false; return; }
+      const deltaY = touchStartY - e.touches[0].clientY;
+      touchStartY = e.touches[0].clientY;
+      stage.scrollBy({ left: 0, top: deltaY, behavior: 'auto' });
+    };
+
+    const onTouchEnd = () => {
+      touchActive = false;
+    };
+
+    canvas.addEventListener('touchstart', onTouchStart, { passive: true });
+    canvas.addEventListener('touchmove', onTouchMove, { passive: true });
+    canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+    canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+    return () => {
+      canvas.removeEventListener('touchstart', onTouchStart);
+      canvas.removeEventListener('touchmove', onTouchMove);
+      canvas.removeEventListener('touchend', onTouchEnd);
+      canvas.removeEventListener('touchcancel', onTouchEnd);
+    };
+  }, [displayMode]);
 
   // Re-trigger canvas redraw when thumbnail images finish loading
   useEffect(() => {
@@ -1641,6 +1687,22 @@ function App() {
 
   const handlePointerDown = (event) => {
     if (tool !== 'pen' && tool !== 'highlight' && tool !== 'move') return;
+
+    // In scrolling mode, finger touches scroll — only pen/stylus draws
+    if (displayMode === 'scrolling' && event.pointerType !== 'pen') return;
+
+    // Multi-touch: if another pointer is already down, cancel any in-progress
+    // drawing and let both fingers scroll (don't draw).
+    activePointersRef.current.add(event.pointerId);
+    if (activePointersRef.current.size > 1) {
+      // Cancel in-progress stroke
+      if (drawingRef.current && currentStrokeRef.current) {
+        drawingRef.current = false;
+        currentStrokeRef.current = null;
+      }
+      return;
+    }
+
     const target = resolveAnnotationTarget(event);
     if (!target) return;
     setActiveAnnotationLangId(target.langId);
@@ -1675,6 +1737,9 @@ function App() {
   };
 
   const handlePointerMove = (event) => {
+    // Multi-touch: don't draw when multiple pointers are active
+    if (activePointersRef.current.size > 1) return;
+
     // Handle move tool dragging
     if (moveAnnotationRef.current && moveStartPointRef.current) {
       const target = resolveAnnotationTarget(event);
@@ -1732,7 +1797,12 @@ function App() {
     redraw(context, rect.width, rect.height, [...(displayMode === 'scrolling' ? allSectionAnnotations : pageAnnotations), currentStrokeRef.current]);
   };
 
-  const handlePointerUp = async () => {
+  const handlePointerUp = async (event) => {
+    // Clean up pointer tracking for multi-touch detection
+    if (event?.pointerId != null) {
+      activePointersRef.current.delete(event.pointerId);
+    }
+
     // Handle move tool drop
     if (moveAnnotationRef.current) {
       const moved = moveAnnotationRef.current;
@@ -2966,7 +3036,7 @@ function App() {
             className="annotation-canvas"
             style={{
               pointerEvents: tool === 'hand' ? 'none' : 'auto',
-              touchAction: 'pan-x pan-y',
+              touchAction: tool === 'hand' ? 'pan-x pan-y' : 'none',
               cursor: tool === 'move' ? 'move' : tool === 'eraser' ? 'pointer' : tool === 'text' ? 'text' : tool === 'pen' || tool === 'highlight' ? 'crosshair' : 'default'
             }}
             onPointerDown={handlePointerDown}
