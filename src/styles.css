@@ -1240,9 +1240,10 @@ button, input, select {
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.14), 0 2px 8px rgba(0, 0, 0, 0.08);
   position: fixed;
   z-index: 100;
-  overflow: visible;
+  overflow-y: auto;
   user-select: none;
   max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 32px);
   opacity: 0.9;
 }
 
@@ -1941,6 +1942,32 @@ button, input, select {
 }
 
 .ai-regenerate-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: #475569;
+}
+
+.ai-reset-btn {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid #d7e0e8;
+  border-radius: 10px;
+  background: #f8fafc;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 120ms ease;
+}
+
+.ai-reset-btn:hover {
+  background: #e2e8f0;
+}
+
+.ai-reset-btn svg {
   width: 16px;
   height: 16px;
   fill: #475569;

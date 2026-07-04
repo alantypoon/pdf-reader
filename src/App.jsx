@@ -2010,15 +2010,48 @@ function App() {
     };
   }, [panelVisible, annotationToolsOpen, isNarrowScreen]);
 
+  // Clamp panel position so it never moves off-screen
+  const clampPanelPos = useCallback((pos) => {
+    if (pos.x == null || pos.y == null) return pos;
+    const panel = panelRef.current;
+    const pw = panel ? panel.offsetWidth : 360;
+    const ph = panel ? panel.offsetHeight : 80;
+    const maxX = Math.max(0, window.innerWidth - pw);
+    const maxY = Math.max(0, window.innerHeight - ph);
+    return {
+      x: Math.min(maxX, Math.max(0, pos.x)),
+      y: Math.min(maxY, Math.max(0, pos.y)),
+    };
+  }, []);
+
+  // Clamp panel on window resize so it never ends up off-screen
+  useEffect(() => {
+    const onResize = () => {
+      setPanelPos((prev) => clampPanelPos(prev));
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [clampPanelPos]);
+
+  // Clamp saved panel position on first load (stale coords from larger screen)
+  useEffect(() => {
+    setPanelPos((prev) => {
+      if (prev.x == null || prev.y == null) return prev;
+      return clampPanelPos(prev);
+    });
+    // Run once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     const onMove = (event) => {
       if (isNarrowScreen || !dragRef.current.dragging) return;
       const dx = event.clientX - dragRef.current.startX;
       const dy = event.clientY - dragRef.current.startY;
-      setPanelPos({
+      setPanelPos(clampPanelPos({
         x: dragRef.current.posX + dx,
         y: dragRef.current.posY + dy
-      });
+      }));
     };
 
     const onUp = () => {
@@ -2173,6 +2206,14 @@ function App() {
     };
     loadContent();
   }, [selectedChapter, selectedFile, selectedPage, selectedLanguage]);
+
+  // Reset quiz/flashcard answers every time the AI drawer opens
+  useEffect(() => {
+    if (aiDrawerOpen) {
+      setFlippedCards({});
+      setMcqAnswers({});
+    }
+  }, [aiDrawerOpen]);
 
   const handleAiGenerate = async (forceRegenerate = false, requireConfirmation = false) => {
     if (aiLoading) {
@@ -2342,6 +2383,11 @@ function App() {
         question: question?.question || '',
       }
     });
+  };
+
+  const handleResetAnswers = () => {
+    setFlippedCards({});
+    setMcqAnswers({});
   };
 
   // ── Derive display content for AI drawer ──────────────────
@@ -3240,12 +3286,20 @@ function App() {
                 {_('aiStudyMaterials')}
               </h2>
               <div className="ai-drawer-header-actions">
-                {aiContent && !aiLoading && (
+                {aiContent && !aiLoading && isTestMode && (
                   <button className="ai-regenerate-btn" onClick={() => handleAiGenerate(true, true)} title={_('regenerate')}>
                     <svg viewBox="0 0 24 24" role="presentation" focusable="false">
                       <path d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" />
                     </svg>
                     <span>{_('regenerate')}</span>
+                  </button>
+                )}
+                {aiContent && !aiLoading && (
+                  <button className="ai-reset-btn" onClick={handleResetAnswers} title={_('resetAnswers')}>
+                    <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                      <path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z" />
+                    </svg>
+                    <span>{_('resetAnswers')}</span>
                   </button>
                 )}
                 <button className="modal-close" onClick={() => setAiDrawerOpen(false)} aria-label={_('close')}>✕</button>
