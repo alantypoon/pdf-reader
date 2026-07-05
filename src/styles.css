@@ -35,6 +35,14 @@ button, input, select {
   grid-template-columns: 1fr;
 }
 
+.app-shell.fullscreen-active .hidden-sidebar-restore {
+  top: 62px;
+}
+
+.app-shell.fullscreen-active .sidebar {
+  padding-top: 74px;
+}
+
 .hidden-sidebar-restore {
   position: fixed;
   left: 12px;
@@ -106,7 +114,7 @@ button, input, select {
   margin-top: 4px;
 }
 
-@media (orientation: landscape) and (max-height: 820px) {
+@media (orientation: landscape) and (max-height: 820px) and (pointer: fine) {
   .sidebar-icon-stack {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 6px;
@@ -133,17 +141,49 @@ button, input, select {
   }
 }
 
+@media (orientation: landscape) and (max-height: 820px) and (pointer: coarse) {
+  .sidebar-icon-stack {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .sidebar-icon-btn {
+    min-width: 42px;
+    height: 42px;
+    border-radius: 12px;
+  }
+
+  .sidebar-icon-btn svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .sidebar-account-btn {
+    min-height: 44px;
+  }
+
+  .sidebar-account-id code {
+    font-size: 0.68rem;
+  }
+}
+
 .sidebar-icon-btn {
   width: 100%;
   height: 42px;
+  padding: 0;
   border: 1px solid #c9d7e3;
   border-radius: 12px;
   background: #f4f9fc;
+  color: #1f4d6c;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   position: relative;
+  overflow: visible;
+  -webkit-appearance: none;
+  appearance: none;
+  line-height: 1;
 }
 
 .sidebar-icon-btn::after {
@@ -177,16 +217,32 @@ button, input, select {
 .sidebar-icon-btn svg {
   width: 18px;
   height: 18px;
-  fill: #1f4d6c;
+  color: currentColor;
+  display: block;
+  flex: 0 0 auto;
+}
+
+.sidebar-icon-btn svg path,
+.sidebar-icon-btn svg rect,
+.sidebar-icon-btn svg circle,
+.sidebar-icon-btn svg ellipse,
+.sidebar-icon-btn svg polygon {
+  fill: currentColor;
+}
+
+.sidebar-icon-btn svg line,
+.sidebar-icon-btn svg polyline {
+  stroke: currentColor;
 }
 
 .sidebar-icon-btn.active {
   background: #1f4d6c;
   border-color: #1f4d6c;
+  color: #ffffff;
 }
 
 .sidebar-icon-btn.active svg {
-  fill: #ffffff;
+  color: currentColor;
 }
 
 .sidebar-icon-btn:disabled {
@@ -474,13 +530,27 @@ button, input, select {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  color: #1f4d6c;
 }
 
 .sidebar-label-icon svg {
   width: 16px;
   height: 16px;
-  fill: #1f4d6c;
+  color: currentColor;
   flex-shrink: 0;
+}
+
+.sidebar-label-icon svg path,
+.sidebar-label-icon svg rect,
+.sidebar-label-icon svg circle,
+.sidebar-label-icon svg ellipse,
+.sidebar-label-icon svg polygon {
+  fill: currentColor;
+}
+
+.sidebar-label-icon svg line,
+.sidebar-label-icon svg polyline {
+  stroke: currentColor;
 }
 
 /* ── Sidebar toggles ────────────────────────────────────── */
@@ -733,7 +803,7 @@ button, input, select {
   transform: translateY(-50%);
   width: 28px;
   height: 28px;
-  border: 0;
+  padding: 0;
   border-radius: 8px;
   background: transparent;
   color: #7b95ac;
@@ -850,6 +920,12 @@ button, input, select {
   font-weight: 700;
   font-size: 0.78rem;
   text-align: center;
+}
+
+@media (pointer: coarse) {
+  .sidebar-icon-btn::after {
+    display: none;
+  }
 }
 
 .autocomplete-names {

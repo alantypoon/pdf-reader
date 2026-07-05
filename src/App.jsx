@@ -228,6 +228,10 @@ function App() {
   const [toolbarTight, setToolbarTight] = useState(false);
   const [includeAnnotations, setIncludeAnnotations] = useState(false);
   const [panelVisible, setPanelVisible] = useState(savedPrefs.panelVisible !== false);
+  const [isFullscreen, setIsFullscreen] = useState(() => {
+    if (typeof document === 'undefined') return false;
+    return Boolean(document.fullscreenElement);
+  });
   const [panelReservedHeight, setPanelReservedHeight] = useState(0);
   const [fitRefreshToken, setFitRefreshToken] = useState(0);
   const [singleRowToolbar, setSingleRowToolbar] = useState(false);
@@ -1325,6 +1329,11 @@ function App() {
     setModalInfo({ url: resource.url, name: resource.name });
   };
   const saveRemark = async (remark) => {
+    const savedRemark = {
+      ...remark,
+      page: remark.page || selectedPage,
+      langId: remark.langId || annotationScopeLangId,
+    };
     const data = await fetchJson('api/remarks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1333,11 +1342,13 @@ function App() {
         subjectId: selectedBook,
         bookId: selectedChapter,
         sectionId: selectedFile,
-        pageId: remark.page || selectedPage,
-        langId: remark.langId,
-        ...remark,
+        pageId: savedRemark.page,
+        langId: savedRemark.langId,
+        ...savedRemark,
       })
     });
+    setUndoStack((prev) => [...prev, { type: 'add', remark: savedRemark }]);
+    setRedoStack([]);
     if (sectionScopedAnnotations) {
       await loadRemarksForCurrentScope();
       return;
@@ -1408,12 +1419,19 @@ function App() {
     }
   };
 
-  const deleteRemarkByCreatedAt = async (createdAtValue, langId = annotationScopeLangId, pageIdOverride) => {
-    const resolvedPageId = pageIdOverride != null ? pageIdOverride : selectedPage;
+  const deleteRemarkByCreatedAt = async (createdAtValue, langId = annotationScopeLangId, pageIdOverrideOrOptions) => {
+    const options = (pageIdOverrideOrOptions && typeof pageIdOverrideOrOptions === 'object' && !Array.isArray(pageIdOverrideOrOptions))
+      ? pageIdOverrideOrOptions
+      : { pageIdOverride: pageIdOverrideOrOptions };
+    const resolvedPageId = options.pageIdOverride != null ? options.pageIdOverride : selectedPage;
     const data = await fetchJson(
       `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&sectionId=${selectedFile}&pageId=${resolvedPageId}&langId=${encodeURIComponent(langId)}&createdAt=${encodeURIComponent(createdAtValue)}`,
       { method: 'DELETE' }
     );
+    if (options.recordUndo && options.deletedRemark) {
+      setUndoStack((prev) => [...prev, { type: 'delete', remark: options.deletedRemark }]);
+      setRedoStack([]);
+    }
     if (sectionScopedAnnotations) {
       return loadRemarksForCurrentScope();
     }
@@ -1425,6 +1443,13 @@ function App() {
     // If there are actions on the undo stack, reverse the last one
     if (undoStack.length > 0) {
       const action = undoStack[undoStack.length - 1];
+
+      if (action.type === 'add') {
+        await deleteRemarkByCreatedAt(action.remark.createdAt, action.remark.langId || annotationScopeLangId, action.remark.page || selectedPage);
+        setUndoStack((prev) => prev.slice(0, -1));
+        setRedoStack((prev) => [...prev, action]);
+        return;
+      }
 
       if (action.type === 'delete') {
         // Re-add a deleted remark
@@ -1491,6 +1516,30 @@ function App() {
   const redoRemark = async () => {
     if (!redoStack.length) return;
     const action = redoStack[redoStack.length - 1];
+
+    if (action.type === 'add') {
+      const data = await fetchJson('api/remarks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          subjectId: selectedBook,
+          bookId: selectedChapter,
+          sectionId: selectedFile,
+          pageId: action.remark.page || selectedPage,
+          langId: action.remark.langId || annotationScopeLangId,
+          ...action.remark,
+        })
+      });
+      if (sectionScopedAnnotations) {
+        await loadRemarksForCurrentScope();
+      } else {
+        setRemarks(data.remarks || []);
+      }
+      setUndoStack((prev) => [...prev, action]);
+      setRedoStack((prev) => prev.slice(0, -1));
+      return;
+    }
 
     if (action.type === 'delete') {
       // Re-delete the remark
@@ -2154,7 +2203,10 @@ function App() {
     }
     // If editing an existing annotation, delete the old one first
     if (state.existingCreatedAt) {
-      await deleteRemarkByCreatedAt(state.existingCreatedAt, state.existingLangId || state.langId);
+      await deleteRemarkByCreatedAt(state.existingCreatedAt, state.existingLangId || state.langId, {
+        recordUndo: true,
+        deletedRemark: state.existingRemark,
+      });
     }
     const remark = {
       type: 'text',
@@ -2267,7 +2319,11 @@ function App() {
     if (tool === 'eraser') {
       const annotation = findAnnotationAtPoint(target.langId, target.point, target.pageNum);
       if (!annotation?.createdAt) return;
-      await deleteRemarkByCreatedAt(annotation.createdAt, annotation.langId || target.langId, annotation.page);
+      await deleteRemarkByCreatedAt(annotation.createdAt, annotation.langId || target.langId, {
+        pageIdOverride: annotation.page,
+        recordUndo: true,
+        deletedRemark: annotation,
+      });
       return;
     }
     if (tool === 'text') {
@@ -2304,6 +2360,7 @@ function App() {
         // Re-edit: pre-fill with existing text and store reference to delete old on save
         newState.existingCreatedAt = existing.createdAt;
         newState.existingLangId = existing.langId || target.langId;
+        newState.existingRemark = existing;
         newState.initialText = existing.text || '';
       }
       setTextInputState(newState);
@@ -3097,9 +3154,16 @@ function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [canRestoreHiddenSidebar, restoreSidebarCollapsed]);
 
+  useEffect(() => {
+    if (typeof document === 'undefined') return undefined;
+    const onFullscreenChange = () => setIsFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
+  }, []);
+
   return (
     <div
-      className={`app-shell ${displayMode === 'scrolling' ? 'scrolling-mode' : ''} ${sidebarHidden ? 'sidebar-hidden' : ''}`}
+      className={`app-shell ${displayMode === 'scrolling' ? 'scrolling-mode' : ''} ${sidebarHidden ? 'sidebar-hidden' : ''} ${isFullscreen ? 'fullscreen-active' : ''}`}
       style={{ '--bottom-toolbar-offset': `${panelReservedHeight}px` }}
       onDoubleClick={() => {
         if (canRestoreHiddenSidebar) {
@@ -3433,7 +3497,7 @@ function App() {
               <span className="sidebar-account-id"><code>{userId.slice(0, 6)}</code></span>
               <span className="sidebar-account-logout" aria-hidden="true">
                 <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                  <path d="M10 17l1.41-1.41L8.83 13H20v-2H8.83l2.58-2.59L10 7l-5 5 5 5zm-6 3h8v-2H4V6h8V4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2z" />
+                  <path d="M10 17l1.41-1.41L8.83 13H20v-2H8.83l2.58-2.59L10 7l-5 5 5 5zm-6 3h8v-2H4V6h8V4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2z" fill="#12324a" />
                 </svg>
               </span>
             </a>
@@ -3444,9 +3508,36 @@ function App() {
               aria-label={_('switchBook')}
             >
               <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <path d="M4 5a2 2 0 0 1 2-2h13v17H6a2 2 0 0 0-2 2V5zm2 0v13h11V5H6z" />
+                <path d="M4 5a2 2 0 0 1 2-2h13v17H6a2 2 0 0 0-2 2V5zm2 0v13h11V5H6z" fill="#1f4d6c" />
               </svg>
             </button>
+            {sectionOptionsCount > 1 && (
+              <button
+                className="sidebar-icon-btn"
+                onClick={() => moveSection(1)}
+                data-tooltip={_('nextSection')}
+                aria-label={_('nextSection')}
+              >
+                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                  <path d="M3 4h18v2H3V4zm0 7h18v2H3v-2zm0 7h18v2H3v-2z" fill="#1f4d6c" />
+                </svg>
+              </button>
+            )}
+            {maxNavigablePage > 1 && (
+              <button
+                className="sidebar-icon-btn"
+                onClick={() => jumpPage(1)}
+                data-tooltip={_('nextPage')}
+                aria-label={_('nextPage')}
+              >
+                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                  <rect x="4" y="3" width="16" height="18" rx="2" fill="#1f4d6c" />
+                  <line x1="8" y1="8" x2="16" y2="8" stroke="#f4f9fc" strokeWidth="1.5" />
+                  <line x1="8" y1="12" x2="16" y2="12" stroke="#f4f9fc" strokeWidth="1.5" />
+                  <line x1="8" y1="16" x2="13" y2="16" stroke="#f4f9fc" strokeWidth="1.5" />
+                </svg>
+              </button>
+            )}
             <button
               className="sidebar-icon-btn"
               onClick={cycleDisplayMode}
@@ -3455,22 +3546,22 @@ function App() {
             >
               {displayMode === 'thumbnails' ? (
                 <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                  <rect x="3" y="4" width="6" height="7" rx="1.2" />
-                  <rect x="3" y="13" width="6" height="7" rx="1.2" />
-                  <rect x="11" y="4" width="10" height="16" rx="1.5" />
+                  <rect x="3" y="4" width="6" height="7" rx="1.2" fill="#1f4d6c" />
+                  <rect x="3" y="13" width="6" height="7" rx="1.2" fill="#1f4d6c" />
+                  <rect x="11" y="4" width="10" height="16" rx="1.5" fill="#1f4d6c" />
                 </svg>
               ) : displayMode === 'scrolling' ? (
                 <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                  <rect x="3" y="3" width="18" height="4" rx="1" />
-                  <rect x="3" y="9" width="18" height="4" rx="1" />
-                  <rect x="3" y="15" width="18" height="4" rx="1" />
+                  <rect x="3" y="3" width="18" height="4" rx="1" fill="#1f4d6c" />
+                  <rect x="3" y="9" width="18" height="4" rx="1" fill="#1f4d6c" />
+                  <rect x="3" y="15" width="18" height="4" rx="1" fill="#1f4d6c" />
                 </svg>
               ) : (
                 <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                  <rect x="4" y="3" width="16" height="18" rx="2" />
-                  <line x1="8" y1="8" x2="16" y2="8" stroke="currentColor" strokeWidth="1.5" />
-                  <line x1="8" y1="12" x2="16" y2="12" stroke="currentColor" strokeWidth="1.5" />
-                  <line x1="8" y1="16" x2="13" y2="16" stroke="currentColor" strokeWidth="1.5" />
+                  <rect x="4" y="3" width="16" height="18" rx="2" fill="#1f4d6c" />
+                  <line x1="8" y1="8" x2="16" y2="8" stroke="#f4f9fc" strokeWidth="1.5" />
+                  <line x1="8" y1="12" x2="16" y2="12" stroke="#f4f9fc" strokeWidth="1.5" />
+                  <line x1="8" y1="16" x2="13" y2="16" stroke="#f4f9fc" strokeWidth="1.5" />
                 </svg>
               )}
             </button>
@@ -3481,7 +3572,7 @@ function App() {
               aria-label={_('switchLanguage')}
             >
               <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <path d="M5 6h9v2H5V6zm2 4h5v2H7v-2zm7.5 0h2.4L20 18h-2.1l-.7-2h-3l-.7 2h-2.1l3.2-8zm.2 4h1.7l-.8-2.3-.9 2.3z" />
+                <path d="M5 6h9v2H5V6zm2 4h5v2H7v-2zm7.5 0h2.4L20 18h-2.1l-.7-2h-3l-.7 2h-2.1l3.2-8zm.2 4h1.7l-.8-2.3-.9 2.3z" fill="#1f4d6c" />
               </svg>
             </button>
             <button
@@ -3491,7 +3582,7 @@ function App() {
               aria-label={_('toggleResources')}
             >
               <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4a5 5 0 0 0 5-5 5 5 0 0 0-5-5z" />
+                <path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4a5 5 0 0 0 5-5 5 5 0 0 0-5-5z" fill={resourcesDrawerOpen ? '#ffffff' : '#1f4d6c'} />
               </svg>
             </button>
             <button
@@ -3501,12 +3592,12 @@ function App() {
               aria-label={_('aiGeneration')}
             >
               <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" />
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" fill={aiDrawerOpen ? '#ffffff' : '#1f4d6c'} />
               </svg>
               {aiGenerationPresent && (
                 <span className="ai-generated-tick ai-generated-tick-collapsed" aria-hidden="true">
                   <svg viewBox="0 0 20 20" role="presentation" focusable="false">
-                    <path d="M3 10.5l4.1 4.1L17 4.8" />
+                    <path d="M3 10.5l4.1 4.1L17 4.8" fill="none" stroke="#ffffff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
                 </span>
               )}
@@ -3519,9 +3610,9 @@ function App() {
               aria-label={_('toggleToolbar')}
             >
               <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <rect x="3" y="3" width="18" height="14" rx="2" />
-                <rect x="6" y="7" width="12" height="2" rx="1" />
-                <rect x="6" y="11" width="8" height="2" rx="1" />
+                <rect x="3" y="3" width="18" height="14" rx="2" fill={panelVisible ? '#ffffff' : '#1f4d6c'} />
+                <rect x="6" y="7" width="12" height="2" rx="1" fill={panelVisible ? '#1f4d6c' : '#f4f9fc'} />
+                <rect x="6" y="11" width="8" height="2" rx="1" fill={panelVisible ? '#1f4d6c' : '#f4f9fc'} />
               </svg>
             </button>
 
