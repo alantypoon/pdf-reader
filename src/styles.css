@@ -8,9 +8,20 @@
   box-sizing: border-box;
 }
 
-body {
+html, body {
   margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  position: fixed;
+  overscroll-behavior: none;
+  -webkit-overflow-scrolling: auto;
+}
+
+body {
   min-height: 100vh;
+  min-height: 100dvh;
 }
 
 button, input, select {
@@ -969,7 +980,6 @@ button, input, select {
   position: absolute;
   inset: 0;
   z-index: 2;
-  touch-action: none;
 }
 
 .text-annotation-textarea {
@@ -1035,7 +1045,8 @@ button, input, select {
    drawing/annotation tools — only the JS two-finger handler should scroll.
    In hand mode the canvas passes through touches, so native scroll is needed. */
 .book-stage.scrolling:not(.tool-hand) .pdf-scroll,
-.book-stage.scrolling:not(.tool-hand) .pdf-scroll-pages {
+.book-stage.scrolling:not(.tool-hand) .pdf-scroll-pages,
+.book-stage.pagination:not(.tool-hand) .pdf-single-page {
   overflow: hidden;
 }
 
@@ -1282,6 +1293,8 @@ button, input, select {
   display: grid;
   place-items: center;
   overflow: auto;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
 }
 
 .pdf-scroll {
@@ -1315,8 +1328,6 @@ button, input, select {
 .pdf-single-page canvas,
 .pdf-single-page .page-img {
   max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
 }
 
 .zoom-label {

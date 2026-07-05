@@ -316,19 +316,29 @@ function App() {
   };
 
   const refreshFitForCurrentMode = useCallback(() => {
-    setFitRefreshToken((current) => current + 1);
+    console.log('[fit-refresh] refreshFitForCurrentMode called — setting zoom=1, bumping fitRefreshToken');
+    setZoomLevel(1);
+    setFitRefreshToken((current) => {
+      console.log('[fit-refresh] fitRefreshToken: ' + current + ' → ' + (current + 1));
+      return current + 1;
+    });
   }, []);
 
   // Refresh layout when fullscreen, sidebar, panel, or window size changes
   useEffect(() => {
-    const onResize = () => setFitRefreshToken((c) => c + 1);
+    const onResize = () => { console.log('[layout] window resize — firing fit refresh'); refreshFitForCurrentMode(); };
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
-  }, []);
+  }, [refreshFitForCurrentMode]);
 
   useEffect(() => {
-    setFitRefreshToken((c) => c + 1);
-  }, [isFullscreen, sidebarCollapsed, sidebarHidden, panelVisible]);
+    console.log('[layout] sidebar collapse/expand/fullscreen changed — scheduling fit refresh in 2000ms');
+    const timer = setTimeout(() => {
+      console.log('[layout] firing fit refresh now');
+      refreshFitForCurrentMode();
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [isFullscreen, sidebarCollapsed, sidebarHidden, panelVisible, refreshFitForCurrentMode]);
 
   const preferredAiDrawerLanguage = useMemo(() => {
     return selectedLanguage === 'tc' ? 'zh' : 'en';
@@ -1009,6 +1019,23 @@ function App() {
     const stage = stageRef.current;
     if (!stage) return null;
 
+    if (displayModeRef.current === 'pagination') {
+      // In pagination mode, scroll the .pdf-single-page container under the touch point
+      const source = event?.touches?.[0] || event?.changedTouches?.[0] || event;
+      const clientX = source?.clientX;
+      const clientY = source?.clientY;
+      if (Number.isFinite(clientX) && Number.isFinite(clientY)) {
+        const panes = stage.querySelectorAll('[data-annotation-language]');
+        for (const pane of panes) {
+          const rect = pane.getBoundingClientRect();
+          if (clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom) {
+            return pane.querySelector('.pdf-single-page') || stage;
+          }
+        }
+      }
+      return stage.querySelector('.pdf-single-page') || stage;
+    }
+
     if (displayModeRef.current !== 'scrolling') {
       return stage;
     }
@@ -1052,9 +1079,9 @@ function App() {
     return () => canvas.removeEventListener('wheel', onWheel);
   }, [getScrollTargetForGesture]);
 
-  // In scrolling mode on touch devices: one finger draws, two fingers scroll.
+  // In scrolling/pagination mode on touch devices: one finger draws, two fingers scroll.
   useEffect(() => {
-    if (displayMode !== 'scrolling' || tool === 'hand') return;
+    if ((displayMode !== 'scrolling' && displayMode !== 'pagination') || tool === 'hand') return;
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -2439,15 +2466,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return undefined;
-    const onResize = () => {
-      refreshFitForCurrentMode();
-    };
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, [refreshFitForCurrentMode]);
-
-  useEffect(() => {
+    console.log('[layout] immediate fit refresh — sidebar/fullscreen/panel changed');
     refreshFitForCurrentMode();
   }, [sidebarCollapsed, sidebarHidden, panelVisible, annotationToolsOpen, refreshFitForCurrentMode]);
 
@@ -3520,10 +3539,7 @@ function App() {
           <div className="sidebar-title-actions">
             <button
               className="sidebar-toggle"
-              onClick={() => {
-                setSidebarCollapsed((current) => !current);
-                setSelectedPage(1);
-              }}
+              onClick={() => { console.log('[sidebar] toggle clicked, current collapsed:', sidebarCollapsed); setSidebarCollapsed((current) => !current); }}
               aria-label={sidebarCollapsed ? _('expandSidebar') : _('collapseSidebar')}
               title={sidebarCollapsed ? _('expandSidebar') : _('collapseSidebar')}
             >
@@ -3591,6 +3607,25 @@ function App() {
             ))}
           </div>
         </label>
+        {isTestMode && !sidebarCollapsed && (
+          <button
+            type="button"
+            onClick={() => { console.log('[debug] manual fit refresh'); refreshFitForCurrentMode(); }}
+            style={{
+              width: '100%', padding: '8px 12px', marginBottom: '8px',
+              borderRadius: '8px', border: '1px solid #f59e0b',
+              background: '#fffbeb', color: '#92400e',
+              fontSize: '0.8rem', fontWeight: 600, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: '6px',
+              justifyContent: 'center',
+            }}
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" role="presentation" focusable="false">
+              <path d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" fill="#b45309"/>
+            </svg>
+            Refresh Fit
+          </button>
+        )}
         <label>
           <span className="sidebar-label-icon">
             <svg viewBox="0 0 24 24" role="presentation" focusable="false">
@@ -3787,6 +3822,19 @@ function App() {
                 </svg>
               </span>
             </a>
+            {isTestMode && (
+            <button
+              className="sidebar-icon-btn"
+              onClick={() => { console.log('[debug] manual fit refresh'); refreshFitForCurrentMode(); }}
+              data-tooltip="Refresh Fit"
+              aria-label="Refresh Fit"
+              style={{ background: '#fef3c7' }}
+            >
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                <path d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" fill="#b45309"/>
+              </svg>
+            </button>
+            )}
             <button
               className="sidebar-icon-btn"
               onClick={cycleBook}
@@ -3941,7 +3989,7 @@ function App() {
             className="annotation-canvas"
             style={{
               pointerEvents: tool === 'hand' ? 'none' : 'auto',
-              touchAction: tool === 'hand' ? 'pan-x pan-y' : 'none',
+              touchAction: tool === 'hand' ? 'pan-x pan-y' : displayMode === 'pagination' ? 'pan-y' : 'none',
               cursor: tool === 'move' ? 'move' : tool === 'eraser' ? 'pointer' : tool === 'text' ? 'text' : tool === 'pen' || tool === 'highlight' ? 'crosshair' : 'default'
             }}
             onPointerDown={handlePointerDown}
