@@ -319,6 +319,15 @@ function App() {
     return selectedLanguage === 'tc' ? 'zh' : 'en';
   }, [selectedLanguage]);
 
+  const normalizeAiContent = useCallback((content) => {
+    if (!content || typeof content !== 'object') return null;
+    const normalized = {
+      en: content.en || null,
+      zh: content.zh || content.tc || null,
+    };
+    return normalized.en || normalized.zh ? normalized : null;
+  }, []);
+
   const logUserAction = async (actionType, payload = {}) => {
     try {
       await fetchJson('api/user-actions', {
@@ -2688,15 +2697,12 @@ function App() {
     setRenderScaleByLanguage({});
   }, [selectedChapter, selectedFile, selectedPage, selectedLanguage, displayMode]);
 
-  const fetchCachedAiContent = async () => {
+  const fetchCachedAiContent = useCallback(async () => {
     const data = await fetchJson(
       `api/ai-content?subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&sectionId=${selectedFile}&pageId=${selectedPage}`
     );
-    if (data.content && (data.content.en || data.content.zh)) {
-      return data.content;
-    }
-    return null;
-  };
+    return normalizeAiContent(data.content);
+  }, [normalizeAiContent, selectedBook, selectedChapter, selectedFile, selectedPage]);
 
   // ── Load saved AI content when section/page/language changes ──
   useEffect(() => {
@@ -2717,7 +2723,9 @@ function App() {
       }
     };
     loadContent();
-  }, [selectedChapter, selectedFile, selectedPage, selectedLanguage]);
+  }, [fetchCachedAiContent, selectedChapter, selectedFile, selectedPage, selectedLanguage]);
+
+  const isRightDrawerOpen = resourcesDrawerOpen || aiDrawerOpen || searchDrawerOpen;
 
   // Reset quiz/flashcard answers every time the AI drawer opens
   useEffect(() => {
@@ -2750,16 +2758,6 @@ function App() {
       if (!result.isConfirmed) {
         return;
       }
-    }
-
-    // If content already exists and not forcing regenerate, just show it
-    if (!forceRegenerate && aiContent) {
-      setAiDrawerLanguage(preferredAiDrawerLanguage);
-      setAiDrawerOpen(true);
-      if (isTestMode) {
-        console.log('[ai-generate] showing cached content (use Regenerate to re-fetch)');
-      }
-      return;
     }
 
     if (!forceRegenerate) {
@@ -3034,6 +3032,7 @@ function App() {
     <div className="toolbar-group toolbar-secondary" ref={secondaryToolbarRef}>
       <button
         className={`tool-btn ${tool === 'pen' ? 'active' : ''}`}
+        disabled={isRightDrawerOpen}
         onClick={() => setTool('pen')}
         data-tooltip={_('pen')}
         aria-label={_('pen')}
@@ -3044,6 +3043,7 @@ function App() {
       </button>
       <button
         className={`tool-btn ${tool === 'highlight' ? 'active' : ''}`}
+        disabled={isRightDrawerOpen}
         onClick={() => setTool('highlight')}
         data-tooltip={_('highlighter')}
         aria-label={_('highlighter')}
@@ -3055,6 +3055,7 @@ function App() {
       </button>
       <button
         className={`tool-btn ${tool === 'text' ? 'active' : ''}`}
+        disabled={isRightDrawerOpen}
         onClick={() => setTool('text')}
         data-tooltip={_('textTool')}
         aria-label={_('textTool')}
@@ -3065,6 +3066,7 @@ function App() {
       </button>
       <button
         className={`tool-btn ${tool === 'eraser' ? 'active' : ''}`}
+        disabled={isRightDrawerOpen}
         onClick={() => setTool('eraser')}
         data-tooltip={_('eraser')}
         aria-label={_('eraser')}
@@ -3076,6 +3078,7 @@ function App() {
       </button>
       <button
         className={`tool-btn ${tool === 'move' ? 'active' : ''}`}
+        disabled={isRightDrawerOpen}
         onClick={() => setTool('move')}
         data-tooltip={_('moveTool')}
         aria-label={_('moveTool')}
@@ -3089,6 +3092,7 @@ function App() {
         <button
           className="tool-btn color-swatch-btn"
           ref={colorBtnRef}
+          disabled={isRightDrawerOpen}
           onClick={() => setColorPickerOpen((prev) => !prev)}
           data-tooltip={_('color')}
           aria-label={_('color')}
@@ -3107,7 +3111,7 @@ function App() {
       <span className="toolbar-sep" />
       <button
         className="tool-btn"
-        disabled={!undoStack.length && !remarks.filter(r => r.chapter === selectedChapter && Number(r.page) === Number(selectedPage)).length}
+        disabled={isRightDrawerOpen || (!undoStack.length && !remarks.filter(r => r.chapter === selectedChapter && Number(r.page) === Number(selectedPage)).length)}
         onClick={undoRemark}
         data-tooltip={_('undo')}
         aria-label={_('undo')}
@@ -3118,7 +3122,7 @@ function App() {
       </button>
       <button
         className="tool-btn"
-        disabled={!redoStack.length}
+        disabled={isRightDrawerOpen || !redoStack.length}
         onClick={redoRemark}
         data-tooltip={_('redo')}
         aria-label={_('redo')}
@@ -3130,6 +3134,7 @@ function App() {
       <span className="toolbar-sep" />
       <button
         className="tool-btn"
+        disabled={isRightDrawerOpen}
         onClick={openEraseDialog}
         data-tooltip={_('erase')}
         aria-label={_('erase')}
@@ -3875,6 +3880,7 @@ function App() {
           <button
             className={`tool-btn annotation-toggle-btn ${annotationToolsOpen ? 'active' : ''}`}
             ref={annotationToggleRef}
+            disabled={isRightDrawerOpen}
             onClick={() => {
               setAnnotationToolsOpen((prev) => {
                 const next = !prev;

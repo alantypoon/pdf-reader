@@ -1582,7 +1582,7 @@ button, input, select {
   border: 1px solid rgba(148, 163, 184, 0.3);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.14), 0 2px 8px rgba(0, 0, 0, 0.08);
   position: fixed;
-  z-index: 100;
+  z-index: 260;
   overflow-y: auto;
   overflow-x: hidden;
   user-select: none;
