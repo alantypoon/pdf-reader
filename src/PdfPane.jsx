@@ -40,7 +40,6 @@ function PdfPane({
   const lang = uiLang(language);
   const _ = (key) => t(key, lang);
   const isImageMode = Array.isArray(images) && images.length > 0;
-  console.log(`[PdfPane] mode=${mode} isImageMode=${isImageMode} images=${images?.length || 0} source=${source ? 'yes' : 'no'} thumbnailsOpen=${thumbnailsOpen}`);
   const [pdfDoc, setPdfDoc] = useState(null);
   const [numPages, setNumPages] = useState(0);
   const [thumbs, setThumbs] = useState([]);
@@ -49,16 +48,29 @@ function PdfPane({
   const [contentHeight, setContentHeight] = useState(0);
   const [imageLoadVersion, setImageLoadVersion] = useState(0);
   const [loadError, setLoadError] = useState(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const canvasRef = useRef(null);
   const scrollRef = useRef(null);
   const contentRef = useRef(null);
+  const currentPageRef = useRef(currentPage);
   const syncingFromRemoteRef = useRef(false);
   const modeGenRef = useRef(0);
+
+  // Keep the ref in sync so the scrolling effect always sees the latest page
+  useEffect(() => {
+    currentPageRef.current = currentPage;
+  }, [currentPage]);
 
   // Increment generation on mode change to cancel stale async work
   useEffect(() => {
     modeGenRef.current += 1;
   }, [mode]);
+
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
+  }, []);
 
   // ── Image mode: derive page count & thumbnails from images array ──
   useEffect(() => {
@@ -195,10 +207,10 @@ function PdfPane({
       if (!holder) return;
       const sidebarWidth = Math.max(0, document.querySelector('.sidebar')?.getBoundingClientRect().width || 0);
       const toolbarHeight = Math.max(0, document.querySelector('.annotation-panel')?.getBoundingClientRect().height || 0);
-      const viewportWidthCap = Math.max(180, window.innerWidth - sidebarWidth - 24);
-      const viewportHeightCap = Math.max(180, window.innerHeight - toolbarHeight - 20);
-      const fitWidth = Math.max(180, Math.min(holder.clientWidth - 4, viewportWidthCap));
-      const fitHeight = Math.max(180, Math.min(holder.clientHeight - 4, viewportHeightCap));
+      const viewportWidthCap = Math.max(180, window.innerWidth - sidebarWidth);
+      const viewportHeightCap = Math.max(180, window.innerHeight - toolbarHeight);
+      const fitWidth = Math.max(180, Math.min(holder.clientWidth, viewportWidthCap));
+      const fitHeight = Math.max(180, Math.min(holder.clientHeight, viewportHeightCap));
       const baseViewport = page.getViewport({ scale: 1 });
       const scaleW = fitWidth / baseViewport.width;
       const scaleH = fitHeight / baseViewport.height;
@@ -262,12 +274,14 @@ function PdfPane({
     if (!mount) return;
 
     let disposed = false;
+    let pageRefreshTimer = null;
     const gen = modeGenRef.current;
     mount.style.justifyItems = 'center';
 
     const drawAll = async () => {
+      const prevPage = currentPageRef.current;
+      console.log(`[fit-debug] stored prevPage=${prevPage} before fit redraw`);
       let lastScale = zoom;
-      // Capture container dimensions once at draw time (getBoundingClientRect is more accurate)
       const mountRect = mount.getBoundingClientRect();
       const containerHeight = Math.max(180, mountRect.height);
       const containerWidth = Math.max(180, mountRect.width);
@@ -297,39 +311,52 @@ function PdfPane({
       }
 
       if (disposed || modeGenRef.current !== gen) return;
-      // Atomic replacement — no gap where old canvases are gone but new ones aren't ready
+      const savedRatio = mount.scrollHeight > 0
+        ? mount.scrollTop / mount.scrollHeight
+        : 0;
+
       mount.innerHTML = '';
       mount.appendChild(fragment);
 
       if (typeof onRenderScaleChange === 'function') {
         onRenderScaleChange(lastScale);
       }
-      // Trigger annotation redraw in parent after canvases are in the DOM
       if (typeof onScrollCanvasesReady === 'function') {
         requestAnimationFrame(() => onScrollCanvasesReady());
       }
-      const nodes = [...mount.querySelectorAll('canvas[data-page]')];
-      const targetPage = Math.max(1, Math.min(currentPage, numPages || 1));
-      const targetNode = nodes.find((node) => Number(node.dataset.page) === targetPage);
-      if (targetNode) {
-        mount.scrollTop = targetNode.offsetTop;
-      }
 
-      const onScroll = () => {
+      const syncPageIndicator = () => {
+        if (disposed || modeGenRef.current !== gen) return null;
+        const allNodes = [...mount.querySelectorAll('canvas[data-page]')];
+        if (!allNodes.length) return null;
         const top = mount.scrollTop;
-        let nearest = 1;
+        let nearest = Number(allNodes[0].dataset.page) || 1;
         let min = Infinity;
-        nodes.forEach((node) => {
-          const distance = Math.abs(node.offsetTop - top);
-          if (distance < min) {
-            min = distance;
-            nearest = Number(node.dataset.page);
-          }
+        allNodes.forEach((node) => {
+          const dist = Math.abs(node.offsetTop - top);
+          if (dist < min) { min = dist; nearest = Number(node.dataset.page); }
         });
         setRenderedPage(nearest);
-        if (nearest !== currentPage) {
-          onPageChange(nearest);
+        onPageChange(nearest);
+        return nearest;
+      };
+
+      if (pageRefreshTimer) clearTimeout(pageRefreshTimer);
+      pageRefreshTimer = setTimeout(() => {
+        if (disposed || modeGenRef.current !== gen) return;
+        const target = mount.querySelector(`canvas[data-page="${prevPage}"]`);
+        if (target) {
+          mount.scrollTo({ top: target.offsetTop, behavior: 'instant' });
         }
+        setRenderedPage(prevPage);
+        onPageChange(prevPage);
+        console.log(`[fit-debug] PDF scrolled back to prevPage=${prevPage}`);
+      }, 100);
+
+      const nodes = [...mount.querySelectorAll('canvas[data-page]')];
+
+      const onScroll = () => {
+        syncPageIndicator();
 
         if (syncGroup && !syncingFromRemoteRef.current) {
           const max = Math.max(1, mount.scrollHeight - mount.clientHeight);
@@ -356,9 +383,12 @@ function PdfPane({
 
     return () => {
       disposed = true;
+      if (typeof pageRefreshTimer === 'number' || pageRefreshTimer) {
+        clearTimeout(pageRefreshTimer);
+      }
       cleanup();
     };
-  }, [isImageMode, pdfDoc, numPages, mode, onPageChange, currentPage, zoom, fitMode, fitRefreshToken, contentWidth]);
+  }, [isImageMode, pdfDoc, numPages, mode, zoom, fitMode, fitRefreshToken, contentWidth]);
 
   useEffect(() => {
     if (!syncGroup || mode !== 'scrolling') return;
@@ -388,8 +418,39 @@ function PdfPane({
     const mount = scrollRef.current;
     if (!mount) return;
 
+    // Helper: scroll so the current page is visible and update parent state
+    const scrollToPage = (pageNum) => {
+      const p = Math.max(1, Math.min(pageNum, images.length || 1));
+      const n = mount.querySelector(`img[data-page="${p}"]`);
+      if (n) {
+        mount.scrollTo({ top: n.offsetTop, behavior: 'instant' });
+      }
+      setRenderedPage(p);
+      onPageChange(p);
+    };
+
     // Skip rebuild if images array hasn't changed (prevents duplicates on mode switch)
     if (lastImagesRef.current === images && mount.children.length === images.length) {
+      // Still scroll to the current page (e.g. when switching from pagination to scrolling)
+      scrollToPage(currentPage);
+      // If some images haven't finished loading, their offsetTop may still be
+      // based on the initial 120px min-height.  Re-scroll once everything loads.
+      const unloaded = [...mount.querySelectorAll('img.page-img')].filter(
+        (img) => !(img.complete && img.naturalHeight > 0)
+      );
+      if (unloaded.length > 0) {
+        let loadedCount = 0;
+        unloaded.forEach((img) => {
+          img.addEventListener('load', onAllLoaded, { once: true });
+          img.addEventListener('error', onAllLoaded, { once: true });
+        });
+        function onAllLoaded() {
+          loadedCount++;
+          if (loadedCount >= unloaded.length) {
+            scrollToPage(currentPage);
+          }
+        }
+      }
       return;
     }
     lastImagesRef.current = images;
@@ -427,6 +488,7 @@ function PdfPane({
     // Progressive loader — max 2 concurrent loads, first page first
     let loading = 0;
     let nextIdx = 0;
+    let loadedCount = 0;
     let disposed = false;
 
     const loadNext = () => {
@@ -438,8 +500,16 @@ function PdfPane({
           img.src = url;
           img.onload = img.onerror = () => {
             loading--;
+            loadedCount++;
             img.style.minHeight = '';
-            if (!disposed) loadNext();
+            if (!disposed) {
+              // When all images have loaded, their final heights are known,
+              // so recalculate the scroll position to land on the correct page.
+              if (loadedCount >= imgElements.length) {
+                scrollToPage(currentPage);
+              }
+              loadNext();
+            }
           };
         }
         nextIdx++;
@@ -461,7 +531,8 @@ function PdfPane({
         }
       });
       setRenderedPage(nearest);
-      if (nearest !== currentPage) {
+      const cp = currentPageRef.current;
+      if (nearest !== cp) {
         onPageChange(nearest);
       }
 
@@ -476,12 +547,10 @@ function PdfPane({
 
     mount.addEventListener('scroll', onScroll, { passive: true });
 
-    // Initial scroll position (approximate — images haven't loaded yet)
-    const targetPage = Math.max(1, Math.min(currentPage, images.length || 1));
-    const targetNode = mount.querySelector(`img[data-page="${targetPage}"]`);
-    if (targetNode) {
-      mount.scrollTop = targetNode.offsetTop;
-    }
+    // Initial scroll position — approximate because images have min-height 120px
+    // and their final heights aren't known yet.  After all images load,
+    // scrollToPage is called again with the correct offsets.
+    scrollToPage(currentPage);
 
     return () => {
       disposed = true;
@@ -510,6 +579,24 @@ function PdfPane({
     if (typeof onRenderScaleChange === 'function') {
       onRenderScaleChange(zoom);
     }
+    // After fit/zoom changes, page boundaries shift. Wait for layout to settle
+    // then recalculate which page is visible and update the page indicator.
+    // const DELAY_AFTER_FIT_CHANGE = 100;
+    const DELAY_AFTER_FIT_CHANGE = 0;
+    const prevPage = currentPageRef.current;
+    console.log(`[fit-debug] stored prevPage=${prevPage} before fit zoom`);
+    const timer = setTimeout(() => {
+      if (!mount) return;
+      const target = mount.querySelector(`img[data-page="${prevPage}"]`);
+      if (target) {
+        mount.scrollTo({ top: target.offsetTop, behavior: 'instant' });
+      }
+      setRenderedPage(prevPage);
+      onPageChange(prevPage);
+      console.log(`[fit-debug] scrolled back to prevPage=${prevPage}`);
+    }, DELAY_AFTER_FIT_CHANGE);
+
+    return () => clearTimeout(timer);
   }, [isImageMode, mode, zoom, fitMode]);
 
   // Scroll position in scrolling mode is user-controlled — no auto-scroll on page change
@@ -528,6 +615,26 @@ function PdfPane({
         )}
         <span className="header-sep">·</span>
         <span className="header-page-num">{titleSuffix}</span>
+        <button
+          className="header-fullscreen-btn"
+          onClick={() => {
+            if (document.fullscreenElement) {
+              document.exitFullscreen?.();
+            } else {
+              document.documentElement.requestFullscreen?.();
+            }
+          }}
+          title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+          aria-label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+        >
+          <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+            {isFullscreen ? (
+              <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z" />
+            ) : (
+              <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z" />
+            )}
+          </svg>
+        </button>
       </header>
       <div className={`pdf-pane-shell ${thumbnailsOpen ? 'thumbs-open' : 'thumbs-closed'}`}>
         {!thumbnailsOpen && (

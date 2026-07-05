@@ -18,6 +18,20 @@ const DEFAULT_BOOK = process.env.DEFAULT_BOOK || 'biology-oup';
 const ETT_MAX_IMAGE_DIM = 1536;   // max px on longest side for images sent to ETT/vLLM
 const DSE_AUTH_CONFIG_PATH = process.env.DSE_AUTH_CONFIG_PATH || path.resolve(__dirname, '../../../dse-auth-config.php');
 
+/** Return an ISO-8601 timestamp in Hong Kong time (UTC+8) */
+function hkNow() {
+  const now = Date.now() + 8 * 60 * 60 * 1000; // UTC + 8h = HKT
+  const d = new Date(now);
+  const Y = d.getUTCFullYear();
+  const M = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const D = String(d.getUTCDate()).padStart(2, '0');
+  const h = String(d.getUTCHours()).padStart(2, '0');
+  const m = String(d.getUTCMinutes()).padStart(2, '0');
+  const s = String(d.getUTCSeconds()).padStart(2, '0');
+  const ms = String(d.getUTCMilliseconds()).padStart(3, '0');
+  return `${Y}-${M}-${D}T${h}:${m}:${s}.${ms}+08:00`;
+}
+
 /** Resolve the data root for a given book ID */
 function getDataRoot(book) {
   const safeBook = String(book || DEFAULT_BOOK).replace(/\.\./g, '').replace(/[^a-zA-Z0-9_-]/g, '');
@@ -317,7 +331,7 @@ async function logUserAction(action) {
 
   const payload = {
     ...action,
-    createdAt: new Date().toISOString(),
+    createdAt: hkNow(),
   };
 
   if (!payload.userId || typeof payload.userId !== 'string') {
@@ -402,7 +416,7 @@ app.post('/api/user-selects', asyncRoute(async (request, response) => {
     response.status(500).json({ error: 'MongoDB not connected' });
     return;
   }
-  const now = new Date().toISOString();
+  const now = hkNow();
   const selection = {
     bookId: body.bookId != null ? String(body.bookId) : '',
     sectionId: body.sectionId != null ? Number(body.sectionId) : 1,
@@ -610,8 +624,8 @@ app.post('/api/remarks', asyncRoute(async (request, response) => {
     await annotationsCollection.updateOne(
       identity,
       {
-        $set: { remarks, updatedAt: new Date().toISOString() },
-        $setOnInsert: { ...identity, createdAt: new Date().toISOString() },
+        $set: { remarks, updatedAt: hkNow() },
+        $setOnInsert: { ...identity, createdAt: hkNow() },
       },
       { upsert: true }
     );
@@ -659,7 +673,7 @@ app.delete('/api/remarks', asyncRoute(async (request, response) => {
         }
         if (remarks.length > 0) {
           await annotationsCollection.updateOne(scopedIdentity, {
-            $set: { remarks, updatedAt: new Date().toISOString() },
+            $set: { remarks, updatedAt: hkNow() },
           });
         } else {
           await annotationsCollection.deleteOne(scopedIdentity);
@@ -1168,7 +1182,7 @@ async function translateGeneratedContent(chapter, sectionName, page, targetLangu
 async function saveAiContent(subjectId, bookId, sectionNum, page, language, content, userId) {
   if (!aiGenerations) return;
   const langField = language === 'tc' ? 'zh' : 'en';
-  const now = new Date().toISOString();
+  const now = hkNow();
   const identity = buildAiIdentity({ subjectId, bookId, sectionId: sectionNum, pageId: page });
   await aiGenerations.updateOne(
     identity,
@@ -1188,7 +1202,7 @@ async function saveAiContent(subjectId, bookId, sectionNum, page, language, cont
 
 async function saveAlignedBilingualAiContent(subjectId, bookId, sectionNum, page, enContent, zhContent, userId) {
   if (!aiGenerations) return;
-  const now = new Date().toISOString();
+  const now = hkNow();
   const identity = buildAiIdentity({ subjectId, bookId, sectionId: sectionNum, pageId: page });
   await aiGenerations.deleteMany({
     $or: [identity, buildLegacyAiIdentity(identity)],
@@ -1482,7 +1496,7 @@ app.post('/api/ai-content', async (request, response) => {
       return response.status(500).json({ error: 'MongoDB not connected' });
     }
     const langField = language === 'tc' ? 'zh' : 'en';
-    const now = new Date().toISOString();
+    const now = hkNow();
     const existing = await findAiGenerationDocument(identity);
     await aiGenerations.deleteMany({ $or: [identity, buildLegacyAiIdentity(identity)] });
     await aiGenerations.insertOne({

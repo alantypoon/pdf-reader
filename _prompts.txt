@@ -89,4 +89,22 @@ advise how to implement the search function, it should be able to do it:
 - should find the filter value in the database collection ai-generations summary field value
 - should the results be shown inline, modal or drawer? 
 
+///
 
+why sometimes rubber tool cannot remove a stroke?
+
+
+///
+
+when color button is clicked, show a dialog with the most frequently and popularly used 12 colors for pen and highlighter. Next to them, add a customized button to open another panel to choose from any color (the current one).
+
+///
+
+when raymond logs in, the user id will be shown as "up3g29ozb" instead of "raymond", why?
+
+///
+
+when using two fingers to scroll the screen on my iphone or ipad,
+the scrolling speed seems to be doubled.
+is there two event handling that makes the mistake?
+or i should reduce the scrolling speed in a half?

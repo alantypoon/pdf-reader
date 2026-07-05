@@ -20,21 +20,63 @@ button, input, select {
 .app-shell {
   display: grid;
   grid-template-columns: auto 1fr;
-  min-height: 100vh;
+  min-height: 100dvh;
+  height: 100dvh;
   align-items: start;
+  overflow: hidden;
 }
 
 .app-shell.scrolling-mode {
-  height: 100vh;
+  height: 100dvh;
   overflow: hidden;
+}
+
+.app-shell.sidebar-hidden {
+  grid-template-columns: 1fr;
+}
+
+.hidden-sidebar-restore {
+  position: fixed;
+  left: 12px;
+  top: 12px;
+  transform: none;
+  z-index: 140;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid rgba(18, 50, 74, 0.16);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #12324a;
+  box-shadow: 0 10px 28px rgba(18, 50, 74, 0.16);
+  backdrop-filter: blur(10px);
+}
+
+.hidden-sidebar-restore-icon {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #edf4fa;
+}
+
+.hidden-sidebar-restore-icon svg {
+  width: 16px;
+  height: 16px;
+  display: block;
 }
 
 .sidebar {
   position: sticky;
   top: 0;
   width: 320px;
-  height: 100vh;
-  padding: 24px;
+  height: calc(100dvh - var(--bottom-toolbar-offset, 0px));
+  padding: 24px 24px calc(24px + var(--bottom-toolbar-offset, 0px));
   background: rgba(255, 255, 255, 0.9);
   border-right: 1px solid #d7e0e8;
   transition: border-color 160ms ease;
@@ -48,7 +90,7 @@ button, input, select {
 
 .sidebar.collapsed {
   width: 88px;
-  padding: 20px 14px;
+  padding: 20px 14px calc(20px + var(--bottom-toolbar-offset, 0px));
 }
 
 .sidebar.collapsed h1,
@@ -62,6 +104,33 @@ button, input, select {
   display: grid;
   gap: 10px;
   margin-top: 4px;
+}
+
+@media (orientation: landscape) and (max-height: 820px) {
+  .sidebar-icon-stack {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .sidebar-icon-btn {
+    min-width: 0;
+    height: 34px;
+    border-radius: 10px;
+  }
+
+  .sidebar-icon-btn svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .sidebar-account-btn {
+    grid-column: 1 / -1;
+    min-height: 36px;
+  }
+
+  .sidebar-account-id code {
+    font-size: 0.64rem;
+  }
 }
 
 .sidebar-icon-btn {
@@ -93,7 +162,7 @@ button, input, select {
   pointer-events: none;
   opacity: 0;
   transition: opacity 120ms ease;
-  z-index: 100;
+  z-index: 9992;
 }
 
 .sidebar-icon-btn:hover::after {
@@ -199,6 +268,38 @@ button, input, select {
   margin-bottom: 6px;
 }
 
+.sidebar-title-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebar.collapsed .sidebar-title-actions {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.sidebar.collapsed .sidebar-hide-btn {
+  order: -1;
+}
+
+.sidebar-hide-btn {
+  min-width: 40px;
+  padding: 0 10px;
+  background: #fee2e2;
+  color: #991b1b;
+  border-color: #fca5a5;
+}
+
+.sidebar-hide-btn:hover {
+  background: #fecaca;
+  border-color: #fca5a5;
+}
+
+.sidebar-hide-btn .sidebar-toggle-icon svg {
+  stroke: currentColor;
+}
+
 /* ── User row ───────────────────────────────────── */
 .sidebar-user-row {
   margin-bottom: 12px;
@@ -269,33 +370,57 @@ button, input, select {
   border-bottom: 1px solid var(--line);
 }
 
-.sidebar-user-icon-btn {
+.sidebar-account-btn {
+  width: 100%;
+  min-height: 44px;
+  padding: 6px 8px;
+  border: 1px solid #b0cfdf;
+  border-radius: 12px;
   background: #e8f4f8;
-  border-color: #b0cfdf;
+  color: #12324a;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  text-decoration: none;
+  white-space: nowrap;
 }
 
-.sidebar-user-icon-btn:hover {
+.sidebar-account-btn:hover {
   background: #d0ebf4;
 }
 
-.sidebar-logout-icon-btn {
-  margin-top: 6px;
+.sidebar-account-logout {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
 }
 
-.sidebar-collapsed-user-id {
-  margin-top: 4px;
+.sidebar-account-logout svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
+.sidebar-account-id {
+  min-width: 0;
   text-align: center;
 }
 
-.sidebar-collapsed-user-id code {
+.sidebar-account-id code {
   font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-  font-size: 0.60rem;
-  color: var(--muted);
-  background: #edf2f7;
-  padding: 1px 4px;
-  border-radius: 3px;
+  font-size: 0.68rem;
+  color: #12324a;
+  background: rgba(255, 255, 255, 0.75);
+  padding: 2px 6px;
+  border-radius: 6px;
   letter-spacing: 0.02em;
-  word-break: break-all;
+  word-break: normal;
+  display: inline-block;
 }
 
 .sidebar h1 {
@@ -330,8 +455,11 @@ button, input, select {
   margin-bottom: 0;
 }
 
-.sidebar .toggle-row {
-  margin-bottom: 14px;
+.sidebar-account-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
 }
 
 .sidebar select, .annotation-panel input[type="text"], .annotation-panel input:not([type]) {
@@ -359,7 +487,6 @@ button, input, select {
 
 .toggle-group {
   display: flex;
-  border: 1px solid #c9d7e3;
   border-radius: 12px;
   overflow: hidden;
   background: white;
@@ -774,10 +901,10 @@ button, input, select {
 }
 
 .reader {
-  padding: 24px;
+  padding: 0;
   display: grid;
-  gap: 16px;
-  height: 100vh;
+  gap: 0;
+  height: 100dvh;
   min-height: 0;
   grid-template-rows: 1fr;
 }
@@ -789,10 +916,10 @@ button, input, select {
 .page-frame {
   position: relative;
   min-height: 70vh;
-  border-radius: 24px;
+  border-radius: 0;
   overflow: hidden;
-  background: white;
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.08);
+  background: transparent;
+  box-shadow: none;
   display: flex;
   flex-direction: column;
 }
@@ -843,12 +970,12 @@ button, input, select {
 .book-stage {
   position: relative;
   display: grid;
-  gap: 10px;
+  gap: 0;
 }
 
 .book-stage.pagination {
   grid-template-columns: 1fr;
-  height: calc(100dvh - 48px - var(--bottom-toolbar-offset, 0px));
+  height: calc(100dvh - var(--bottom-toolbar-offset, 0px));
   min-height: 0;
 }
 
@@ -865,7 +992,7 @@ button, input, select {
 
 .book-stage.scrolling {
   grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
-  height: calc(100dvh - 48px - var(--bottom-toolbar-offset, 0px));
+  height: calc(100dvh - var(--bottom-toolbar-offset, 0px));
   min-height: 0;
   overflow: hidden;
 }
@@ -886,18 +1013,20 @@ button, input, select {
 
 .page-card-header {
   position: absolute;
-  left: 14px;
-  right: 14px;
-  top: 14px;
+  left: auto;
+  right: 8px;
+  top: 8px;
   z-index: 3;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 0;
-  padding: 8px 14px;
+  padding: 5px 10px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.88);
+  background: rgba(255, 255, 255, 0.74);
   backdrop-filter: blur(10px);
-  font-size: 0.88rem;
+  font-size: 0.8rem;
+  max-width: calc(100% - 16px);
 }
 
 .header-book {
@@ -923,6 +1052,34 @@ button, input, select {
   color: #1f4d6c;
   white-space: nowrap;
   margin-right: auto;
+}
+
+.header-fullscreen-btn {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #5d7184;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  margin-left: 10px;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.header-fullscreen-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: #12324a;
+}
+
+.header-fullscreen-btn svg {
+  width: 15px;
+  height: 15px;
+  fill: currentColor;
 }
 
 .page-card iframe {
@@ -1073,7 +1230,7 @@ button, input, select {
   grid-column: 2;
   min-width: 0;
   height: 100%;
-  padding: 52px 6px 6px;
+  padding: 0;
   overflow: hidden;
 }
 
@@ -1097,7 +1254,7 @@ button, input, select {
   height: 100%;
   overflow: auto;
   display: grid;
-  gap: 10px;
+  gap: 0;
   justify-items: center;
 }
 
@@ -1105,8 +1262,8 @@ button, input, select {
 .pdf-single-page canvas,
 .page-img {
   background: white;
-  border-radius: 6px;
-  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.08);
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .pdf-scroll-pages canvas {
@@ -1121,48 +1278,147 @@ button, input, select {
 }
 
 .zoom-label {
-  min-width: 42px;
+  min-width: calc(42px * var(--toolbar-scale, 1));
   text-align: center;
   font-weight: 700;
-  font-size: 0.78rem;
+  font-size: calc(0.78rem * var(--toolbar-scale, 1));
   color: #12324a;
 }
 
+/* ── Color Picker Popover ──────────────────────────── */
+.color-picker-wrapper {
+  display: inline-flex;
+  position: relative;
+}
+
+.color-picker-popover,
+.color-picker-overlay {
+  pointer-events: auto;
+}
+
+.color-picker-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9990;
+  background: transparent;
+}
+
+.color-picker-popover {
+  position: fixed;
+  z-index: 9991;
+  background: white;
+  border: 1px solid #d7e0e8;
+  border-radius: 14px;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.15);
+  padding: 12px;
+  min-width: 220px;
+}
+
+.annotation-panel .color-swatch-btn {
+  width: calc(36px * var(--toolbar-scale));
+  height: calc(36px * var(--toolbar-scale));
+  padding: 0;
+  border: 0;
+  background-clip: padding-box;
+  flex: none;
+}
+
+.annotation-panel .color-swatch-btn svg {
+  display: none;
+}
+
+.color-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 8px;
+}
+
+.color-swatch {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 2px solid rgba(0,0,0,0.10);
+  cursor: pointer;
+  padding: 0;
+  transition: transform 100ms ease, box-shadow 100ms ease;
+}
+
+.color-swatch:hover {
+  transform: scale(1.2);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+}
+
+.color-swatch.active {
+  border-color: #12324a;
+  box-shadow: 0 0 0 2px white, 0 0 0 4px #12324a;
+}
+
+.color-picker-divider {
+  height: 1px;
+  background: #e8eef3;
+  margin: 10px 0;
+}
+
+.color-picker-custom-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #d7e0e8;
+  border-radius: 10px;
+  background: white;
+  cursor: pointer;
+  font-size: 0.82rem;
+  color: #12324a;
+  transition: background 120ms ease;
+}
+
+.color-picker-custom-btn:hover {
+  background: #f2f6f9;
+}
+
+.color-picker-custom-icon {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
 .zoom-slider {
-  width: 80px;
-  height: 4px;
+  width: calc(80px * var(--toolbar-scale, 1));
+  height: calc(4px * var(--toolbar-scale, 1));
   accent-color: #667eea;
   cursor: pointer;
   background: transparent;
 }
 
 .zoom-slider::-webkit-slider-runnable-track {
-  height: 4px;
-  border-radius: 2px;
+  height: calc(4px * var(--toolbar-scale, 1));
+  border-radius: calc(2px * var(--toolbar-scale, 1));
   background: #d7e0e8;
 }
 
 .zoom-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 14px;
-  height: 14px;
+  width: calc(14px * var(--toolbar-scale, 1));
+  height: calc(14px * var(--toolbar-scale, 1));
   border-radius: 50%;
   background: #667eea;
-  margin-top: -5px;
+  margin-top: calc(-5px * var(--toolbar-scale, 1));
   cursor: pointer;
   box-shadow: 0 1px 4px rgba(0,0,0,0.15);
 }
 
 .zoom-slider::-moz-range-track {
-  height: 4px;
-  border-radius: 2px;
+  height: calc(4px * var(--toolbar-scale, 1));
+  border-radius: calc(2px * var(--toolbar-scale, 1));
   background: #d7e0e8;
   border: none;
 }
 
 .zoom-slider::-moz-range-thumb {
-  width: 14px;
-  height: 14px;
+  width: calc(14px * var(--toolbar-scale, 1));
+  height: calc(14px * var(--toolbar-scale, 1));
   border-radius: 50%;
   background: #667eea;
   border: none;
@@ -1229,10 +1485,12 @@ button, input, select {
 
 .annotation-panel {
   display: flex;
-  flex-direction: column;
-  flex-wrap: nowrap;
-  gap: 6px;
-  padding: 10px 14px;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px 8px;
+  padding: 8px 10px;
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.97);
   backdrop-filter: blur(12px);
@@ -1241,25 +1499,29 @@ button, input, select {
   position: fixed;
   z-index: 100;
   overflow-y: auto;
+  overflow-x: hidden;
   user-select: none;
-  max-width: calc(100vw - 32px);
-  max-height: calc(100vh - 32px);
+  max-width: none;
+  max-height: calc(100dvh - 12px);
   opacity: 0.9;
 }
 
 .annotation-panel.docked-bottom {
+  --toolbar-scale: 1;
   left: 0 !important;
   right: 0 !important;
   top: auto !important;
   bottom: 0 !important;
   width: 100vw;
   max-width: none;
+  max-height: none;
   border-radius: 16px 16px 0 0;
   border-left: 0;
   border-right: 0;
   border-bottom: 0;
-  padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+  padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
   opacity: 0.98;
+  overflow: visible;
 }
 
 .annotation-panel.docked-bottom .panel-drag-handle {
@@ -1268,8 +1530,26 @@ button, input, select {
 
 .annotation-panel.docked-bottom .panel-row-1,
 .annotation-panel.docked-bottom .panel-row-2 {
-  overflow-x: auto;
-  scrollbar-width: thin;
+  flex: 0 1 auto;
+  width: auto;
+  overflow: visible;
+  scrollbar-width: none;
+  justify-content: center;
+}
+
+.annotation-panel.docked-bottom .panel-row-1 {
+  flex: 1 1 100%;
+  width: 100%;
+}
+
+.annotation-panel.docked-bottom .panel-row-2 {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.annotation-panel.docked-bottom .toolbar-group {
+  flex-wrap: nowrap;
+  justify-content: center;
 }
 
 .annotation-panel.dragging {
@@ -1310,13 +1590,41 @@ button, input, select {
 }
 
 .panel-row-1 {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.panel-main-controls {
+  grid-column: 2;
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  flex: 1 1 auto;
+  gap: calc(4px * var(--toolbar-scale));
   min-width: 0;
+}
+
+.annotation-panel.docked-bottom.tight-space .panel-row-1 {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: calc(4px * var(--toolbar-scale));
+}
+
+.annotation-panel.docked-bottom.tight-space .panel-main-controls {
+  flex: 1 1 auto;
+  justify-content: flex-start;
+  min-width: 0;
+}
+
+.annotation-panel.docked-bottom.tight-space .panel-close-btn {
+  margin-left: auto;
+  grid-column: auto;
+  justify-self: auto;
 }
 
 .panel-row-2 {
@@ -1324,11 +1632,11 @@ button, input, select {
   flex-wrap: nowrap;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: calc(4px * var(--toolbar-scale));
   flex: 1 1 100%;
   width: 100%;
   min-width: 0;
-  padding-top: 8px;
+  padding-top: 6px;
   border-top: 1px solid rgba(148, 163, 184, 0.18);
 }
 
@@ -1342,7 +1650,9 @@ button, input, select {
 
 .panel-close-btn {
   flex: 0 0 auto;
-  margin-left: 4px;
+  margin-left: 0;
+  grid-column: 3;
+  justify-self: end;
 }
 
 .panel-close-accent {
@@ -1358,7 +1668,7 @@ button, input, select {
 .annotation-panel button {
   border: 0;
   border-radius: 999px;
-  padding: 10px 14px;
+  padding: calc(8px * var(--toolbar-scale)) calc(10px * var(--toolbar-scale));
   background: #dbe8f1;
   color: #12324a;
   flex: 0 0 auto;
@@ -1372,8 +1682,9 @@ button, input, select {
 }
 
 /* ── Tooltip on annotation-panel buttons ────────────────── */
-.annotation-panel button[title]::after {
-  content: attr(title);
+.annotation-panel button[data-tooltip]::after,
+.annotation-panel input[data-tooltip]::after {
+  content: attr(data-tooltip);
   position: absolute;
   bottom: calc(100% + 8px);
   left: 50%;
@@ -1388,15 +1699,19 @@ button, input, select {
   pointer-events: none;
   opacity: 0;
   transition: opacity 120ms ease;
-  z-index: 200;
+  z-index: 9992;
+  max-width: min(280px, 90vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.annotation-panel button[title]:hover::after {
+.annotation-panel button[data-tooltip]:hover::after {
   opacity: 1;
 }
 
 /* Arrow below tooltip */
-.annotation-panel button[title]::before {
+.annotation-panel button[data-tooltip]::before,
+.annotation-panel input[data-tooltip]::before {
   content: '';
   position: absolute;
   bottom: calc(100% + 2px);
@@ -1407,20 +1722,21 @@ button, input, select {
   pointer-events: none;
   opacity: 0;
   transition: opacity 120ms ease;
-  z-index: 200;
+  z-index: 9992;
 }
 
-.annotation-panel button[title]:hover::before {
+.annotation-panel button[data-tooltip]:hover::before {
   opacity: 1;
 }
 
 .annotation-panel .icon-btn,
 .annotation-panel .tool-btn {
-  width: 42px;
-  padding: 10px;
+  width: calc(36px * var(--toolbar-scale));
+  padding: calc(8px * var(--toolbar-scale));
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  position: relative;
 }
 
 .annotation-panel .annotation-toggle-btn {
@@ -1431,14 +1747,14 @@ button, input, select {
 
 .annotation-panel .annotation-toggle-btn span {
   white-space: nowrap;
-  font-size: 0.82rem;
+  font-size: calc(0.76rem * var(--toolbar-scale));
   font-weight: 600;
 }
 
 .annotation-panel .icon-btn svg,
 .annotation-panel .tool-btn svg {
-  width: 18px;
-  height: 18px;
+  width: calc(16px * var(--toolbar-scale));
+  height: calc(16px * var(--toolbar-scale));
   fill: currentColor;
 }
 
@@ -1448,8 +1764,8 @@ button, input, select {
 }
 
 .annotation-panel input[type="color"] {
-  width: 36px;
-  height: 36px;
+  width: calc(30px * var(--toolbar-scale));
+  height: calc(30px * var(--toolbar-scale));
   padding: 0;
   border: 0;
   border-radius: 999px;
@@ -1461,7 +1777,7 @@ button, input, select {
 .toolbar-group {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: calc(6px * var(--toolbar-scale));
   flex: 0 0 auto;
 }
 
@@ -1475,14 +1791,30 @@ button, input, select {
 
 .toolbar-sep {
   width: 1px;
-  height: 28px;
+  height: calc(22px * var(--toolbar-scale));
   background: #d7e0e8;
   flex: 0 0 auto;
 }
 
+.jump-indicator {
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--bottom-toolbar-offset, 0px) + 12px);
+  transform: translateX(-50%);
+  z-index: 130;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(16, 32, 51, 0.86);
+  color: #ffffff;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  pointer-events: none;
+}
+
 .toolbar-secondary input[type="text"],
 .toolbar-secondary input:not([type]) {
-  width: 140px;
+  width: calc(110px * var(--toolbar-scale));
 }
 
 .remarks {
@@ -1751,6 +2083,11 @@ button, input, select {
 }
 
 @media (max-width: 960px) {
+  .hidden-sidebar-restore {
+    left: 8px;
+    top: 8px;
+  }
+
   .book-stage.scrolling {
     grid-template-columns: 1fr;
   }
@@ -1766,30 +2103,48 @@ button, input, select {
   .pdf-pane-shell {
     grid-template-columns: 52px 1fr;
   }
+
+  .annotation-panel {
+    justify-content: center;
+  }
+
+  .annotation-panel.docked-bottom .panel-row-1,
+  .annotation-panel.docked-bottom .panel-row-2,
+  .annotation-panel.docked-bottom .toolbar-group {
+    justify-content: center;
+  }
 }
 
 @media (max-width: 550px) {
+  .hidden-sidebar-restore {
+    min-height: 44px;
+    width: 42px;
+    height: 42px;
+  }
+
   .annotation-panel button {
-    padding: 6px 8px;
+    padding: 5px 7px;
     font-size: 0.75rem;
   }
 
   .annotation-panel button svg {
-    width: 14px;
-    height: 14px;
+    width: 13px;
+    height: 13px;
   }
 
-  .annotation-panel button[title]::after {
+  .annotation-panel button[data-tooltip]::after,
+  .annotation-panel input[data-tooltip]::after {
     display: none;
   }
 
-  .annotation-panel button[title]::before {
+  .annotation-panel button[data-tooltip]::before,
+  .annotation-panel input[data-tooltip]::before {
     display: none;
   }
 
   .annotation-panel input[type="color"] {
-    width: 22px;
-    height: 22px;
+    width: 20px;
+    height: 20px;
   }
 
   .annotation-panel .toolbar-sep {
@@ -1797,7 +2152,7 @@ button, input, select {
   }
 
   .annotation-panel input[type="range"].zoom-slider {
-    width: 48px;
+    width: 42px;
   }
 
   .zoom-label {
@@ -1807,6 +2162,17 @@ button, input, select {
 
   .annotation-panel .toolbar-group.toolbar-primary {
     gap: 2px;
+  }
+
+  .annotation-panel .icon-btn,
+  .annotation-panel .tool-btn {
+    width: 30px;
+    padding: 6px;
+  }
+
+  .toolbar-secondary input[type="text"],
+  .toolbar-secondary input:not([type]) {
+    width: 88px;
   }
 }
 

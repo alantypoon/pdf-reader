@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import Swal from 'sweetalert2';
 import BookAutocomplete from './BookAutocomplete';
 import PdfPane from './PdfPane';
@@ -9,6 +10,35 @@ import { t, uiLang } from './i18n';
 const PREFERENCES_KEY = 'pdfReaderPreferences';
 const DEFAULT_ANNOTATION_COLOR = '#9acd32';
 const ANNOTATION_TOOLS = new Set(['pen', 'highlight', 'text', 'eraser', 'move']);
+
+/** Return an ISO-8601 timestamp in Hong Kong time (UTC+8) */
+function hkNow() {
+  const now = Date.now() + 8 * 60 * 60 * 1000; // UTC + 8h = HKT
+  const d = new Date(now);
+  const Y = d.getUTCFullYear();
+  const M = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const D = String(d.getUTCDate()).padStart(2, '0');
+  const h = String(d.getUTCHours()).padStart(2, '0');
+  const m = String(d.getUTCMinutes()).padStart(2, '0');
+  const s = String(d.getUTCSeconds()).padStart(2, '0');
+  const ms = String(d.getUTCMilliseconds()).padStart(3, '0');
+  return `${Y}-${M}-${D}T${h}:${m}:${s}.${ms}+08:00`;
+}
+
+const POPULAR_COLORS = [
+  '#9acd32', // YellowGreen (default)
+  '#000000', // Black
+  '#e74c3c', // Red
+  '#e67e22', // Orange
+  '#f1c40f', // Yellow
+  '#2ecc71', // Green
+  '#1abc9c', // Teal
+  '#3498db', // Blue
+  '#2980b9', // Dark Blue
+  '#9b59b6', // Purple
+  '#e91e63', // Pink
+  '#95a5a6', // Gray
+];
 
 function loadPreferences() {
   if (typeof window === 'undefined') {
@@ -151,6 +181,7 @@ function App() {
   const selectedPageRef = useRef(selectedPage);
   const [selectedLanguage, setSelectedLanguage] = useState(savedPrefs.selectedLanguage || 'bilingual');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(Boolean(savedPrefs.sidebarCollapsed));
+  const [sidebarHidden, setSidebarHidden] = useState(Boolean(savedPrefs.sidebarHidden));
   const [pageSources, setPageSources] = useState({});
   const [remarks, setRemarks] = useState([]);
   const [pageAnnotations, setPageAnnotations] = useState([]);
@@ -186,14 +217,20 @@ function App() {
   const [mcqAnswers, setMcqAnswers] = useState({});
   const [aiDebug, setAiDebug] = useState(null);
   const [searchDrawerOpen, setSearchDrawerOpen] = useState(false);
+  const [colorPickerOpen, setColorPickerOpen] = useState(false);
+  const [colorPickerPos, setColorPickerPos] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchScope, setSearchScope] = useState('book');
   const [searchResults, setSearchResults] = useState([]);
   const [searchLoading, setSearchLoading] = useState(false);
+  const [jumpNotice, setJumpNotice] = useState('');
+  const [toolbarScale, setToolbarScale] = useState(1);
+  const [toolbarTight, setToolbarTight] = useState(false);
   const [includeAnnotations, setIncludeAnnotations] = useState(false);
   const [panelVisible, setPanelVisible] = useState(savedPrefs.panelVisible !== false);
   const [panelReservedHeight, setPanelReservedHeight] = useState(0);
   const [fitRefreshToken, setFitRefreshToken] = useState(0);
+  const [singleRowToolbar, setSingleRowToolbar] = useState(false);
   const [panelPos, setPanelPos] = useState(() => {
     const saved = savedPrefs.panelPos;
     return (saved && typeof saved.x === 'number' && typeof saved.y === 'number')
@@ -204,9 +241,49 @@ function App() {
     if (typeof window === 'undefined') return false;
     return window.matchMedia('(max-width: 960px)').matches;
   });
+  const [isPortrait, setIsPortrait] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.matchMedia('(orientation: portrait)').matches;
+  });
   const panelRef = useRef(null);
+  const mainControlsRef = useRef(null);
+  const primaryToolbarRef = useRef(null);
+  const secondaryToolbarRef = useRef(null);
+  const annotationToggleRef = useRef(null);
+  const searchButtonRef = useRef(null);
+  const closeButtonRef = useRef(null);
+  const colorBtnRef = useRef(null);
+  const customColorInputRef = useRef(null);
+  const restorePressTimerRef = useRef(null);
+  const restoreLongPressRef = useRef(false);
   const dragRef = useRef({ dragging: false, startX: 0, startY: 0, posX: 0, posY: 0 });
   const pageViewRef = useRef({ key: '', startedAt: 0, loginLogged: false });
+  const touchScrollingRef = useRef(false);
+
+  // Position the color picker popover relative to the color button
+  useLayoutEffect(() => {
+    if (!colorPickerOpen) {
+      setColorPickerPos(null);
+      return;
+    }
+    const updatePos = () => {
+      const btn = colorBtnRef.current;
+      if (!btn) return;
+      const r = btn.getBoundingClientRect();
+      setColorPickerPos({
+        left: r.left + r.width / 2,
+        top: r.top - 8,
+        transform: 'translate(-50%, -100%)',
+      });
+    };
+    updatePos();
+    window.addEventListener('scroll', updatePos, true);
+    window.addEventListener('resize', updatePos);
+    return () => {
+      window.removeEventListener('scroll', updatePos, true);
+      window.removeEventListener('resize', updatePos);
+    };
+  }, [colorPickerOpen]);
 
   const lang = uiLang(selectedLanguage);
   const _ = (key) => t(key, lang);
@@ -221,6 +298,7 @@ function App() {
   const fitButtonTitle = fitButtonMode === 'height' ? _('fitHeight') : _('fitWidth');
   const regenerateConfirmMessage = _('confirmRegenerate');
   const fitDisabled = displayMode === 'thumbnails';
+  const panelDocked = true;
 
   const fitScreen = () => {
     if (fitDisabled) return;
@@ -386,12 +464,25 @@ function App() {
         const data = await fetchJson('api/session-user');
         if (typeof data.userId === 'string' && data.userId.trim()) {
           setUserId(data.userId.trim());
+          setSessionUserResolved(true);
+          return;
         }
       } catch (err) {
         console.error('[session-user] failed to load:', err);
-      } finally {
-        setSessionUserResolved(true);
       }
+      // Not authenticated — ask to login
+      setSessionUserResolved(true);
+      const loginUrl = `/dse-login.php?next=${encodeURIComponent(window.location.pathname + window.location.search)}`;
+      Swal.fire({
+        title: _('loginRequired') || 'Login Required',
+        text: _('pleaseLogin') || 'Please log in to continue.',
+        icon: 'warning',
+        confirmButtonText: _('login') || 'Login',
+        allowOutsideClick: false,
+        allowEscapeKey: false,
+      }).then(() => {
+        window.location.href = loginUrl;
+      });
     };
 
     loadSessionUser();
@@ -592,6 +683,20 @@ function App() {
     }
     return enName || zhName || String(selectedFile || '');
   }, [selectedBook, currentPhysicsChapter, currentSection, selectedFile, selectedLanguage]);
+
+  const getSectionHeaderNameForLang = useCallback((lang) => {
+    if (selectedBook === 'physics-oup' && currentPhysicsChapter) {
+      if (lang === 'tc') {
+        return currentPhysicsChapter.nameZh || currentPhysicsChapter.nameEn || currentPhysicsChapter.id;
+      }
+      return currentPhysicsChapter.nameEn || currentPhysicsChapter.nameZh || currentPhysicsChapter.id;
+    }
+    if (!currentSection) return String(selectedFile || '');
+    if (lang === 'tc') {
+      return getSectionName(currentSection, 'tc') || getSectionName(currentSection, 'en') || String(selectedFile || '');
+    }
+    return getSectionName(currentSection, 'en') || getSectionName(currentSection, 'tc') || String(selectedFile || '');
+  }, [selectedBook, currentPhysicsChapter, currentSection, selectedFile]);
 
   const handlePhysicsChapterSelect = (chapterId) => {
     const next = physicsChapterOptions.find((item) => String(item.id) === String(chapterId));
@@ -800,6 +905,7 @@ function App() {
       displayMode,
       selectedLanguage,
       sidebarCollapsed,
+      sidebarHidden,
       tool,
       annotationToolsOpen,
       textColor,
@@ -813,6 +919,7 @@ function App() {
     displayMode,
     selectedLanguage,
     sidebarCollapsed,
+    sidebarHidden,
     tool,
     annotationToolsOpen,
     textColor,
@@ -904,6 +1011,8 @@ function App() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const onWheel = (e) => {
+      // Skip wheel events synthesized from touch gestures — touch handler already scrolls.
+      if (touchScrollingRef.current) return;
       const scrollTarget = getScrollTargetForGesture(e);
       if (!scrollTarget) return;
       e.preventDefault();
@@ -923,6 +1032,9 @@ function App() {
     let touchStartY = 0;
     let touchActive = false;
     let touchScrollTarget = null;
+    let pendingRaf = null;
+    let accumulatedDeltaX = 0;
+    let accumulatedDeltaY = 0;
 
     const getTouchMidpoint = (touches) => {
       if (!touches || touches.length < 2) return null;
@@ -932,6 +1044,17 @@ function App() {
       };
     };
 
+    const applyScroll = () => {
+      pendingRaf = null;
+      if (!touchActive) return;
+      const dx = accumulatedDeltaX;
+      const dy = accumulatedDeltaY;
+      accumulatedDeltaX = 0;
+      accumulatedDeltaY = 0;
+      if (dx === 0 && dy === 0) return;
+      touchScrollTarget?.scrollBy({ left: dx, top: dy, behavior: 'auto' });
+    };
+
     const onTouchStart = (e) => {
       if (e.touches.length === 2) {
         const midpoint = getTouchMidpoint(e.touches);
@@ -939,8 +1062,11 @@ function App() {
         e.preventDefault();
         touchStartX = midpoint.x;
         touchStartY = midpoint.y;
+        accumulatedDeltaX = 0;
+        accumulatedDeltaY = 0;
         touchActive = true;
         touchScrollTarget = getScrollTargetForGesture(e);
+        touchScrollingRef.current = true;
 
         if (drawingRef.current && currentStrokeRef.current) {
           drawingRef.current = false;
@@ -962,15 +1088,29 @@ function App() {
       const midpoint = getTouchMidpoint(e.touches);
       if (!midpoint) return;
       e.preventDefault();
-      const deltaX = touchStartX - midpoint.x;
-      const deltaY = touchStartY - midpoint.y;
+      accumulatedDeltaX += touchStartX - midpoint.x;
+      accumulatedDeltaY += touchStartY - midpoint.y;
       touchStartX = midpoint.x;
       touchStartY = midpoint.y;
-      touchScrollTarget?.scrollBy({ left: deltaX, top: deltaY, behavior: 'auto' });
+
+      if (!pendingRaf) {
+        pendingRaf = requestAnimationFrame(applyScroll);
+      }
     };
 
     const onTouchEnd = () => {
       touchActive = false;
+      touchScrollingRef.current = false;
+      if (pendingRaf) {
+        cancelAnimationFrame(pendingRaf);
+        pendingRaf = null;
+      }
+      // Flush any leftover deltas
+      if (accumulatedDeltaX !== 0 || accumulatedDeltaY !== 0) {
+        touchScrollTarget?.scrollBy({ left: accumulatedDeltaX, top: accumulatedDeltaY, behavior: 'auto' });
+        accumulatedDeltaX = 0;
+        accumulatedDeltaY = 0;
+      }
       touchScrollTarget = null;
     };
 
@@ -979,6 +1119,10 @@ function App() {
     canvas.addEventListener('touchend', onTouchEnd, { passive: true });
     canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
     return () => {
+      if (pendingRaf) {
+        cancelAnimationFrame(pendingRaf);
+        pendingRaf = null;
+      }
       canvas.removeEventListener('touchstart', onTouchStart);
       canvas.removeEventListener('touchmove', onTouchMove);
       canvas.removeEventListener('touchend', onTouchEnd);
@@ -1102,6 +1246,30 @@ function App() {
     }
   };
 
+  const jumpPage = (direction) => {
+    if (displayMode === 'thumbnails') {
+      changePageSeamless(direction);
+      return;
+    }
+    changePage(direction);
+    if (displayMode === 'scrolling') {
+      setJumpNotice(direction > 0 ? _('jumpNextPage') : _('jumpPrevPage'));
+    }
+  };
+
+  const jumpSection = (direction) => {
+    moveSection(direction);
+    if (displayMode === 'scrolling') {
+      setJumpNotice(direction > 0 ? _('jumpNextSection') : _('jumpPrevSection'));
+    }
+  };
+
+  useEffect(() => {
+    if (!jumpNotice) return undefined;
+    const timer = window.setTimeout(() => setJumpNotice(''), 900);
+    return () => window.clearTimeout(timer);
+  }, [jumpNotice]);
+
   const changeZoom = (delta) => {
     setZoomLevel((current) => {
       const next = current + delta;
@@ -1127,7 +1295,6 @@ function App() {
     const modes = ['scrolling', 'pagination', 'thumbnails'];
     const idx = modes.indexOf(displayMode);
     setDisplayMode(modes[(idx + 1) % modes.length]);
-    setSelectedPage(1);
   };
 
   const cycleLanguage = () => {
@@ -1174,14 +1341,14 @@ function App() {
   };
 
   const clearPageRemarks = async () => {
+    const targetPage = Math.max(1, Number(selectedPageRef.current || selectedPage || 1));
     // Save current page remarks for undo before deleting
     const currentPageRemarks = remarks.filter(
       (r) => r.chapter === selectedChapter
-        && Number(r.page) === Number(selectedPage)
-        && (r.langId === annotationScopeLangId || (!r.langId && annotationScopeLangId === 'en'))
+        && Number(r.page) === targetPage
     );
     const data = await fetchJson(
-      `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&sectionId=${selectedFile}&pageId=${selectedPage}&langId=${encodeURIComponent(annotationScopeLangId)}`,
+      `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&sectionId=${selectedFile}&pageId=${targetPage}`,
       { method: 'DELETE' }
     );
     if (sectionScopedAnnotations) {
@@ -1196,20 +1363,6 @@ function App() {
   };
 
   const clearAllRemarks = async () => {
-    if (typeof window !== 'undefined') {
-      const result = await Swal.fire({
-        icon: 'warning',
-        text: _('confirmEraseBook'),
-        showCancelButton: true,
-        confirmButtonText: _('confirm'),
-        cancelButtonText: _('cancel'),
-        reverseButtons: true,
-        focusCancel: true,
-      });
-      if (!result.isConfirmed) {
-        return;
-      }
-    }
     // Save current book remarks for undo before deleting
     const currentBookRemarks = remarks.filter(
       (r) => r.chapter === selectedChapter
@@ -1225,9 +1378,35 @@ function App() {
     }
   };
 
-  const deleteRemarkByCreatedAt = async (createdAtValue, langId = annotationScopeLangId) => {
+  const openEraseDialog = async () => {
+    if (typeof window === 'undefined') return;
+
+    const result = await Swal.fire({
+      icon: 'warning',
+      text: _('confirmEraseBook'),
+      showCancelButton: true,
+      showDenyButton: true,
+      confirmButtonText: _('erasePage'),
+      denyButtonText: _('eraseBook'),
+      cancelButtonText: _('cancel'),
+      reverseButtons: false,
+      focusCancel: true,
+    });
+
+    if (result.isConfirmed) {
+      await clearPageRemarks();
+      return;
+    }
+
+    if (result.isDenied) {
+      await clearAllRemarks();
+    }
+  };
+
+  const deleteRemarkByCreatedAt = async (createdAtValue, langId = annotationScopeLangId, pageIdOverride) => {
+    const resolvedPageId = pageIdOverride != null ? pageIdOverride : selectedPage;
     const data = await fetchJson(
-      `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&sectionId=${selectedFile}&pageId=${selectedPage}&langId=${encodeURIComponent(langId)}&createdAt=${encodeURIComponent(createdAtValue)}`,
+      `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&sectionId=${selectedFile}&pageId=${resolvedPageId}&langId=${encodeURIComponent(langId)}&createdAt=${encodeURIComponent(createdAtValue)}`,
       { method: 'DELETE' }
     );
     if (sectionScopedAnnotations) {
@@ -1734,16 +1913,17 @@ function App() {
     return Math.hypot(point.x - projX, point.y - projY);
   };
 
-  const findAnnotationAtPoint = (langId, point) => {
+  const findAnnotationAtPoint = (langId, point, pageNumOverride) => {
+    const searchPage = pageNumOverride != null ? pageNumOverride : selectedPage;
     const pageRemarks = remarks.filter(
       (r) => r.chapter === selectedChapter
-        && Number(r.page) === Number(selectedPage)
+        && Number(r.page) === Number(searchPage)
         && (r.langId === 'tc' ? 'tc' : 'en') === langId
     );
     // Get current page image rect for denormalizing stored percentage coords
     const pageImageRects = getPageImageRects();
     const isScrollMode = displayModeRef.current === 'scrolling';
-    const rectKey = isScrollMode ? `${langId}-${selectedPage}` : langId;
+    const rectKey = isScrollMode ? `${langId}-${searchPage}` : langId;
     const imageRect = pageImageRects[rectKey] || null;
 
     const ordered = [...pageRemarks].reverse();
@@ -1799,7 +1979,7 @@ function App() {
 
     if (tool === 'move') {
       const imageRect = target.imageRect;
-      const existing = findAnnotationAtPoint(target.langId, target.point);
+      const existing = findAnnotationAtPoint(target.langId, target.point, target.pageNum);
       if (existing) {
         moveAnnotationRef.current = existing;
         moveStartPointRef.current = target.point;
@@ -1822,7 +2002,7 @@ function App() {
       mode: tool,
       color: textColor,
       points: [target.point],
-      createdAt: new Date().toISOString()
+      createdAt: hkNow()
     };
   };
 
@@ -1879,7 +2059,20 @@ function App() {
     // Handle drawing stroke
     if (!drawingRef.current || !currentStrokeRef.current) return;
     const target = resolveAnnotationTarget(event);
-    if (!target || target.langId !== currentStrokeRef.current.langId) return;
+    if (!target || target.langId !== currentStrokeRef.current.langId || target.pageNum !== currentStrokeRef.current.page) {
+      // Pointer left the canvas, crossed into a different language pane, or moved to another page — stop the stroke.
+      const completedStroke = currentStrokeRef.current;
+      if (completedStroke && completedStroke.points.length > 0) {
+        drawingRef.current = false;
+        currentStrokeRef.current = null;
+        saveRemark({
+          ...completedStroke,
+          coordsNormalized: true,
+          ...normalizeAnnotationCoords(completedStroke, getPageImageRects()[displayModeRef.current === 'scrolling' ? `${completedStroke.langId}-${completedStroke.page}` : completedStroke.langId])
+        });
+      }
+      return;
+    }
     const nextPoint = target.point;
     currentStrokeRef.current.points.push(nextPoint);
     const context = canvasRef.current.getContext('2d');
@@ -1918,7 +2111,7 @@ function App() {
           x: moved.x,
           y: moved.y,
           coordsNormalized: moved.coordsNormalized,
-          createdAt: new Date().toISOString()
+          createdAt: hkNow()
         };
         await saveRemark(remarkToSave);
       }
@@ -1967,7 +2160,7 @@ function App() {
       y: state.point.y,
       color: textColor,
       text,
-      createdAt: new Date().toISOString()
+      createdAt: hkNow()
     };
     const normalizedRemark = state.imageRect
       ? normalizeAnnotationCoords(remark, state.imageRect)
@@ -2067,14 +2260,14 @@ function App() {
     if (!target) return;
     setActiveAnnotationLangId(target.langId);
     if (tool === 'eraser') {
-      const annotation = findAnnotationAtPoint(target.langId, target.point);
+      const annotation = findAnnotationAtPoint(target.langId, target.point, target.pageNum);
       if (!annotation?.createdAt) return;
-      await deleteRemarkByCreatedAt(annotation.createdAt, annotation.langId || target.langId);
+      await deleteRemarkByCreatedAt(annotation.createdAt, annotation.langId || target.langId, annotation.page);
       return;
     }
     if (tool === 'text') {
       // Check if clicking on an existing text annotation (to re-edit it)
-      const existing = findAnnotationAtPoint(target.langId, target.point);
+      const existing = findAnnotationAtPoint(target.langId, target.point, target.pageNum);
       const stage = stageRef.current;
       const stageRect = stage ? stage.getBoundingClientRect() : null;
       if (!stageRect) return;
@@ -2114,7 +2307,7 @@ function App() {
 
   // ── Panel drag ─────────────────────────────────────────────
   const handlePanelDragStart = (event) => {
-    if (isNarrowScreen) return;
+    if (panelDocked || isNarrowScreen) return;
     if (!panelRef.current) return;
     if (event.pointerType === 'touch' && typeof event.target?.setPointerCapture === 'function') {
       event.target.setPointerCapture(event.pointerId);
@@ -2146,6 +2339,21 @@ function App() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
+    const mediaQuery = window.matchMedia('(orientation: portrait)');
+    const handleChange = (event) => {
+      setIsPortrait(event.matches);
+    };
+    setIsPortrait(mediaQuery.matches);
+    if (typeof mediaQuery.addEventListener === 'function') {
+      mediaQuery.addEventListener('change', handleChange);
+      return () => mediaQuery.removeEventListener('change', handleChange);
+    }
+    mediaQuery.addListener(handleChange);
+    return () => mediaQuery.removeListener(handleChange);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
     const onResize = () => {
       refreshFitForCurrentMode();
     };
@@ -2155,7 +2363,7 @@ function App() {
 
   useEffect(() => {
     refreshFitForCurrentMode();
-  }, [sidebarCollapsed, panelVisible, annotationToolsOpen, refreshFitForCurrentMode]);
+  }, [sidebarCollapsed, sidebarHidden, panelVisible, annotationToolsOpen, refreshFitForCurrentMode]);
 
   useEffect(() => {
     if (!panelVisible) {
@@ -2168,7 +2376,7 @@ function App() {
         return;
       }
       const rect = panelRef.current.getBoundingClientRect();
-      const offset = isNarrowScreen ? 0 : 16;
+      const offset = 0;
       setPanelReservedHeight(Math.max(0, Math.ceil(rect.height + offset)));
     };
     updatePanelHeight();
@@ -2180,6 +2388,77 @@ function App() {
       window.removeEventListener('resize', updatePanelHeight);
     };
   }, [panelVisible, annotationToolsOpen, isNarrowScreen]);
+
+  useEffect(() => {
+    if (!panelVisible || !panelRef.current) {
+      setSingleRowToolbar(false);
+      setToolbarScale(1);
+      setToolbarTight(false);
+      return undefined;
+    }
+
+    const panel = panelRef.current;
+    const updateSingleRowToolbar = () => {
+      const panelStyle = window.getComputedStyle(panel);
+      const paddingLeft = parseFloat(panelStyle.paddingLeft || '0');
+      const paddingRight = parseFloat(panelStyle.paddingRight || '0');
+      const availableWidth = Math.max(0, panel.clientWidth - paddingLeft - paddingRight);
+
+      const widths = [
+        primaryToolbarRef.current?.scrollWidth || 0,
+        annotationToggleRef.current?.offsetWidth || 0,
+        searchButtonRef.current?.offsetWidth || 0,
+        closeButtonRef.current?.offsetWidth || 0,
+      ];
+
+      if (annotationToolsOpen && displayMode !== 'thumbnails') {
+        widths.splice(3, 0, secondaryToolbarRef.current?.scrollWidth || 0);
+      }
+
+      const visibleItemCount = widths.filter((width) => width > 0).length;
+      const gapWidth = Math.max(0, visibleItemCount - 1) * 6;
+      const requiredWidth = widths.reduce((sum, width) => sum + width, 0) + gapWidth;
+
+      const currentScale = toolbarScale || 1;
+      const baseRequiredWidth = requiredWidth / currentScale;
+      const minScale = 0.52;
+      const maxScale = 1.2;
+      const nextScale = Math.max(
+        minScale,
+        Math.min(maxScale, availableWidth / Math.max(baseRequiredWidth, 1))
+      );
+      const requiredAtMinScale = baseRequiredWidth * minScale;
+      let nextTight = requiredAtMinScale > availableWidth;
+
+      const mainRect = mainControlsRef.current?.getBoundingClientRect();
+      const closeRect = closeButtonRef.current?.getBoundingClientRect();
+      if (mainRect && closeRect) {
+        const minGap = 8;
+        if (mainRect.right + minGap > closeRect.left) {
+          nextTight = true;
+        }
+      }
+
+      if (Math.abs(nextScale - toolbarScale) > 0.01) {
+        setToolbarScale(nextScale);
+      }
+      if (nextTight !== toolbarTight) {
+        setToolbarTight(nextTight);
+      }
+
+      // Keep controls in a single row and resize controls to fit when space is tight.
+      setSingleRowToolbar(!isPortrait);
+    };
+
+    updateSingleRowToolbar();
+    const observer = new ResizeObserver(updateSingleRowToolbar);
+    observer.observe(panel);
+    window.addEventListener('resize', updateSingleRowToolbar);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', updateSingleRowToolbar);
+    };
+  }, [panelVisible, annotationToolsOpen, displayMode, zoomLevel, selectedLanguage, sidebarHidden, toolbarScale, toolbarTight, isPortrait]);
 
   // Clamp panel position so it never moves off-screen
   const clampPanelPos = useCallback((pos) => {
@@ -2676,8 +2955,205 @@ function App() {
     return url;
   }, [modalInfo]);
 
+  const restoreSidebarCollapsed = useCallback(() => {
+    setSidebarCollapsed(true);
+    setSidebarHidden(false);
+  }, []);
+
+  const restoreSidebarAndPanel = useCallback(() => {
+    setSidebarCollapsed(true);
+    setSidebarHidden(false);
+    setPanelVisible(true);
+  }, []);
+
+  const canRestoreHiddenSidebar = sidebarHidden && !panelVisible;
+
+  const secondaryToolbar = (
+    <div className="toolbar-group toolbar-secondary" ref={secondaryToolbarRef}>
+      <button
+        className={`tool-btn ${tool === 'pen' ? 'active' : ''}`}
+        onClick={() => setTool('pen')}
+        data-tooltip={_('pen')}
+        aria-label={_('pen')}
+      >
+        <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+          <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z" />
+        </svg>
+      </button>
+      <button
+        className={`tool-btn ${tool === 'highlight' ? 'active' : ''}`}
+        onClick={() => setTool('highlight')}
+        data-tooltip={_('highlighter')}
+        aria-label={_('highlighter')}
+      >
+        <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+          <path d="M15.24 2.36l-11 11a1 1 0 0 0-.24.59V17a1 1 0 0 0 1 1h3.05a1 1 0 0 0 .59-.24l11-11a1 1 0 0 0 0-1.41l-3.4-3.4a1 1 0 0 0-1.41 0zM5 16v-2.5l9-9L16.5 7l-9 9H5z" />
+          <rect x="2" y="18" width="20" height="3" rx="1" />
+        </svg>
+      </button>
+      <button
+        className={`tool-btn ${tool === 'text' ? 'active' : ''}`}
+        onClick={() => setTool('text')}
+        data-tooltip={_('textTool')}
+        aria-label={_('textTool')}
+      >
+        <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+          <path d="M5 4v3h5.5v12h3V7H19V4H5z" />
+        </svg>
+      </button>
+      <button
+        className={`tool-btn ${tool === 'eraser' ? 'active' : ''}`}
+        onClick={() => setTool('eraser')}
+        data-tooltip={_('eraser')}
+        aria-label={_('eraser')}
+      >
+        <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+          <path d="M16.24 3.56a2 2 0 0 1 2.83 0l1.37 1.37a2 2 0 0 1 0 2.83l-8.49 8.48H8.71L3.56 10.9a2 2 0 0 1 0-2.83l7.85-7.85a2 2 0 0 1 2.83 0l2 2.34zM5.68 9.49l4.28 4.27h1.16l7.9-7.9-1.36-1.37-1.44-1.44-1.31-1.54L5.68 9.49z" />
+          <path d="M3 20h18v2H3z" />
+        </svg>
+      </button>
+      <button
+        className={`tool-btn ${tool === 'move' ? 'active' : ''}`}
+        onClick={() => setTool('move')}
+        data-tooltip={_('moveTool')}
+        aria-label={_('moveTool')}
+      >
+        <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+          <path d="M12 2l3 3h-2v4h4V7l3 3-3 3v-2h-4v4h2l-3 3-3-3h2v-4H7v2l-3-3 3-3v2h4V5H9l3-3z" />
+        </svg>
+      </button>
+      <span className="toolbar-sep" />
+      <div className="color-picker-wrapper">
+        <button
+          className="tool-btn color-swatch-btn"
+          ref={colorBtnRef}
+          onClick={() => setColorPickerOpen((prev) => !prev)}
+          data-tooltip={_('color')}
+          aria-label={_('color')}
+          style={{ background: textColor }}
+        />
+        <input
+          ref={customColorInputRef}
+          type="color"
+          value={textColor}
+          onChange={(e) => setTextColor(e.target.value)}
+          style={{ position: 'absolute', opacity: 0, pointerEvents: 'none', width: 0, height: 0 }}
+          aria-hidden="true"
+          tabIndex={-1}
+        />
+      </div>
+      <span className="toolbar-sep" />
+      <button
+        className="tool-btn"
+        disabled={!undoStack.length && !remarks.filter(r => r.chapter === selectedChapter && Number(r.page) === Number(selectedPage)).length}
+        onClick={undoRemark}
+        data-tooltip={_('undo')}
+        aria-label={_('undo')}
+      >
+        <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+          <path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z" />
+        </svg>
+      </button>
+      <button
+        className="tool-btn"
+        disabled={!redoStack.length}
+        onClick={redoRemark}
+        data-tooltip={_('redo')}
+        aria-label={_('redo')}
+      >
+        <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+          <path d="M18.4 10.6C16.55 8.99 14.15 8 11.5 8c-4.65 0-8.58 3.03-9.96 7.22L3.9 16a8.002 8.002 0 0 1 7.6-5.5c1.95 0 3.73.72 5.12 1.88L13 16h9V7l-3.6 3.6z" />
+        </svg>
+      </button>
+      <span className="toolbar-sep" />
+      <button
+        className="tool-btn"
+        onClick={openEraseDialog}
+        data-tooltip={_('erase')}
+        aria-label={_('erase')}
+      >
+        <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+          <path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM8 9h8v10H8V9zm7.5-5l-1-1h-5l-1 1H5v2h14V4h-3.5z" />
+        </svg>
+      </button>
+    </div>
+  );
+
+  useEffect(() => {
+    if (!canRestoreHiddenSidebar || typeof window === 'undefined') {
+      return undefined;
+    }
+
+    const onKeyDown = () => {
+      restoreSidebarCollapsed();
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [canRestoreHiddenSidebar, restoreSidebarCollapsed]);
+
   return (
-    <div className={`app-shell ${displayMode === 'scrolling' ? 'scrolling-mode' : ''}`} style={{ '--bottom-toolbar-offset': `${panelReservedHeight}px` }}>
+    <div
+      className={`app-shell ${displayMode === 'scrolling' ? 'scrolling-mode' : ''} ${sidebarHidden ? 'sidebar-hidden' : ''}`}
+      style={{ '--bottom-toolbar-offset': `${panelReservedHeight}px` }}
+      onDoubleClick={() => {
+        if (canRestoreHiddenSidebar) {
+          restoreSidebarCollapsed();
+        }
+      }}
+    >
+      {canRestoreHiddenSidebar && (
+        <button
+          className="hidden-sidebar-restore"
+          type="button"
+          onPointerDown={() => {
+            restoreLongPressRef.current = false;
+            if (restorePressTimerRef.current) {
+              clearTimeout(restorePressTimerRef.current);
+            }
+            restorePressTimerRef.current = setTimeout(() => {
+              restoreLongPressRef.current = true;
+              restoreSidebarAndPanel();
+              restorePressTimerRef.current = null;
+            }, 500);
+          }}
+          onPointerUp={() => {
+            if (restorePressTimerRef.current) {
+              clearTimeout(restorePressTimerRef.current);
+              restorePressTimerRef.current = null;
+            }
+          }}
+          onPointerLeave={() => {
+            if (restorePressTimerRef.current) {
+              clearTimeout(restorePressTimerRef.current);
+              restorePressTimerRef.current = null;
+            }
+          }}
+          onPointerCancel={() => {
+            if (restorePressTimerRef.current) {
+              clearTimeout(restorePressTimerRef.current);
+              restorePressTimerRef.current = null;
+            }
+          }}
+          onClick={() => {
+            if (restoreLongPressRef.current) {
+              restoreLongPressRef.current = false;
+              return;
+            }
+            restoreSidebarCollapsed();
+          }}
+          aria-label={_('showSidebar')}
+          title={_('showSidebar')}
+        >
+          <span className="hidden-sidebar-restore-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+              <path d="M9 7l5 5-5 5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M5 7l5 5-5 5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </span>
+        </button>
+      )}
+      {!sidebarHidden && (
       <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''} ${displayMode === 'scrolling' ? 'scroll-locked' : ''}`}>
         <div className="sidebar-title-row">
           <h1>
@@ -2686,29 +3162,45 @@ function App() {
             </svg>
             {_('appTitle')}
           </h1>
-          <button
-            className="sidebar-toggle"
-            onClick={() => {
-              setSidebarCollapsed((current) => !current);
-              setSelectedPage(1);
-            }}
-            aria-label={sidebarCollapsed ? _('expandSidebar') : _('collapseSidebar')}
-            title={sidebarCollapsed ? _('expandSidebar') : _('collapseSidebar')}
-          >
-            <span aria-hidden="true" className="sidebar-toggle-icon">
-              {sidebarCollapsed ? (
+          <div className="sidebar-title-actions">
+            <button
+              className="sidebar-toggle"
+              onClick={() => {
+                setSidebarCollapsed((current) => !current);
+                setSelectedPage(1);
+              }}
+              aria-label={sidebarCollapsed ? _('expandSidebar') : _('collapseSidebar')}
+              title={sidebarCollapsed ? _('expandSidebar') : _('collapseSidebar')}
+            >
+              <span aria-hidden="true" className="sidebar-toggle-icon">
+                {sidebarCollapsed ? (
+                  <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                    <path d="M9 7l5 5-5 5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M5 7l5 5-5 5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                    <path d="M15 7l-5 5 5 5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M19 7l-5 5 5 5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                )}
+              </span>
+            </button>
+            <button
+              className="sidebar-toggle sidebar-hide-btn"
+              onClick={() => setSidebarHidden(true)}
+              aria-label={_('closeSidebar')}
+              title={_('closeSidebar')}
+            >
+              <span aria-hidden="true" className="sidebar-toggle-icon">
                 <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                  <path d="M9 7l5 5-5 5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
-                  <path d="M5 7l5 5-5 5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M18 6L6 18" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+                  <path d="M6 6l12 12" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
                 </svg>
-              ) : (
-                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                  <path d="M15 7l-5 5 5 5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
-                  <path d="M19 7l-5 5 5 5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              )}
-            </span>
-          </button>
+              </span>
+            </button>
+
+          </div>
         </div>
         {!sidebarCollapsed && (
           <div className="sidebar-user-row">
@@ -2866,7 +3358,7 @@ function App() {
           <div className="toggle-group">
             <button
               className={`toggle-btn ${displayMode === 'pagination' ? 'active' : ''}`}
-              onClick={() => { setDisplayMode('pagination'); setSelectedPage(1); }}
+              onClick={() => { setDisplayMode('pagination'); }}
             >
               <svg viewBox="0 0 24 24" role="presentation" focusable="false">
                 <rect x="4" y="3" width="16" height="18" rx="2" />
@@ -2875,7 +3367,7 @@ function App() {
             </button>
             <button
               className={`toggle-btn ${displayMode === 'scrolling' ? 'active' : ''}`}
-              onClick={() => { setDisplayMode('scrolling'); setSelectedPage(1); }}
+              onClick={() => { setDisplayMode('scrolling'); }}
             >
               <svg viewBox="0 0 24 24" role="presentation" focusable="false">
                 <rect x="3" y="3" width="18" height="4" rx="1" />
@@ -2886,7 +3378,7 @@ function App() {
             </button>
             <button
               className={`toggle-btn ${displayMode === 'thumbnails' ? 'active' : ''}`}
-              onClick={() => { setDisplayMode('thumbnails'); setSelectedPage(1); }}
+              onClick={() => { setDisplayMode('thumbnails'); }}
             >
               <svg viewBox="0 0 24 24" role="presentation" focusable="false">
                 <rect x="3" y="4" width="6" height="7" rx="1.2" />
@@ -2932,21 +3424,14 @@ function App() {
 
         {sidebarCollapsed && (
           <div className="sidebar-icon-stack" aria-label="Collapsed sidebar controls">
-            <div className="sidebar-collapsed-user">
-              <div className="sidebar-icon-btn sidebar-user-icon-btn" data-tooltip={userId} aria-label={userId}>
-                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                  <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" />
-                </svg>
-              </div>
-              <div className="sidebar-collapsed-user-id" title={userId}>
-                <code>{userId.slice(0, 6)}</code>
-              </div>
-              <a className="sidebar-icon-btn sidebar-logout-icon-btn" href={logoutUrl} data-tooltip={_('logout')} aria-label={_('logout')} onClick={logLogout}>
+            <a className="sidebar-account-btn" href={logoutUrl} data-tooltip={userId} aria-label={userId} onClick={logLogout}>
+              <span className="sidebar-account-id"><code>{userId.slice(0, 6)}</code></span>
+              <span className="sidebar-account-logout" aria-hidden="true">
                 <svg viewBox="0 0 24 24" role="presentation" focusable="false">
                   <path d="M10 17l1.41-1.41L8.83 13H20v-2H8.83l2.58-2.59L10 7l-5 5 5 5zm-6 3h8v-2H4V6h8V4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2z" />
                 </svg>
-              </a>
-            </div>
+              </span>
+            </a>
             <button
               className="sidebar-icon-btn"
               onClick={cycleBook}
@@ -3005,19 +3490,6 @@ function App() {
               </svg>
             </button>
             <button
-              className={`sidebar-icon-btn ${panelVisible ? 'active' : ''}`}
-              onClick={() => setPanelVisible((current) => !current)}
-              data-tooltip={_('toggleToolbar')}
-              aria-label={_('toggleToolbar')}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <rect x="3" y="3" width="18" height="14" rx="2" />
-                <rect x="6" y="7" width="12" height="2" rx="1" />
-                <rect x="6" y="11" width="8" height="2" rx="1" />
-              </svg>
-            </button>
-
-            <button
               className={`sidebar-icon-btn ${aiDrawerOpen ? 'active' : ''}`}
               onClick={() => handleAiGenerate()}
               data-tooltip={aiLoading ? _('generating') : _('aiGeneration')}
@@ -3035,6 +3507,19 @@ function App() {
               )}
             </button>
 
+            <button
+              className={`sidebar-icon-btn ${panelVisible ? 'active' : ''}`}
+              onClick={() => setPanelVisible((current) => !current)}
+              data-tooltip={_('toggleToolbar')}
+              aria-label={_('toggleToolbar')}
+            >
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                <rect x="3" y="3" width="18" height="14" rx="2" />
+                <rect x="6" y="7" width="12" height="2" rx="1" />
+                <rect x="6" y="11" width="8" height="2" rx="1" />
+              </svg>
+            </button>
+
           </div>
         )}
 
@@ -3048,22 +3533,6 @@ function App() {
                 <path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4a5 5 0 0 0 5-5 5 5 0 0 0-5-5z" />
               </svg>
               {_('resources')}
-            </button>
-          </label>
-        )}
-
-        {!sidebarCollapsed && (
-          <label className="toggle-row">
-            <button
-              className={`toggle-btn icon-only ${panelVisible ? 'active' : ''}`}
-              onClick={() => setPanelVisible((current) => !current)}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <rect x="3" y="3" width="18" height="14" rx="2" />
-                <rect x="6" y="7" width="12" height="2" rx="1" />
-                <rect x="6" y="11" width="8" height="2" rx="1" />
-              </svg>
-              {_('toolbar')}
             </button>
           </label>
         )}
@@ -3089,8 +3558,23 @@ function App() {
           </label>
         )}
 
-
+        {!sidebarCollapsed && (
+          <label className="toggle-row">
+            <button
+              className={`toggle-btn icon-only ${panelVisible ? 'active' : ''}`}
+              onClick={() => setPanelVisible((current) => !current)}
+            >
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                <rect x="3" y="3" width="18" height="14" rx="2" />
+                <rect x="6" y="7" width="12" height="2" rx="1" />
+                <rect x="6" y="11" width="8" height="2" rx="1" />
+              </svg>
+              {_('toolbar')}
+            </button>
+          </label>
+        )}
       </aside>
+  )}
 
       <main className="reader">
         <div className={`book-stage ${displayMode} ${isBilingualView ? 'bilingual-layout' : ''}`} ref={stageRef} onClick={tool === 'text' ? handleCanvasClick : undefined}>
@@ -3103,8 +3587,8 @@ function App() {
                 paneLanguage={language}
                 source={isImages ? '' : (src || '')}
                 images={isImages ? src : null}
-                title={`${language === 'en' ? _('english') : _('chinese')} · ${currentBookHeaderName}`}
-                section={`${currentSectionHeaderId} - ${currentSectionHeaderName}`}
+                title={`${getSubjectLabel(selectedBook, language)} · ${currentBookHeaderName}`}
+                section={`${currentSectionHeaderId} - ${getSectionHeaderNameForLang(language)}`}
                 mode={displayMode}
                 currentPage={selectedPage}
                 onPageChange={setSelectedPage}
@@ -3182,6 +3666,10 @@ function App() {
           )}
         </div>
 
+        {displayMode === 'scrolling' && jumpNotice && (
+          <div className="jump-indicator" aria-live="polite">{jumpNotice}</div>
+        )}
+
         {resourcesDrawerOpen && currentSection && (
           <div className="resources-drawer-overlay" onClick={() => setResourcesDrawerOpen(false)}>
             <section className="section-resources resources-drawer" onClick={(e) => e.stopPropagation()}>
@@ -3237,22 +3725,16 @@ function App() {
 
         {panelVisible && (
         <section
-          className={`annotation-panel ${isNarrowScreen ? 'docked-bottom' : ''}`}
+          className={`annotation-panel docked-bottom ${singleRowToolbar ? 'single-row' : ''} ${toolbarTight ? 'tight-space' : ''}`}
           ref={panelRef}
-          style={isNarrowScreen
-            ? { left: '0', right: '0', bottom: '0' }
-            : {
-              left: panelPos.x != null ? `${panelPos.x}px` : undefined,
-              top: panelPos.y != null ? `${panelPos.y}px` : undefined,
-              right: panelPos.x == null ? '16px' : undefined,
-              bottom: panelPos.y == null ? '16px' : undefined
-            }}
+          style={{ left: '0', right: '0', bottom: '0', '--toolbar-scale': toolbarScale }}
         >
           <div className="panel-row-1">
+          <div className="panel-main-controls" ref={mainControlsRef}>
           <span
             className="panel-drag-handle"
             onPointerDown={handlePanelDragStart}
-            title={_('dragToMove')}
+            data-tooltip={_('dragToMove')}
             aria-label={_('dragToMove')}
           >
             <svg viewBox="0 0 24 24" role="presentation" focusable="false">
@@ -3264,13 +3746,13 @@ function App() {
               <circle cx="15" cy="19" r="1.5" />
             </svg>
           </span>
-          <div className="toolbar-group toolbar-primary">
-            <button onClick={() => moveSection(-1)} title={_('prevSection')} aria-label={_('prevSection')}>|&lt;</button>
-            <button onClick={() => displayMode === 'thumbnails' ? changePageSeamless(-1) : changePage(-1)} title={_('prevPage')} aria-label={_('prevPage')}>&lt;</button>
-            <button onClick={() => displayMode === 'thumbnails' ? changePageSeamless(1) : changePage(1)} title={_('nextPage')} aria-label={_('nextPage')}>&gt;</button>
-            <button onClick={() => moveSection(1)} title={_('nextSection')} aria-label={_('nextSection')}>&gt;|</button>
+          <div className="toolbar-group toolbar-primary" ref={primaryToolbarRef}>
+            <button onClick={() => jumpSection(-1)} data-tooltip={displayMode === 'scrolling' ? _('jumpPrevSection') : _('prevSection')} aria-label={displayMode === 'scrolling' ? _('jumpPrevSection') : _('prevSection')}>|&lt;</button>
+            <button onClick={() => jumpPage(-1)} data-tooltip={displayMode === 'scrolling' ? _('jumpPrevPage') : _('prevPage')} aria-label={displayMode === 'scrolling' ? _('jumpPrevPage') : _('prevPage')}>&lt;</button>
+            <button onClick={() => jumpPage(1)} data-tooltip={displayMode === 'scrolling' ? _('jumpNextPage') : _('nextPage')} aria-label={displayMode === 'scrolling' ? _('jumpNextPage') : _('nextPage')}>&gt;</button>
+            <button onClick={() => jumpSection(1)} data-tooltip={displayMode === 'scrolling' ? _('jumpNextSection') : _('nextSection')} aria-label={displayMode === 'scrolling' ? _('jumpNextSection') : _('nextSection')}>&gt;|</button>
             {!fitDisabled && (
-            <button className="icon-btn active" onClick={fitScreen} title={fitButtonTitle} aria-label={fitButtonTitle} disabled={fitDisabled}>
+            <button className="icon-btn active" onClick={fitScreen} data-tooltip={fitButtonTitle} aria-label={fitButtonTitle} disabled={fitDisabled}>
               <svg viewBox="0 0 24 24" role="presentation" focusable="false">
                 {fitButtonMode === 'height' ? (
                   <path d="M12 3l3.5 3.5-1.4 1.4-1.1-1.1V17.2l1.1-1.1 1.4 1.4L12 21l-3.5-3.5 1.4-1.4 1.1 1.1V6.8L9.9 7.9 8.5 6.5 12 3zM5 5h3v2H7v10h1v2H5V5zm11 0h3v14h-3v-2h1V7h-1V5z" />
@@ -3288,7 +3770,7 @@ function App() {
               max={showThumbnails ? "100" : "200"}
               value={Math.round(zoomLevel * 100)}
               onChange={(e) => setZoomLevel(Number(e.target.value) / 100)}
-              title={_('zoomLevel')}
+              data-tooltip={_('zoomLevel')}
               aria-label={_('zoomLevel')}
             />
             <span className="zoom-label">{displayZoomPercent}%</span>
@@ -3296,6 +3778,7 @@ function App() {
           {displayMode !== 'thumbnails' && (
           <button
             className={`tool-btn annotation-toggle-btn ${annotationToolsOpen ? 'active' : ''}`}
+            ref={annotationToggleRef}
             onClick={() => {
               setAnnotationToolsOpen((prev) => {
                 const next = !prev;
@@ -3303,32 +3786,36 @@ function App() {
                 return next;
               });
             }}
-            title={_('toggleAnnotations')}
+            data-tooltip={_('toggleAnnotations')}
             aria-label={_('toggleAnnotations')}
           >
             <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-              <path d="M4 16.5V20h3.5L18 9.5 14.5 6 4 16.5zm2.2 1.3h-.7v-.7l8.6-8.6.7.7-8.6 8.6zM19.7 7.8c.4-.4.4-1 0-1.4l-2.1-2.1c-.4-.4-1-.4-1.4 0l-1.2 1.2 3.5 3.5 1.2-1.2z" />
+              <path d="M12 4l5.5 16h-2.3l-1.25-3.8H10.05L8.8 20H6.5L12 4zm-1.3 10.3h2.6L12 9.7l-1.3 4.6z" />
             </svg>
           </button>
           )}
           <button
             className="tool-btn search-btn"
+            ref={searchButtonRef}
             onClick={() => {
               if (aiDrawerOpen) setAiDrawerOpen(false);
               if (resourcesDrawerOpen) setResourcesDrawerOpen(false);
               setSearchDrawerOpen(true);
             }}
-            title={_('search')}
+            data-tooltip={_('search')}
             aria-label={_('search')}
           >
             <svg viewBox="0 0 24 24" role="presentation" focusable="false">
               <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
             </svg>
           </button>
+          {singleRowToolbar && annotationToolsOpen && displayMode !== 'thumbnails' && secondaryToolbar}
+          </div>
           <button
             className="tool-btn panel-close-btn panel-close-accent"
+            ref={closeButtonRef}
             onClick={() => setPanelVisible(false)}
-            title={_('closePanel')}
+            data-tooltip={_('closePanel')}
             aria-label={_('closePanel')}
           >
             <svg viewBox="0 0 24 24" role="presentation" focusable="false">
@@ -3336,109 +3823,9 @@ function App() {
             </svg>
           </button>
           </div>
-          {annotationToolsOpen && displayMode !== 'thumbnails' && (
+          {!singleRowToolbar && annotationToolsOpen && displayMode !== 'thumbnails' && (
           <div className="panel-row-2 annotation-row">
-          <div className="toolbar-group toolbar-secondary">
-            <button
-              className={`tool-btn ${tool === 'pen' ? 'active' : ''}`}
-              onClick={() => setTool('pen')}
-              title={_('pen')}
-              aria-label={_('pen')}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z" />
-              </svg>
-            </button>
-            <button
-              className={`tool-btn ${tool === 'highlight' ? 'active' : ''}`}
-              onClick={() => setTool('highlight')}
-              title={_('highlighter')}
-              aria-label={_('highlighter')}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <path d="M15.24 2.36l-11 11a1 1 0 0 0-.24.59V17a1 1 0 0 0 1 1h3.05a1 1 0 0 0 .59-.24l11-11a1 1 0 0 0 0-1.41l-3.4-3.4a1 1 0 0 0-1.41 0zM5 16v-2.5l9-9L16.5 7l-9 9H5z" />
-                <rect x="2" y="18" width="20" height="3" rx="1" />
-              </svg>
-            </button>
-            <button
-              className={`tool-btn ${tool === 'text' ? 'active' : ''}`}
-              onClick={() => setTool('text')}
-              title={_('textTool')}
-              aria-label={_('textTool')}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <path d="M5 4v3h5.5v12h3V7H19V4H5z" />
-              </svg>
-            </button>
-            <button
-              className={`tool-btn ${tool === 'eraser' ? 'active' : ''}`}
-              onClick={() => setTool('eraser')}
-              title={_('eraser')}
-              aria-label={_('eraser')}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <path d="M16.24 3.56a2 2 0 0 1 2.83 0l1.37 1.37a2 2 0 0 1 0 2.83l-8.49 8.48H8.71L3.56 10.9a2 2 0 0 1 0-2.83l7.85-7.85a2 2 0 0 1 2.83 0l2 2.34zM5.68 9.49l4.28 4.27h1.16l7.9-7.9-1.36-1.37-1.44-1.44-1.31-1.54L5.68 9.49z" />
-                <path d="M3 20h18v2H3z" />
-              </svg>
-            </button>
-            <button
-              className={`tool-btn ${tool === 'move' ? 'active' : ''}`}
-              onClick={() => setTool('move')}
-              title={_('moveTool')}
-              aria-label={_('moveTool')}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <path d="M12 2l3 3h-2v4h4V7l3 3-3 3v-2h-4v4h2l-3 3-3-3h2v-4H7v2l-3-3 3-3v2h4V5H9l3-3z" />
-              </svg>
-            </button>
-            <span className="toolbar-sep" />
-            <input type="color" value={textColor} onChange={(event) => setTextColor(event.target.value)} title={_('color')} aria-label={_('color')} />
-            <span className="toolbar-sep" />
-            <button
-              className="tool-btn"
-              disabled={!undoStack.length && !remarks.filter(r => r.chapter === selectedChapter && Number(r.page) === Number(selectedPage)).length}
-              onClick={undoRemark}
-              title={_('undo')}
-              aria-label={_('undo')}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z" />
-              </svg>
-            </button>
-            <button
-              className="tool-btn"
-              disabled={!redoStack.length}
-              onClick={redoRemark}
-              title={_('redo')}
-              aria-label={_('redo')}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <path d="M18.4 10.6C16.55 8.99 14.15 8 11.5 8c-4.65 0-8.58 3.03-9.96 7.22L3.9 16a8.002 8.002 0 0 1 7.6-5.5c1.95 0 3.73.72 5.12 1.88L13 16h9V7l-3.6 3.6z" />
-              </svg>
-            </button>
-            <span className="toolbar-sep" />
-            <button
-              className="tool-btn"
-              onClick={clearPageRemarks}
-              title={_('erasePage')}
-              aria-label={_('erasePage')}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM8 9h8v10H8V9zm7.5-5l-1-1h-5l-1 1H5v2h14V4h-3.5z" />
-              </svg>
-            </button>
-            <button
-              className="tool-btn"
-              onClick={clearAllRemarks}
-              title={_('eraseBook')}
-              aria-label={_('eraseBook')}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM8 9h8v10H8V9zm7.5-5l-1-1h-5l-1 1H5v2h14V4h-3.5z" />
-                <path d="M2 7h20" stroke="currentColor" strokeWidth="2" fill="none" />
-              </svg>
-            </button>
-          </div>
+          {secondaryToolbar}
           </div>
           )}
         </section>
@@ -3825,6 +4212,50 @@ function App() {
             )}
           </div>
         </div>
+      )}
+
+      {/* ── Color Picker Portal ──────────────────────────── */}
+      {colorPickerOpen && createPortal(
+        <>
+          <div className="color-picker-overlay" onClick={() => setColorPickerOpen(false)} />
+          <div
+            className="color-picker-popover"
+            style={colorPickerPos || {}}
+          >
+            <div className="color-picker-grid">
+              {POPULAR_COLORS.map((c) => (
+                <button
+                  key={c}
+                  className={`color-swatch ${c === textColor ? 'active' : ''}`}
+                  style={{ background: c }}
+                  onClick={() => {
+                    setTextColor(c);
+                    setColorPickerOpen(false);
+                  }}
+                  title={c}
+                />
+              ))}
+            </div>
+            <div className="color-picker-divider" />
+            <button
+              className="color-picker-custom-btn"
+              onClick={() => {
+                const input = customColorInputRef.current;
+                if (!input) return;
+                // Listen for the native picker to close, then close our popover
+                const onClose = () => { setColorPickerOpen(false); input.removeEventListener('change', onClose); };
+                input.addEventListener('change', onClose);
+                input.click();
+              }}
+            >
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="color-picker-custom-icon">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
+              </svg>
+              <span>{_('custom') || 'Custom…'}</span>
+            </button>
+          </div>
+        </>,
+        document.body
       )}
     </div>
   );
