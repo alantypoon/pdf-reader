@@ -148,16 +148,33 @@ def _find_ai_doc(subject_id, book_id, section_id, page_id):
 def content_exists(subject_id, book_id, section_id, page_id):
     """Return True if a complete bilingual document already exists for this page.
 
-    A complete record must have en+zh with flashcards+mcq in both languages.
+    A complete record must have en+zh with summary+flashcards+mcq in both languages.
+    If any part is missing, the document is treated as incomplete and will be regenerated.
     """
     doc = _find_ai_doc(subject_id, book_id, section_id, page_id)
     if not doc:
         return False
 
+    def _is_complete(lang_content):
+        if not isinstance(lang_content, dict):
+            return False
+        has_summary = isinstance(lang_content.get('summary'), list) and len(lang_content.get('summary', [])) > 0
+        has_flashcards = isinstance(lang_content.get('flashcards'), list) and len(lang_content.get('flashcards', [])) > 0
+        has_mcq = isinstance(lang_content.get('mcq'), list) and len(lang_content.get('mcq', [])) > 0
+        return has_summary and has_flashcards and has_mcq
+
     en = doc.get('en') or {}
     zh = doc.get('zh') or {}
-    en_ok = isinstance(en.get('flashcards'), list) and len(en.get('flashcards', [])) > 0
-    zh_ok = isinstance(zh.get('flashcards'), list) and len(zh.get('flashcards', [])) > 0
+    en_ok = _is_complete(en)
+    zh_ok = _is_complete(zh)
+
+    if not en_ok or not zh_ok:
+        missing = []
+        if not en_ok:
+            missing.append('en')
+        if not zh_ok:
+            missing.append('zh')
+        print(f'    [incomplete] missing {", ".join(missing)} — will regenerate')
     return bool(en_ok and zh_ok)
 
 
@@ -509,7 +526,7 @@ def extract_page_text(subject, book, section_num, page_num, language='en'):
     selected = _find_page_images(subject, book, section_num, page_num, language)
 
     prompt = (
-        '從這些教科書頁面圖像中提取並轉錄所有文字內容。包括所有標題、正文和圖片說明。請用繁體中文輸出。'
+        '從這些教科書頁面圖像中提取並轉錄所有文字內容。包括所有標題、正文和圖片說明。必須用繁體中文（Traditional Chinese）輸出，不要使用簡體中文（Simplified Chinese）。'
         if language == 'tc' else
         'Extract and transcribe all text content from these textbook page images. '
         'Include all headings, body text, and captions.'
@@ -565,7 +582,7 @@ def _subpage_sort_key(filename, prefix):
 def _build_gen_prompt(chapter, section_name, page_num, language, text):
     """Match server's buildGenerationPrompt exactly."""
     lang_instruction = (
-        '所有內容必須使用繁體中文。問題和答案都要用中文書寫。'
+        '所有內容必須使用繁體中文（Traditional Chinese, NOT Simplified Chinese）。問題和答案都要用繁體中文書寫。'
         if language == 'tc' else
         'All content must be in English.'
     )
@@ -600,7 +617,7 @@ def _build_gen_prompt(chapter, section_name, page_num, language, text):
 def _build_translation_prompt(chapter, section_name, page_num, target_lang, source, ref_text):
     """Match server's buildTranslationPrompt exactly."""
     lang_instruction = (
-        'Translate everything into Traditional Chinese.'
+        'Translate everything into Traditional Chinese (繁體中文, NOT Simplified Chinese 简体中文).'
         if target_lang == 'tc' else
         'Translate everything into English.'
     )

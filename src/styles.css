@@ -110,69 +110,17 @@ button, input, select {
 
 .sidebar-icon-stack {
   display: grid;
+  grid-template-columns: 1fr;
   gap: 10px;
   margin-top: 4px;
 }
 
-@media (orientation: landscape) and (max-height: 820px) and (pointer: fine) {
-  .sidebar-icon-stack {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 6px;
-  }
-
-  .sidebar-icon-btn {
-    min-width: 0;
-    height: 34px;
-    border-radius: 10px;
-  }
-
-  .sidebar-icon-btn svg {
-    width: 16px;
-    height: 16px;
-  }
-
-  .sidebar-account-btn {
-    grid-column: 1 / -1;
-    min-height: 36px;
-  }
-
-  .sidebar-account-id code {
-    font-size: 0.64rem;
-  }
-}
-
-@media (orientation: landscape) and (max-height: 820px) and (pointer: coarse) {
-  .sidebar-icon-stack {
-    grid-template-columns: 1fr;
-    gap: 10px;
-  }
-
-  .sidebar-icon-btn {
-    min-width: 42px;
-    height: 42px;
-    border-radius: 12px;
-  }
-
-  .sidebar-icon-btn svg {
-    width: 18px;
-    height: 18px;
-  }
-
-  .sidebar-account-btn {
-    min-height: 44px;
-  }
-
-  .sidebar-account-id code {
-    font-size: 0.68rem;
-  }
-}
-
 .sidebar-icon-btn {
   width: 100%;
-  height: 42px;
-  padding: 0;
+  min-width: 48px;
+  height: 48px;
   border: 1px solid #c9d7e3;
-  border-radius: 12px;
+  border-radius: 14px;
   background: #f4f9fc;
   color: #1f4d6c;
   display: inline-flex;
@@ -184,6 +132,23 @@ button, input, select {
   -webkit-appearance: none;
   appearance: none;
   line-height: 1;
+  padding: 0;
+}
+
+.sidebar-icon-btn svg {
+  width: 22px;
+  height: 22px;
+  color: currentColor;
+  display: block;
+  flex: 0 0 auto;
+}
+
+.sidebar-account-btn {
+  min-height: 48px;
+}
+
+.sidebar-account-id code {
+  font-size: 0.68rem;
 }
 
 .sidebar-icon-btn::after {
@@ -212,14 +177,6 @@ button, input, select {
 .sidebar-icon-btn[data-tooltip=""]::after,
 .sidebar-icon-btn:not([data-tooltip])::after {
   display: none;
-}
-
-.sidebar-icon-btn svg {
-  width: 18px;
-  height: 18px;
-  color: currentColor;
-  display: block;
-  flex: 0 0 auto;
 }
 
 .sidebar-icon-btn svg path,
@@ -1324,7 +1281,7 @@ button, input, select {
   height: 100%;
   display: grid;
   place-items: center;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .pdf-scroll {
@@ -1368,6 +1325,11 @@ button, input, select {
   font-weight: 700;
   font-size: calc(0.78rem * var(--toolbar-scale, 1));
   color: #12324a;
+}
+
+.cols-slider {
+  width: calc(80px * var(--toolbar-scale));
+  max-width: 100px;
 }
 
 /* ── Color Picker Popover ──────────────────────────── */
@@ -1816,16 +1778,21 @@ button, input, select {
 
 .annotation-panel .icon-btn,
 .annotation-panel .tool-btn {
-  width: calc(36px * var(--toolbar-scale));
-  padding: calc(8px * var(--toolbar-scale));
+  width: calc(48px * var(--toolbar-scale));
+  height: calc(48px * var(--toolbar-scale));
+  padding: calc(10px * var(--toolbar-scale));
   display: inline-flex;
   align-items: center;
   justify-content: center;
   position: relative;
+  font-size: calc(20px * var(--toolbar-scale));
+  font-weight: 700;
+  line-height: 1;
 }
 
 .annotation-panel .annotation-toggle-btn {
   width: auto;
+  height: auto;
   /* padding: 10px 14px; */
   gap: 8px;
 }
@@ -1838,8 +1805,8 @@ button, input, select {
 
 .annotation-panel .icon-btn svg,
 .annotation-panel .tool-btn svg {
-  width: calc(16px * var(--toolbar-scale));
-  height: calc(16px * var(--toolbar-scale));
+  width: calc(22px * var(--toolbar-scale));
+  height: calc(22px * var(--toolbar-scale));
   fill: currentColor;
 }
 
@@ -1864,6 +1831,193 @@ button, input, select {
   align-items: center;
   gap: calc(6px * var(--toolbar-scale));
   flex: 0 0 auto;
+}
+
+/* ── Tool selector split button ────────────────────────── */
+
+.tool-menu-wrapper {
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.tool-split-btn {
+  display: inline-flex;
+  align-items: stretch;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.tool-split-main {
+  border-radius: 999px 0 0 999px !important;
+  padding-right: 4px !important;
+  gap: 4px;
+}
+
+.tool-color-indicator {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid rgba(0,0,0,0.15);
+  flex: 0 0 auto;
+}
+
+.tool-split-arrow {
+  border-radius: 0 999px 999px 0 !important;
+  padding-left: 2px !important;
+  padding-right: 6px !important;
+  border-left: 1px solid rgba(0,0,0,0.1) !important;
+}
+
+.tool-menu-arrow {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+}
+
+.tool-menu-popup {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  background: #ffffff;
+  border: 1px solid #d7e0e8;
+  border-radius: 14px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.16);
+  z-index: 300;
+  min-width: 180px;
+}
+
+.tool-menu-section-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 4px 6px 2px;
+}
+
+.tool-menu-item {
+  padding: 10px 16px !important;
+  border-radius: 10px !important;
+  background: #f8fafc !important;
+  border: 1px solid transparent !important;
+  font-size: 0.9rem !important;
+  font-weight: 500 !important;
+  color: #12324a !important;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+  display: flex !important;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+}
+
+.tool-menu-item-icon {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  color: currentColor;
+}
+
+.tool-menu-item:hover {
+  background: #eef2ff !important;
+  border-color: #667eea !important;
+}
+
+.tool-menu-item.active {
+  background: #12324a !important;
+  color: #ffffff !important;
+}
+
+.tool-menu-sep {
+  height: 1px;
+  background: #d7e0e8;
+  margin: 4px 0;
+}
+
+.tool-menu-colors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 6px;
+}
+
+.tool-menu-color-dot {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition: transform 120ms ease, border-color 120ms ease;
+}
+
+.tool-menu-color-dot:hover {
+  transform: scale(1.25);
+}
+
+.tool-menu-color-dot.active {
+  border-color: #12324a;
+  box-shadow: 0 0 0 2px #ffffff, 0 0 0 4px #12324a;
+}
+
+.tool-menu-color-custom {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f1f5f9 !important;
+  border: 2px dashed #c9d7e3 !important;
+}
+
+.tool-menu-color-custom svg {
+  width: 12px;
+  height: 12px;
+  color: #64748b;
+}
+
+/* ── Single-row bottom bar ────────────────────────────── */
+
+.annotation-panel.docked-bottom .panel-row-1 {
+  flex: 1 1 100%;
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: calc(8px * var(--toolbar-scale));
+  position: relative;
+}
+
+.annotation-panel.docked-bottom .panel-main-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: calc(8px * var(--toolbar-scale));
+}
+
+.annotation-panel.docked-bottom .toolbar-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: calc(8px * var(--toolbar-scale));
+}
+
+.annotation-panel.docked-bottom .panel-close-btn {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  flex: 0 0 auto;
+  margin-left: 0;
 }
 
 .toolbar-label {
@@ -2533,7 +2687,7 @@ button, input, select {
 .ai-empty-icon {
   width: 56px;
   height: 56px;
-  fill: #c9d7e3;
+  color: #c9d7e3;
 }
 
 .ai-empty p {

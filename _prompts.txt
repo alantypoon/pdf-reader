@@ -109,3 +109,20 @@ the scrolling speed seems to be doubled.
 when scrolling on desktop by mouse, the speed is normal.
 are there two event handling processes in the code that makes the mistake?
 or i should reduce the scrolling speed in a half?
+
+///
+
+when the buttons on the side bar is sufficient to be displayed, do not split them into two columns.
+
+////
+
+when fullscreen toggle is clicked or the screen is resized or sidebar is toggled or bottombar is toggled, refresh the layout including the sidebar buttons, the bottombar buttons and central content area. it must always show all the buttons and necessary elements i.e. close buttons, fullscreen toggle, sidebar and bottombar (when they are not closed) 
+
+////
+/// leave color button as a separate button on the bottombar.
+
+totally hide the zooming percentage controls
+add icons on the highlighter, pen, text, rubber, move, color.
+
+i.e. - 100% +. remove the annotation TOGGLE button, show the grouped buttons as mentioned before: it groups all the tool buttons (highlighter, pen, text, rubber, move) into one single button on the bottombar with a right button with a upward smaller button that will open a pullup menu to select the tools instead. default it is highlighter tool. keep the menu in this order: highlighter, pen, text, rubber, move, color.
+

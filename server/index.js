@@ -847,7 +847,7 @@ async function findPageImages(dataRoot, chapter, language, section) {
 /** Build the AI prompt for flash card and MCQ generation */
 function buildGenerationPrompt(chapter, sectionName, pageNum, language, extractedText) {
   const langInstruction = language === 'tc'
-    ? '所有內容必須使用繁體中文。問題和答案都要用中文書寫。'
+    ? '所有內容必須使用繁體中文（Traditional Chinese, NOT Simplified Chinese）。問題和答案都要用繁體中文書寫。'
     : 'All content must be in English.';
 
   return `You are an expert biology educator. Using ONLY the textbook content provided below (do NOT use any outside knowledge), generate learning materials to help a student study this specific page.
@@ -880,7 +880,7 @@ Output ONLY the JSON object, no markdown:
 
 function buildTranslationPrompt(chapter, sectionName, pageNum, targetLanguage, sourceContent, referenceText) {
   const langInstruction = targetLanguage === 'tc'
-    ? 'Translate everything into Traditional Chinese.'
+    ? 'Translate everything into Traditional Chinese (繁體中文, NOT Simplified Chinese 简体中文).'
     : 'Translate everything into English.';
 
   return `You are an expert bilingual biology educator. Translate the study materials below while preserving the meaning EXACTLY.
@@ -1092,7 +1092,7 @@ async function extractPageText(dataRoot, chapter, sectionNum, page, language) {
   };
 
   const extractPrompt = language === 'tc'
-    ? '從這些教科書頁面圖像中提取並轉錄所有文字內容。包括所有標題、正文和圖片說明。請用繁體中文輸出。'
+    ? '從這些教科書頁面圖像中提取並轉錄所有文字內容。包括所有標題、正文和圖片說明。必須用繁體中文（Traditional Chinese）輸出，不要使用簡體中文（Simplified Chinese）。'
     : 'Extract and transcribe all text content from these textbook page images. Include all headings, body text, and captions.';
 
   const formData = new FormData();

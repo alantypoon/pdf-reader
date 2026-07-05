@@ -30,6 +30,7 @@ function PdfPane({
   syncGroup,
   syncId,
   zoom = 1,
+  thumbCols = 4,
   fitMode = 'auto',
   fitRefreshToken = 0,
   onRenderScaleChange,
@@ -390,6 +391,17 @@ function PdfPane({
     };
   }, [isImageMode, pdfDoc, numPages, mode, zoom, fitMode, fitRefreshToken, contentWidth]);
 
+  // ── Scroll to current page in scrolling mode (prev/next buttons) ─
+  useEffect(() => {
+    if (mode !== 'scrolling') return;
+    const mount = scrollRef.current;
+    if (!mount || !mount.children.length) return;
+    const target = mount.querySelector(`[data-page="${currentPage}"]`);
+    if (target) {
+      mount.scrollTo({ top: target.offsetTop, behavior: 'instant' });
+    }
+  }, [mode, currentPage]);
+
   useEffect(() => {
     if (!syncGroup || mode !== 'scrolling') return;
     const mount = scrollRef.current;
@@ -558,6 +570,18 @@ function PdfPane({
     };
   }, [isImageMode, images, mode, syncGroup, syncId]);
 
+  // ── Scroll to current page in image scrolling mode (prev/next buttons) ─
+  useEffect(() => {
+    if (!isImageMode || mode !== 'scrolling') return;
+    const mount = scrollRef.current;
+    if (!mount || !mount.children.length) return;
+    const p = Math.max(1, Math.min(currentPage, mount.children.length || 1));
+    const target = mount.querySelector(`[data-page="${p}"]`);
+    if (target) {
+      mount.scrollTo({ top: target.offsetTop, behavior: 'instant' });
+    }
+  }, [isImageMode, mode, currentPage]);
+
   // ── Apply zoom to image-mode scrolling images ─────────────
   useEffect(() => {
     if (!isImageMode || mode !== 'scrolling') return;
@@ -665,7 +689,7 @@ function PdfPane({
 
         <div className="pdf-content" ref={contentRef} key={mode}>
           {thumbnailsOpen ? (
-            <div className="thumbnail-grid" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${Math.round(zoom * 800)}px, 1fr))` }}>
+            <div className="thumbnail-grid" style={{ gridTemplateColumns: `repeat(${Math.max(1, thumbCols)}, 1fr)` }}>
                 {thumbs.map((thumb) => (
                   <button
                     key={thumb.page}

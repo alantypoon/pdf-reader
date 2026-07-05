@@ -187,7 +187,7 @@ function App() {
   const [pageAnnotations, setPageAnnotations] = useState([]);
   const [tool, setTool] = useState(() => {
     if (!savedPrefs.annotationToolsOpen) return 'hand';
-    return ANNOTATION_TOOLS.has(savedPrefs.tool) ? savedPrefs.tool : 'pen';
+    return ANNOTATION_TOOLS.has(savedPrefs.tool) ? savedPrefs.tool : 'highlight';
   });
   const [annotationToolsOpen, setAnnotationToolsOpen] = useState(Boolean(savedPrefs.annotationToolsOpen));
   const [textColor, setTextColor] = useState(initialTextColor);
@@ -235,6 +235,10 @@ function App() {
   const [panelReservedHeight, setPanelReservedHeight] = useState(0);
   const [fitRefreshToken, setFitRefreshToken] = useState(0);
   const [singleRowToolbar, setSingleRowToolbar] = useState(false);
+  const [toolMenuOpen, setToolMenuOpen] = useState(false);
+  const [studyMenuOpen, setStudyMenuOpen] = useState(false);
+  const [lastStudyAction, setLastStudyAction] = useState('ai'); // 'ai' | 'resources' | 'search'
+  const [thumbCols, setThumbCols] = useState(4);
   const [panelPos, setPanelPos] = useState(() => {
     const saved = savedPrefs.panelPos;
     return (saved && typeof saved.x === 'number' && typeof saved.y === 'number')
@@ -314,6 +318,17 @@ function App() {
   const refreshFitForCurrentMode = useCallback(() => {
     setFitRefreshToken((current) => current + 1);
   }, []);
+
+  // Refresh layout when fullscreen, sidebar, panel, or window size changes
+  useEffect(() => {
+    const onResize = () => setFitRefreshToken((c) => c + 1);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  useEffect(() => {
+    setFitRefreshToken((c) => c + 1);
+  }, [isFullscreen, sidebarCollapsed, sidebarHidden, panelVisible]);
 
   const preferredAiDrawerLanguage = useMemo(() => {
     return selectedLanguage === 'tc' ? 'zh' : 'en';
@@ -2492,7 +2507,7 @@ function App() {
 
       const currentScale = toolbarScale || 1;
       const baseRequiredWidth = requiredWidth / currentScale;
-      const minScale = 0.52;
+      const minScale = 1.0;
       const maxScale = 1.2;
       const nextScale = Math.max(
         minScale,
@@ -2957,6 +2972,171 @@ function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [modalInfo, resourcesDrawerOpen, searchDrawerOpen, aiDrawerOpen, selectedChapter, structure]);
 
+  // ── Right-click context menu: Copy to clipboard ────────
+  const handleCopyToClipboard = useCallback(async () => {
+    if (typeof window === 'undefined') return;
+    const stage = stageRef.current;
+    const annotationCanvas = canvasRef.current;
+    if (!stage) return;
+
+    // Find only the current page's images
+    const currentPage = selectedPageRef.current;
+    const currentPageImages = stage.querySelectorAll(`img.page-img[data-page="${currentPage}"]`);
+    // Pagination mode: the single rendered canvas per pane
+    const pageCanvases = stage.querySelectorAll('.pdf-single-page canvas');
+
+    const result = await Swal.fire({
+      title: _('copyToClipboard'),
+      html: `
+        <div style="display:flex;flex-direction:column;gap:12px;text-align:left;padding:8px 0;">
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:0.95rem;">
+            <input type="checkbox" id="swal-copy-contents" checked style="width:18px;height:18px;accent-color:#667eea;" />
+            <span>${_('pageContents')} (p.${currentPage})</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:0.95rem;">
+            <input type="checkbox" id="swal-copy-annotations" checked style="width:18px;height:18px;accent-color:#667eea;" />
+            <span>${_('annotations')}</span>
+          </label>
+        </div>
+      `,
+      showCancelButton: true,
+      confirmButtonText: _('copy'),
+      cancelButtonText: _('cancel'),
+      focusConfirm: false,
+      preConfirm: () => {
+        const includeContents = document.getElementById('swal-copy-contents')?.checked;
+        const includeAnnotations = document.getElementById('swal-copy-annotations')?.checked;
+        return { includeContents, includeAnnotations };
+      },
+    });
+
+    if (!result.isConfirmed || !result.value) return;
+    const { includeContents, includeAnnotations } = result.value;
+    if (!includeContents && !includeAnnotations) return;
+
+    try {
+      const stageRect = stage.getBoundingClientRect();
+
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      const elements = [];
+
+      const addElement = (el) => {
+        const r = el.getBoundingClientRect();
+        if (r.width < 4 || r.height < 4) return;
+        elements.push({ el, x: r.left - stageRect.left, y: r.top - stageRect.top, w: r.width, h: r.height });
+        minX = Math.min(minX, r.left - stageRect.left);
+        minY = Math.min(minY, r.top - stageRect.top);
+        maxX = Math.max(maxX, r.left - stageRect.left + r.width);
+        maxY = Math.max(maxY, r.top - stageRect.top + r.height);
+      };
+
+      if (includeContents) {
+        // Current page images only (handles scrolling mode with data-page)
+        for (const img of currentPageImages) addElement(img);
+        // Pagination mode canvases (only the current page is visible)
+        for (const c of pageCanvases) addElement(c);
+      }
+
+      if (!Number.isFinite(minX)) throw new Error('No visible page content found');
+
+      const totalW = Math.round(Math.max(1, maxX - minX));
+      const totalH = Math.round(Math.max(1, maxY - minY));
+      const maxPixels = 8 * 1024 * 1024;
+      let dpr = Math.min(2, window.devicePixelRatio || 1);
+      if (totalW * dpr * totalH * dpr > maxPixels) {
+        dpr = Math.max(0.5, Math.sqrt(maxPixels / (totalW * totalH)));
+      }
+
+      const offscreen = document.createElement('canvas');
+      offscreen.width = Math.round(totalW * dpr);
+      offscreen.height = Math.round(totalH * dpr);
+      const ctx = offscreen.getContext('2d');
+      if (!ctx) throw new Error('Canvas 2D context unavailable');
+      ctx.scale(dpr, dpr);
+
+      // White background
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, totalW, totalH);
+
+      // Draw page contents
+      let drewSomething = false;
+      if (includeContents) {
+        for (const { el, x, y, w, h } of elements) {
+          const sx = x - minX;
+          const sy = y - minY;
+          try {
+            ctx.drawImage(el, sx, sy, w, h);
+            drewSomething = true;
+          } catch (e) {
+            // Tainted source — skip
+          }
+        }
+      }
+
+      // Draw annotations on top (may taint canvas — try but don't fail)
+      if (includeAnnotations && annotationCanvas && annotationCanvas.width > 0) {
+        const annRect = annotationCanvas.getBoundingClientRect();
+        const ax = annRect.left - stageRect.left - minX;
+        const ay = annRect.top - stageRect.top - minY;
+        try {
+          ctx.drawImage(annotationCanvas, ax, ay, annRect.width, annRect.height);
+          drewSomething = true;
+        } catch (e) {
+          // Tainted — annotations will be missing from the copy; that's OK
+        }
+      }
+
+      if (!drewSomething) throw new Error('Nothing could be drawn (all sources tainted or empty)');
+
+      // Export and copy
+      let blob = null;
+      // Try toBlob first
+      try {
+        blob = await new Promise((res, rej) => {
+          offscreen.toBlob((b) => (b && b.size > 0 ? res(b) : rej(new Error('empty'))), 'image/png');
+        });
+      } catch (_) { /* fall through */ }
+
+      // Fallback: data URL
+      if (!blob) {
+        try {
+          const dataUrl = offscreen.toDataURL('image/png');
+          const resp = await fetch(dataUrl);
+          if (!resp.ok) throw new Error('data URL fetch failed');
+          blob = await resp.blob();
+        } catch (e) {
+          throw new Error('image generation failed: ' + (e.message || 'unknown'));
+        }
+      }
+
+      if (!blob || blob.size === 0) throw new Error('generated image is empty');
+
+      await navigator.clipboard.write([
+        new ClipboardItem({ 'image/png': blob }),
+      ]);
+
+      if (isTestMode) {
+        console.log('[clipboard] copied', `${offscreen.width}x${offscreen.height}`, `${(blob.size / 1024).toFixed(0)}KB`);
+      }
+    } catch (err) {
+      console.error('[clipboard] copy failed:', err);
+      Swal.fire({
+        icon: 'error',
+        title: _('copyFailed'),
+        text: err.message || '',
+        timer: 3000,
+        showConfirmButton: false,
+      });
+    }
+  }, [_]);
+
+  const handleStageContextMenu = useCallback((e) => {
+    // Only show custom menu on the stage area (not on buttons/inputs etc.)
+    if (e.target.closest('button, input, a, [role="button"]')) return;
+    e.preventDefault();
+    handleCopyToClipboard();
+  }, [handleCopyToClipboard]);
+
   // ── Debounced search ────────────────────────────────────
   useEffect(() => {
     if (!searchQuery.trim()) {
@@ -3015,6 +3195,20 @@ function App() {
     return url;
   }, [modalInfo]);
 
+  const openStudyDrawer = useCallback((type) => {
+    // Toggle: if the requested drawer is already open, close it
+    if (type === 'resources' && resourcesDrawerOpen) { setResourcesDrawerOpen(false); return; }
+    if (type === 'ai' && aiDrawerOpen) { setAiDrawerOpen(false); return; }
+    if (type === 'search' && searchDrawerOpen) { setSearchDrawerOpen(false); return; }
+    // Close all others, then open the requested one
+    if (type !== 'resources') setResourcesDrawerOpen(false);
+    if (type !== 'ai') setAiDrawerOpen(false);
+    if (type !== 'search') setSearchDrawerOpen(false);
+    if (type === 'resources') setResourcesDrawerOpen(true);
+    else if (type === 'search') setSearchDrawerOpen(true);
+    else if (type === 'ai') handleAiGenerate();
+  }, [handleAiGenerate, resourcesDrawerOpen, aiDrawerOpen, searchDrawerOpen]);
+
   const restoreSidebarCollapsed = useCallback(() => {
     setSidebarCollapsed(true);
     setSidebarHidden(false);
@@ -3030,85 +3224,122 @@ function App() {
 
   const secondaryToolbar = (
     <div className="toolbar-group toolbar-secondary" ref={secondaryToolbarRef}>
-      <button
-        className={`tool-btn ${tool === 'pen' ? 'active' : ''}`}
-        disabled={isRightDrawerOpen}
-        onClick={() => setTool('pen')}
-        data-tooltip={_('pen')}
-        aria-label={_('pen')}
-      >
-        <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-          <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z" />
-        </svg>
-      </button>
-      <button
-        className={`tool-btn ${tool === 'highlight' ? 'active' : ''}`}
-        disabled={isRightDrawerOpen}
-        onClick={() => setTool('highlight')}
-        data-tooltip={_('highlighter')}
-        aria-label={_('highlighter')}
-      >
-        <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-          <path d="M15.24 2.36l-11 11a1 1 0 0 0-.24.59V17a1 1 0 0 0 1 1h3.05a1 1 0 0 0 .59-.24l11-11a1 1 0 0 0 0-1.41l-3.4-3.4a1 1 0 0 0-1.41 0zM5 16v-2.5l9-9L16.5 7l-9 9H5z" />
-          <rect x="2" y="18" width="20" height="3" rx="1" />
-        </svg>
-      </button>
-      <button
-        className={`tool-btn ${tool === 'text' ? 'active' : ''}`}
-        disabled={isRightDrawerOpen}
-        onClick={() => setTool('text')}
-        data-tooltip={_('textTool')}
-        aria-label={_('textTool')}
-      >
-        <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-          <path d="M5 4v3h5.5v12h3V7H19V4H5z" />
-        </svg>
-      </button>
-      <button
-        className={`tool-btn ${tool === 'eraser' ? 'active' : ''}`}
-        disabled={isRightDrawerOpen}
-        onClick={() => setTool('eraser')}
-        data-tooltip={_('eraser')}
-        aria-label={_('eraser')}
-      >
-        <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-          <path d="M16.24 3.56a2 2 0 0 1 2.83 0l1.37 1.37a2 2 0 0 1 0 2.83l-8.49 8.48H8.71L3.56 10.9a2 2 0 0 1 0-2.83l7.85-7.85a2 2 0 0 1 2.83 0l2 2.34zM5.68 9.49l4.28 4.27h1.16l7.9-7.9-1.36-1.37-1.44-1.44-1.31-1.54L5.68 9.49z" />
-          <path d="M3 20h18v2H3z" />
-        </svg>
-      </button>
-      <button
-        className={`tool-btn ${tool === 'move' ? 'active' : ''}`}
-        disabled={isRightDrawerOpen}
-        onClick={() => setTool('move')}
-        data-tooltip={_('moveTool')}
-        aria-label={_('moveTool')}
-      >
-        <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-          <path d="M12 2l3 3h-2v4h4V7l3 3-3 3v-2h-4v4h2l-3 3-3-3h2v-4H7v2l-3-3 3-3v2h4V5H9l3-3z" />
-        </svg>
-      </button>
-      <span className="toolbar-sep" />
-      <div className="color-picker-wrapper">
-        <button
-          className="tool-btn color-swatch-btn"
-          ref={colorBtnRef}
-          disabled={isRightDrawerOpen}
-          onClick={() => setColorPickerOpen((prev) => !prev)}
-          data-tooltip={_('color')}
-          aria-label={_('color')}
-          style={{ background: textColor }}
-        />
-        <input
-          ref={customColorInputRef}
-          type="color"
-          value={textColor}
-          onChange={(e) => setTextColor(e.target.value)}
-          style={{ position: 'absolute', opacity: 0, pointerEvents: 'none', width: 0, height: 0 }}
-          aria-hidden="true"
-          tabIndex={-1}
-        />
+      {/* Split button: tool + color selector */}
+      <div className="tool-menu-wrapper">
+        <div className="tool-split-btn">
+          <button
+            className="tool-btn tool-split-main"
+            disabled={isRightDrawerOpen}
+            data-tooltip={_('annotation')}
+            aria-label={_('annotation')}
+          >
+            {tool === 'highlight' && (
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                <path d="M15.24 2.36l-11 11a1 1 0 0 0-.24.59V17a1 1 0 0 0 1 1h3.05a1 1 0 0 0 .59-.24l11-11a1 1 0 0 0 0-1.41l-3.4-3.4a1 1 0 0 0-1.41 0zM5 16v-2.5l9-9L16.5 7l-9 9H5z" />
+                <rect x="2" y="18" width="20" height="3" rx="1" />
+              </svg>
+            )}
+            {tool === 'pen' && (
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z" />
+              </svg>
+            )}
+            {tool === 'text' && (
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                <path d="M5 4v3h5.5v12h3V7H19V4H5z" />
+              </svg>
+            )}
+            {tool === 'eraser' && (
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                <path d="M16.24 3.56a2 2 0 0 1 2.83 0l1.37 1.37a2 2 0 0 1 0 2.83l-8.49 8.48H8.71L3.56 10.9a2 2 0 0 1 0-2.83l7.85-7.85a2 2 0 0 1 2.83 0l2 2.34zM5.68 9.49l4.28 4.27h1.16l7.9-7.9-1.36-1.37-1.44-1.44-1.31-1.54L5.68 9.49z" />
+                <path d="M3 20h18v2H3z" />
+              </svg>
+            )}
+            {tool === 'move' && (
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                <path d="M12 2l3 3h-2v4h4V7l3 3-3 3v-2h-4v4h2l-3 3-3-3h2v-4H7v2l-3-3 3-3v2h4V5H9l3-3z" />
+              </svg>
+            )}
+            <span className="tool-color-indicator" style={{ background: textColor }} />
+          </button>
+          <button
+            className="tool-btn tool-split-arrow"
+            disabled={isRightDrawerOpen}
+            onClick={() => setToolMenuOpen((prev) => !prev)}
+            data-tooltip={_('selectTool')}
+            aria-label={_('selectTool')}
+          >
+            <svg viewBox="0 0 12 12" className="tool-menu-arrow" role="presentation" focusable="false">
+              <path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
+        {toolMenuOpen && (
+          <div className="tool-menu-popup">
+            <div className="tool-menu-section-label">{_('annotation')}</div>
+            <button className={`tool-menu-item ${tool === 'highlight' ? 'active' : ''}`} onClick={() => { setTool('highlight'); setToolMenuOpen(false); }}>
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon"><path d="M15.24 2.36l-11 11a1 1 0 0 0-.24.59V17a1 1 0 0 0 1 1h3.05a1 1 0 0 0 .59-.24l11-11a1 1 0 0 0 0-1.41l-3.4-3.4a1 1 0 0 0-1.41 0zM5 16v-2.5l9-9L16.5 7l-9 9H5z" /><rect x="2" y="18" width="20" height="3" rx="1" /></svg>
+              {_('highlighter')}
+            </button>
+            <button className={`tool-menu-item ${tool === 'pen' ? 'active' : ''}`} onClick={() => { setTool('pen'); setToolMenuOpen(false); }}>
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z" /></svg>
+              {_('pen')}
+            </button>
+            <button className={`tool-menu-item ${tool === 'text' ? 'active' : ''}`} onClick={() => { setTool('text'); setToolMenuOpen(false); }}>
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon"><path d="M5 4v3h5.5v12h3V7H19V4H5z" /></svg>
+              {_('textTool')}
+            </button>
+            <button className={`tool-menu-item ${tool === 'eraser' ? 'active' : ''}`} onClick={() => { setTool('eraser'); setToolMenuOpen(false); }}>
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon"><path d="M16.24 3.56a2 2 0 0 1 2.83 0l1.37 1.37a2 2 0 0 1 0 2.83l-8.49 8.48H8.71L3.56 10.9a2 2 0 0 1 0-2.83l7.85-7.85a2 2 0 0 1 2.83 0l2 2.34zM5.68 9.49l4.28 4.27h1.16l7.9-7.9-1.36-1.37-1.44-1.44-1.31-1.54L5.68 9.49z" /><path d="M3 20h18v2H3z" /></svg>
+              {_('rubber')}
+            </button>
+            <button className={`tool-menu-item ${tool === 'move' ? 'active' : ''}`} onClick={() => { setTool('move'); setToolMenuOpen(false); }}>
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon"><path d="M12 2l3 3h-2v4h4V7l3 3-3 3v-2h-4v4h2l-3 3-3-3h2v-4H7v2l-3-3 3-3v2h4V5H9l3-3z" /></svg>
+              {_('moveTool')}
+            </button>
+            <span className="tool-menu-sep" />
+            <button className="tool-menu-item tool-menu-erase-item" onClick={() => { setToolMenuOpen(false); openEraseDialog(); }}>
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM8 9h8v10H8V9zm7.5-5l-1-1h-5l-1 1H5v2h14V4h-3.5z" /></svg>
+              {_('erase')}
+            </button>
+            <span className="tool-menu-sep" />
+            <div className="tool-menu-section-label">{_('color')}</div>
+            <div className="tool-menu-colors">
+              {POPULAR_COLORS.map((c) => (
+                <button
+                  key={c}
+                  className={`tool-menu-color-dot ${textColor === c ? 'active' : ''}`}
+                  style={{ background: c }}
+                  onClick={() => { setTextColor(c); }}
+                  aria-label={c}
+                />
+              ))}
+              <button
+                className="tool-menu-color-dot tool-menu-color-custom"
+                onClick={() => {
+                  setToolMenuOpen(false);
+                  setTimeout(() => customColorInputRef.current?.click(), 60);
+                }}
+                aria-label={_('customColor')}
+              >
+                <svg viewBox="0 0 16 16" role="presentation" focusable="false">
+                  <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="1.2" strokeDasharray="2 1.5" />
+                  <path d="M8 3v3M8 10v3M3 8h3M10 8h3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        )}
       </div>
-      <span className="toolbar-sep" />
+      <input
+        ref={customColorInputRef}
+        type="color"
+        value={textColor}
+        onChange={(e) => setTextColor(e.target.value)}
+        style={{ position: 'absolute', opacity: 0, pointerEvents: 'none', width: 0, height: 0 }}
+        aria-hidden="true"
+        tabIndex={-1}
+      />
       <button
         className="tool-btn"
         disabled={isRightDrawerOpen || (!undoStack.length && !remarks.filter(r => r.chapter === selectedChapter && Number(r.page) === Number(selectedPage)).length)}
@@ -3132,17 +3363,54 @@ function App() {
         </svg>
       </button>
       <span className="toolbar-sep" />
-      <button
-        className="tool-btn"
-        disabled={isRightDrawerOpen}
-        onClick={openEraseDialog}
-        data-tooltip={_('erase')}
-        aria-label={_('erase')}
-      >
-        <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-          <path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM8 9h8v10H8V9zm7.5-5l-1-1h-5l-1 1H5v2h14V4h-3.5z" />
-        </svg>
-      </button>
+      {/* Study dropdown: Resources, AI Generation, Search */}
+      <div className="tool-menu-wrapper">
+        <div className="tool-split-btn">
+          <button
+            className="tool-btn tool-split-main"
+            data-tooltip={_('resources')}
+            aria-label={_('resources')}
+            onClick={() => openStudyDrawer(lastStudyAction)}
+          >
+            {lastStudyAction === 'resources' && (
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4a5 5 0 0 0 5-5 5 5 0 0 0-5-5z" /></svg>
+            )}
+            {lastStudyAction === 'search' && (
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" /></svg>
+            )}
+            {lastStudyAction === 'ai' && (
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"><path d="M10 7L9.48415 8.39405C8.80774 10.222 8.46953 11.136 7.80278 11.8028C7.13603 12.4695 6.22204 12.8077 4.39405 13.4842L3 14L4.39405 14.5158C6.22204 15.1923 7.13603 15.5305 7.80278 16.1972C8.46953 16.864 8.80774 17.778 9.48415 19.6059L10 21L10.5158 19.6059C11.1923 17.778 11.5305 16.864 12.1972 16.1972C12.864 15.5305 13.778 15.1923 15.6059 14.5158L17 14L15.6059 13.4842C13.778 12.8077 12.864 12.4695 12.1972 11.8028C11.5305 11.136 11.1923 10.222 10.5158 8.39405L10 7Z" /><path d="M18 3L17.7789 3.59745C17.489 4.38087 17.3441 4.77259 17.0583 5.05833C16.7726 5.34408 16.3809 5.48903 15.5975 5.77892L15 6L15.5975 6.22108C16.3809 6.51097 16.7726 6.65592 17.0583 6.94167C17.3441 7.22741 17.489 7.61913 17.7789 8.40255L18 9L18.2211 8.40255C18.511 7.61913 18.6559 7.22741 18.9417 6.94166C19.2274 6.65592 19.6191 6.51097 20.4025 6.22108L21 6L20.4025 5.77892C19.6191 5.48903 19.2274 5.34408 18.9417 5.05833C18.6559 4.77259 18.511 4.38087 18.2211 3.59745L18 3Z" /></svg>
+            )}
+          </button>
+          <button
+            className="tool-btn tool-split-arrow"
+            onClick={() => setStudyMenuOpen((prev) => !prev)}
+            data-tooltip={_('selectTool')}
+            aria-label={_('selectTool')}
+          >
+            <svg viewBox="0 0 12 12" className="tool-menu-arrow" role="presentation" focusable="false">
+              <path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
+        {studyMenuOpen && (
+          <div className="tool-menu-popup">
+            <div className="tool-menu-section-label">{_('resources')}</div>
+            <button className={`tool-menu-item ${resourcesDrawerOpen ? 'active' : ''}`} onClick={() => { openStudyDrawer('resources'); setLastStudyAction('resources'); setStudyMenuOpen(false); }}>
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4a5 5 0 0 0 5-5 5 5 0 0 0-5-5z" /></svg>
+              {_('resources')}
+            </button>
+            <button className={`tool-menu-item ${aiDrawerOpen ? 'active' : ''}`} onClick={() => { openStudyDrawer('ai'); setLastStudyAction('ai'); setStudyMenuOpen(false); }}>
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon"><path d="M7.5 5.5l.9-2.3L10.7 4 8.4 5l.9 2.3-2.2-.9-2.3.9.9-2.2-2.4-.8 2.4-.8zM15.5 9.5l1.2-2.8L19.5 8l-1.8.9 1.2 2.8-2.7-1.1-2.8 1.1 1.1-2.8-2.6-1 2.6-1zM5 20l1.8-5.5L12 16l-5.2 1.2L5.5 22 5 20z" fill="currentColor" /></svg>
+              {aiLoading ? _('generating') : _('aiGeneration')}
+            </button>
+            <button className={`tool-menu-item ${searchDrawerOpen ? 'active' : ''}`} onClick={() => { openStudyDrawer('search'); setLastStudyAction('search'); setStudyMenuOpen(false); }}>
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" /></svg>
+              {_('search')}
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 
@@ -3158,6 +3426,19 @@ function App() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [canRestoreHiddenSidebar, restoreSidebarCollapsed]);
+
+  // Close tool/study menus when clicking outside
+  useEffect(() => {
+    if (!toolMenuOpen && !studyMenuOpen) return undefined;
+    const onPointer = (e) => {
+      if (!e.target.closest('.tool-menu-wrapper')) {
+        setToolMenuOpen(false);
+        setStudyMenuOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', onPointer, true);
+    return () => document.removeEventListener('pointerdown', onPointer, true);
+  }, [toolMenuOpen, studyMenuOpen]);
 
   useEffect(() => {
     if (typeof document === 'undefined') return undefined;
@@ -3516,18 +3797,6 @@ function App() {
                 <path d="M4 5a2 2 0 0 1 2-2h13v17H6a2 2 0 0 0-2 2V5zm2 0v13h11V5H6z" fill="#1f4d6c" />
               </svg>
             </button>
-            {sectionOptionsCount > 1 && (
-              <button
-                className="sidebar-icon-btn"
-                onClick={() => moveSection(1)}
-                data-tooltip={_('nextSection')}
-                aria-label={_('nextSection')}
-              >
-                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                  <path d="M3 4h18v2H3V4zm0 7h18v2H3v-2zm0 7h18v2H3v-2z" fill="#1f4d6c" />
-                </svg>
-              </button>
-            )}
             {maxNavigablePage > 1 && (
               <button
                 className="sidebar-icon-btn"
@@ -3540,6 +3809,18 @@ function App() {
                   <line x1="8" y1="8" x2="16" y2="8" stroke="#f4f9fc" strokeWidth="1.5" />
                   <line x1="8" y1="12" x2="16" y2="12" stroke="#f4f9fc" strokeWidth="1.5" />
                   <line x1="8" y1="16" x2="13" y2="16" stroke="#f4f9fc" strokeWidth="1.5" />
+                </svg>
+              </button>
+            )}
+            {sectionOptionsCount > 1 && (
+              <button
+                className="sidebar-icon-btn"
+                onClick={() => moveSection(1)}
+                data-tooltip={_('nextSection')}
+                aria-label={_('nextSection')}
+              >
+                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                  <path d="M3 4h18v2H3V4zm0 7h18v2H3v-2zm0 7h18v2H3v-2z" fill="#1f4d6c" />
                 </svg>
               </button>
             )}
@@ -3581,34 +3862,6 @@ function App() {
               </svg>
             </button>
             <button
-              className={`sidebar-icon-btn ${resourcesDrawerOpen ? 'active' : ''}`}
-              onClick={() => setResourcesDrawerOpen((current) => !current)}
-              data-tooltip={_('toggleResources')}
-              aria-label={_('toggleResources')}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4a5 5 0 0 0 5-5 5 5 0 0 0-5-5z" fill={resourcesDrawerOpen ? '#ffffff' : '#1f4d6c'} />
-              </svg>
-            </button>
-            <button
-              className={`sidebar-icon-btn ${aiDrawerOpen ? 'active' : ''}`}
-              onClick={() => handleAiGenerate()}
-              data-tooltip={aiLoading ? _('generating') : _('aiGeneration')}
-              aria-label={_('aiGeneration')}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" fill={aiDrawerOpen ? '#ffffff' : '#1f4d6c'} />
-              </svg>
-              {aiGenerationPresent && (
-                <span className="ai-generated-tick ai-generated-tick-collapsed" aria-hidden="true">
-                  <svg viewBox="0 0 20 20" role="presentation" focusable="false">
-                    <path d="M3 10.5l4.1 4.1L17 4.8" fill="none" stroke="#ffffff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                </span>
-              )}
-            </button>
-
-            <button
               className={`sidebar-icon-btn ${panelVisible ? 'active' : ''}`}
               onClick={() => setPanelVisible((current) => !current)}
               data-tooltip={_('toggleToolbar')}
@@ -3622,41 +3875,6 @@ function App() {
             </button>
 
           </div>
-        )}
-
-        {!sidebarCollapsed && (
-          <label className="toggle-row">
-            <button
-              className={`toggle-btn icon-only ${resourcesDrawerOpen ? 'active' : ''}`}
-              onClick={() => setResourcesDrawerOpen((current) => !current)}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4a5 5 0 0 0 5-5 5 5 0 0 0-5-5z" />
-              </svg>
-              {_('resources')}
-            </button>
-          </label>
-        )}
-
-        {!sidebarCollapsed && (
-          <label className="toggle-row">
-            <button
-              className={`toggle-btn icon-only ai-generate-btn ${aiDrawerOpen ? 'active' : ''}`}
-              onClick={() => handleAiGenerate()}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" />
-              </svg>
-              {aiLoading ? _('generating') : _('aiGeneration')}
-              {aiGenerationPresent && (
-                <span className="ai-generated-tick" aria-hidden="true">
-                  <svg viewBox="0 0 20 20" role="presentation" focusable="false">
-                    <path d="M3 10.5l4.1 4.1L17 4.8" />
-                  </svg>
-                </span>
-              )}
-            </button>
-          </label>
         )}
 
         {!sidebarCollapsed && (
@@ -3678,7 +3896,7 @@ function App() {
   )}
 
       <main className="reader">
-        <div className={`book-stage ${displayMode} ${isBilingualView ? 'bilingual-layout' : ''} tool-${tool}`} ref={stageRef} onClick={tool === 'text' ? handleCanvasClick : undefined}>
+        <div className={`book-stage ${displayMode} ${isBilingualView ? 'bilingual-layout' : ''} tool-${tool}`} ref={stageRef} onClick={tool === 'text' ? handleCanvasClick : undefined} onContextMenu={handleStageContextMenu}>
           {visibleLanguages.map((language) => {
             const src = pageSources[language];
             const isImages = Array.isArray(src);
@@ -3702,6 +3920,7 @@ function App() {
                 syncGroup={isBilingualView && displayMode === 'scrolling' ? `${selectedChapter}-${selectedFile}-bilingual` : ''}
                 syncId={language}
                 zoom={zoomLevel}
+                thumbCols={thumbCols}
                 fitMode={fitMode}
                 fitRefreshToken={fitRefreshToken}
                 onRenderScaleChange={(scale) => {
@@ -3773,7 +3992,17 @@ function App() {
 
         {resourcesDrawerOpen && currentSection && (
           <div className="resources-drawer-overlay" onClick={() => setResourcesDrawerOpen(false)}>
-            <section className="section-resources resources-drawer" onClick={(e) => e.stopPropagation()}>
+            <section className="section-resources resources-drawer" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { const tag = (e.target.tagName || '').toLowerCase(); if (tag !== 'input' && tag !== 'textarea' && !e.target.isContentEditable) { e.preventDefault(); } } }}>
+            <div className="ai-drawer-header">
+              <h2>
+                <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="ai-header-icon">
+                  <path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4a5 5 0 0 0 5-5 5 5 0 0 0-5-5z" />
+                </svg>
+                {_('resources')}
+              </h2>
+              <button className="modal-close" onClick={() => setResourcesDrawerOpen(false)} aria-label={_('close')}>✕</button>
+            </div>
+            <div className="ai-drawer-body">
             {(selectedLanguage === 'bilingual' || selectedLanguage === 'en') && (
               <div className="resources-column">
                 <h3>{getSectionName(currentSection, 'en')}</h3>
@@ -3820,6 +4049,7 @@ function App() {
                 )}
               </div>
             )}
+            </div>
           </section>
           </div>
         )}
@@ -3832,26 +4062,9 @@ function App() {
         >
           <div className="panel-row-1">
           <div className="panel-main-controls" ref={mainControlsRef}>
-          <span
-            className="panel-drag-handle"
-            onPointerDown={handlePanelDragStart}
-            data-tooltip={_('dragToMove')}
-            aria-label={_('dragToMove')}
-          >
-            <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-              <circle cx="9" cy="5" r="1.5" />
-              <circle cx="15" cy="5" r="1.5" />
-              <circle cx="9" cy="12" r="1.5" />
-              <circle cx="15" cy="12" r="1.5" />
-              <circle cx="9" cy="19" r="1.5" />
-              <circle cx="15" cy="19" r="1.5" />
-            </svg>
-          </span>
           <div className="toolbar-group toolbar-primary" ref={primaryToolbarRef}>
-            <button onClick={() => jumpSection(-1)} data-tooltip={displayMode === 'scrolling' ? _('jumpPrevSection') : _('prevSection')} aria-label={displayMode === 'scrolling' ? _('jumpPrevSection') : _('prevSection')}>|&lt;</button>
-            <button onClick={() => jumpPage(-1)} data-tooltip={displayMode === 'scrolling' ? _('jumpPrevPage') : _('prevPage')} aria-label={displayMode === 'scrolling' ? _('jumpPrevPage') : _('prevPage')}>&lt;</button>
-            <button onClick={() => jumpPage(1)} data-tooltip={displayMode === 'scrolling' ? _('jumpNextPage') : _('nextPage')} aria-label={displayMode === 'scrolling' ? _('jumpNextPage') : _('nextPage')}>&gt;</button>
-            <button onClick={() => jumpSection(1)} data-tooltip={displayMode === 'scrolling' ? _('jumpNextSection') : _('nextSection')} aria-label={displayMode === 'scrolling' ? _('jumpNextSection') : _('nextSection')}>&gt;|</button>
+            <button className="icon-btn" onClick={() => jumpPage(-1)} data-tooltip={displayMode === 'scrolling' ? _('jumpPrevPage') : _('prevPage')} aria-label={displayMode === 'scrolling' ? _('jumpPrevPage') : _('prevPage')}>&lt;</button>
+            <button className="icon-btn" onClick={() => jumpPage(1)} data-tooltip={displayMode === 'scrolling' ? _('jumpNextPage') : _('nextPage')} aria-label={displayMode === 'scrolling' ? _('jumpNextPage') : _('nextPage')}>&gt;</button>
             {!fitDisabled && (
             <button className="icon-btn active" onClick={fitScreen} data-tooltip={fitButtonTitle} aria-label={fitButtonTitle} disabled={fitDisabled}>
               <svg viewBox="0 0 24 24" role="presentation" focusable="false">
@@ -3863,56 +4076,25 @@ function App() {
               </svg>
             </button>
             )}
-            <span className="toolbar-sep" />
-            <input
-              type="range"
-              className="zoom-slider"
-              min="5"
-              max={showThumbnails ? "100" : "200"}
-              value={Math.round(zoomLevel * 100)}
-              onChange={(e) => setZoomLevel(Number(e.target.value) / 100)}
-              data-tooltip={_('zoomLevel')}
-              aria-label={_('zoomLevel')}
-            />
-            <span className="zoom-label">{displayZoomPercent}%</span>
+            {showThumbnails && (
+              <>
+                <span className="toolbar-sep" />
+                <span className="zoom-label">{_('cols')}: {thumbCols}</span>
+                <input
+                  type="range"
+                  className="cols-slider"
+                  min="1"
+                  max="8"
+                  value={thumbCols}
+                  onChange={(e) => setThumbCols(Number(e.target.value))}
+                  data-tooltip={_('colsPerRow')}
+                  aria-label={_('colsPerRow')}
+                />
+              </>
+            )}
+
           </div>
-          {displayMode !== 'thumbnails' && (
-          <button
-            className={`tool-btn annotation-toggle-btn ${annotationToolsOpen ? 'active' : ''}`}
-            ref={annotationToggleRef}
-            disabled={isRightDrawerOpen}
-            onClick={() => {
-              setAnnotationToolsOpen((prev) => {
-                const next = !prev;
-                setTool(next ? 'pen' : 'hand');
-                return next;
-              });
-            }}
-            data-tooltip={_('toggleAnnotations')}
-            aria-label={_('toggleAnnotations')}
-          >
-            <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-              <path d="M12 4l5.5 16h-2.3l-1.25-3.8H10.05L8.8 20H6.5L12 4zm-1.3 10.3h2.6L12 9.7l-1.3 4.6z" />
-            </svg>
-          </button>
-          )}
-          <button
-            className="tool-btn search-btn"
-            ref={searchButtonRef}
-            onClick={() => {
-              if (aiDrawerOpen) setAiDrawerOpen(false);
-              if (resourcesDrawerOpen) setResourcesDrawerOpen(false);
-              setSearchDrawerOpen(true);
-            }}
-            data-tooltip={_('search')}
-            aria-label={_('search')}
-          >
-            <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-              <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
-            </svg>
-          </button>
-          {singleRowToolbar && annotationToolsOpen && displayMode !== 'thumbnails' && secondaryToolbar}
-          </div>
+          {displayMode !== 'thumbnails' && secondaryToolbar}
           <button
             className="tool-btn panel-close-btn panel-close-accent"
             ref={closeButtonRef}
@@ -3925,11 +4107,7 @@ function App() {
             </svg>
           </button>
           </div>
-          {!singleRowToolbar && annotationToolsOpen && displayMode !== 'thumbnails' && (
-          <div className="panel-row-2 annotation-row">
-          {secondaryToolbar}
           </div>
-          )}
         </section>
         )}
 
@@ -3942,7 +4120,7 @@ function App() {
             <div className="ai-drawer-header">
               <h2>
                 <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="ai-header-icon">
-                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" />
+                  <path d="M10 7L9.48415 8.39405C8.80774 10.222 8.46953 11.136 7.80278 11.8028C7.13603 12.4695 6.22204 12.8077 4.39405 13.4842L3 14L4.39405 14.5158C6.22204 15.1923 7.13603 15.5305 7.80278 16.1972C8.46953 16.864 8.80774 17.778 9.48415 19.6059L10 21L10.5158 19.6059C11.1923 17.778 11.5305 16.864 12.1972 16.1972C12.864 15.5305 13.778 15.1923 15.6059 14.5158L17 14L15.6059 13.4842C13.778 12.8077 12.864 12.4695 12.1972 11.8028C11.5305 11.136 11.1923 10.222 10.5158 8.39405L10 7Z" /><path d="M18 3L17.7789 3.59745C17.489 4.38087 17.3441 4.77259 17.0583 5.05833C16.7726 5.34408 16.3809 5.48903 15.5975 5.77892L15 6L15.5975 6.22108C16.3809 6.51097 16.7726 6.65592 17.0583 6.94167C17.3441 7.22741 17.489 7.61913 17.7789 8.40255L18 9L18.2211 8.40255C18.511 7.61913 18.6559 7.22741 18.9417 6.94166C19.2274 6.65592 19.6191 6.51097 20.4025 6.22108L21 6L20.4025 5.77892C19.6191 5.48903 19.2274 5.34408 18.9417 5.05833C18.6559 4.77259 18.511 4.38087 18.2211 3.59745L18 3Z" />
                 </svg>
                 {_('aiStudyMaterials')}
               </h2>
@@ -3967,7 +4145,14 @@ function App() {
               </div>
             </div>
 
-            <div className="ai-drawer-body">
+            <div className="ai-drawer-body" onKeyDown={(e) => {
+              if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                const tag = (e.target.tagName || '').toLowerCase();
+                if (tag !== 'input' && tag !== 'textarea' && !e.target.isContentEditable) {
+                  e.preventDefault(); // let window handler navigate pages instead
+                }
+              }
+            }}>
               {isTestMode && (
                 <div className="ai-lookup-key">
                   <strong>Lookup Key</strong>
@@ -4162,8 +4347,9 @@ function App() {
 
               {!aiContent && !aiLoading && !aiError && (
                 <div className="ai-empty">
-                  <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="ai-empty-icon">
-                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" />
+                  <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="ai-empty-icon" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round">
+                    <path d="M10 7L9.48415 8.39405C8.80774 10.222 8.46953 11.136 7.80278 11.8028C7.13603 12.4695 6.22204 12.8077 4.39405 13.4842L3 14L4.39405 14.5158C6.22204 15.1923 7.13603 15.5305 7.80278 16.1972C8.46953 16.864 8.80774 17.778 9.48415 19.6059L10 21L10.5158 19.6059C11.1923 17.778 11.5305 16.864 12.1972 16.1972C12.864 15.5305 13.778 15.1923 15.6059 14.5158L17 14L15.6059 13.4842C13.778 12.8077 12.864 12.4695 12.1972 11.8028C11.5305 11.136 11.1923 10.222 10.5158 8.39405L10 7Z" />
+                    <path d="M18 3L17.7789 3.59745C17.489 4.38087 17.3441 4.77259 17.0583 5.05833C16.7726 5.34408 16.3809 5.48903 15.5975 5.77892L15 6L15.5975 6.22108C16.3809 6.51097 16.7726 6.65592 17.0583 6.94167C17.3441 7.22741 17.489 7.61913 17.7789 8.40255L18 9L18.2211 8.40255C18.511 7.61913 18.6559 7.22741 18.9417 6.94166C19.2274 6.65592 19.6191 6.51097 20.4025 6.22108L21 6L20.4025 5.77892C19.6191 5.48903 19.2274 5.34408 18.9417 5.05833C18.6559 4.77259 18.511 4.38087 18.2211 3.59745L18 3Z" />
                   </svg>
                   <p>{_('aiEmptyPrompt')}</p>
                 </div>
@@ -4175,7 +4361,7 @@ function App() {
 
       {searchDrawerOpen && (
         <div className="resources-drawer-overlay" onClick={() => setSearchDrawerOpen(false)}>
-          <section className="ai-drawer search-drawer" onClick={(e) => e.stopPropagation()}>
+          <section className="ai-drawer search-drawer" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { const tag = (e.target.tagName || '').toLowerCase(); if (tag !== 'input' && tag !== 'textarea' && !e.target.isContentEditable) { e.preventDefault(); } } }}>
             <div className="ai-drawer-header">
               <h2>
                 <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="ai-header-icon">
@@ -4193,7 +4379,6 @@ function App() {
                   placeholder={_('searchPlaceholder')}
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  autoFocus
                 />
                 <div className="search-scope-row">
                   <select
