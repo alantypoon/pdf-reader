@@ -89,14 +89,14 @@ function PdfPane({
 
   // Keep renderedPage in sync with currentPage
   useEffect(() => {
-    // In pagination mode, PdfPane manages its own page tracking via the draw effect.
-    // In other modes (thumbnails, scrolling), sync from the parent's currentPage.
-    if (mode === 'pagination') return;
+    // In PDF pagination mode, PdfPane manages its own page tracking via the draw effect.
+    // In image mode and other modes, sync from the parent's currentPage.
+    if (!isImageMode && mode === 'pagination') return;
     setRenderedPage((prev) => {
       const page = Math.max(1, Math.min(currentPage, numPages || 1));
       return prev !== page ? page : prev;
     });
-  }, [mode, currentPage, numPages]);
+  }, [isImageMode, mode, currentPage, numPages]);
 
   useEffect(() => {
     const node = contentRef.current;

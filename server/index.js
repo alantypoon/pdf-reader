@@ -1043,7 +1043,7 @@ async function runGenerationPrompt(prompt) {
   genFormData.append('apiKey', AIGATEWAY_APIKEY);
   genFormData.append('model', genModel);
   genFormData.append('prompt', prompt);
-  genFormData.append('max_tokens', '1000');
+  genFormData.append('max_tokens', '500');
 
   const genController = new AbortController();
   const genTimeoutId = setTimeout(() => genController.abort(), 120000);
@@ -1229,6 +1229,21 @@ function hasStoredAiContent(doc) {
   return !!(doc && (doc.en || doc.zh));
 }
 
+/** Check if an AI content value is a valid generated content object (not an error envelope) */
+function isValidAiContent(value) {
+  if (!value || typeof value !== 'object') return false;
+  // Error envelopes from the gateway have 'success', 'provider', 'error' keys
+  if (value.error && (value.success !== undefined || value.provider)) return false;
+  // Must have at least one of the expected content types
+  return !!(value.summary || value.flashcards || value.mcq);
+}
+
+/** Check if the document has broken zh content (error envelope instead of real content) */
+function hasBrokenZh(doc) {
+  if (!doc?.zh) return false;
+  return !isValidAiContent(doc.zh);
+}
+
 /** Check DB for existing generated content for a language */
 async function getCachedAiContent(subjectId, bookId, sectionNum, page, language) {
   const doc = await findAiGenerationDocument(buildAiIdentity({ subjectId, bookId, sectionId: sectionNum, pageId: page }));
@@ -1271,12 +1286,44 @@ app.post('/api/ai-generate', async (request, response) => {
     const results = {};
 
     const cachedDoc = await getAiContentDocument(subjectId, bookId, sectionNum, page);
-    if (!forceRegenerate && hasStoredAiContent(cachedDoc)) {
-      console.log('[ai-generate] using cached ai content from database');
+
+    // ── Case 1: Both en and zh are valid → return cached ──
+    if (!forceRegenerate && hasStoredAiContent(cachedDoc) && !hasBrokenZh(cachedDoc)) {
+      console.log('[ai-generate] using cached ai content from database (both en + zh valid)');
       results.en = cachedDoc.en;
       results.tc = cachedDoc.zh;
       debugInfo.cache = 'existing-document-hit';
-    } else {
+    }
+    // ── Case 2: en exists but zh is missing or broken → translate en→zh directly ──
+    else if (!forceRegenerate && cachedDoc?.en && isValidAiContent(cachedDoc.en) && (!cachedDoc.zh || hasBrokenZh(cachedDoc))) {
+      console.log('[ai-generate] en content exists, zh missing/broken — translating directly from en');
+      debugInfo.workflow = 'translate-en-to-zh-directly';
+      results.en = cachedDoc.en;
+
+      try {
+        const chinese = await translateGeneratedContent(
+          bookId,
+          sectionName,
+          page,
+          'tc',
+          cachedDoc.en,
+          '' // no reference text needed, we have the en content
+        );
+        results.tc = chinese.content;
+        debugInfo.generationRaw.tc = chinese.debug?.generationRaw || '';
+      } catch (err) {
+        console.error('[ai-generate] direct en→zh translation failed —', err.message);
+        results.tc = { error: err.message };
+        debugInfo.errors.tc = err.message;
+      }
+
+      // Save the updated document (en preserved, zh added)
+      if (results.tc && !results.tc.error) {
+        await saveAiContent(subjectId, bookId, sectionNum, page, 'tc', results.tc, userId);
+      }
+    }
+    // ── Case 3: Nothing cached or force-regenerate → full generation ──
+    else {
       try {
         const english = await generateForLanguage(dataRoot, bookId, sectionNum, page, 'en', sectionName);
         results.en = english.content;
@@ -1475,12 +1522,15 @@ app.get('/api/ai-content', async (request, response) => {
     if (!doc) {
       return response.json({ content: null });
     }
+    // Filter out broken zh content (error envelopes from failed gateway calls)
+    const validZh = isValidAiContent(doc.zh) ? doc.zh : null;
     // If a specific language is requested, return just that; otherwise return both
     if (language === 'en' || language === 'tc') {
       const langField = language === 'tc' ? 'zh' : 'en';
-      response.json({ content: doc[langField] || null, updatedAt: doc.updatedAt || null });
+      const value = langField === 'zh' ? validZh : (doc[langField] || null);
+      response.json({ content: value, updatedAt: doc.updatedAt || null });
     } else {
-      response.json({ content: { en: doc.en || null, zh: doc.zh || null }, updatedAt: doc.updatedAt || null });
+      response.json({ content: { en: doc.en || null, zh: validZh }, updatedAt: doc.updatedAt || null });
     }
   } catch (err) {
     console.error('[ai-content] GET error:', err);

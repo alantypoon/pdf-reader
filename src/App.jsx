@@ -1003,6 +1003,11 @@ function App() {
     return () => cancelAnimationFrame(raf);
   }, [pageAnnotations, allSectionAnnotations, pageSources, displayMode, selectedLanguage, sidebarCollapsed, zoomLevel, fitMode, fitRefreshToken, visibleLanguages, redrawTick]);
 
+  // Sync annotationToolsOpen with panelVisible
+  useEffect(() => {
+    setAnnotationToolsOpen(panelVisible);
+  }, [panelVisible]);
+
   useEffect(() => {
     if (!annotationToolsOpen) {
       if (tool !== 'hand') {
@@ -1208,7 +1213,6 @@ function App() {
   // Default zoom to 25% for thumbnails, restore to 100% when leaving
   useEffect(() => {
     if (displayMode === 'thumbnails') {
-      setAnnotationToolsOpen(false);
       setTool('hand');
       setZoomLevel((prev) => {
         // Clamp to 100% max for thumbnails; default to 25% if at pagination default
@@ -1253,6 +1257,69 @@ function App() {
   }, []);
 
   const changePage = (direction) => {
+    if (direction > 0) {
+      // ── Going forward ──────────────────────────────────
+      if (selectedPage >= maxNavigablePage) {
+        // At last page of current section → try next section
+        if (currentChapter?.contents?.length) {
+          const sections = currentChapter.contents.map((item) => Number(item.page || item.section));
+          const currentIndex = sections.findIndex((page) => page === Number(selectedFile));
+          if (currentIndex >= 0 && currentIndex < sections.length - 1) {
+            setSelectedFile(sections[currentIndex + 1]);
+            setSelectedPage(1);
+            return;
+          }
+        }
+        // At last section of current book → try first section of next book
+        if (structure?.length) {
+          const bookIndex = structure.findIndex((ch) => ch.id === selectedChapter);
+          if (bookIndex >= 0 && bookIndex < structure.length - 1) {
+            const nextBook = structure[bookIndex + 1];
+            const nextSections = nextBook?.contents?.map((item) => Number(item.page || item.section)) || [];
+            if (nextSections.length > 0) {
+              setSelectedChapter(nextBook.id);
+              setSelectedFile(nextSections[0]);
+              setSelectedPage(1);
+              return;
+            }
+          }
+        }
+        return; // nowhere to go
+      }
+    } else {
+      // ── Going backward ─────────────────────────────────
+      if (selectedPage <= 1) {
+        // At first page of current section → try previous section
+        if (currentChapter?.contents?.length) {
+          const sections = currentChapter.contents.map((item) => Number(item.page || item.section));
+          const currentIndex = sections.findIndex((page) => page === Number(selectedFile));
+          if (currentIndex > 0) {
+            // Navigate to previous section; setSelectedPage to MAX so the
+            // clamping effect (see below) will cap it to the actual last page.
+            setSelectedFile(sections[currentIndex - 1]);
+            setSelectedPage(Number.MAX_SAFE_INTEGER);
+            return;
+          }
+        }
+        // At first section of current book → try last section of previous book
+        if (structure?.length) {
+          const bookIndex = structure.findIndex((ch) => ch.id === selectedChapter);
+          if (bookIndex > 0) {
+            const prevBook = structure[bookIndex - 1];
+            const prevSections = prevBook?.contents?.map((item) => Number(item.page || item.section)) || [];
+            if (prevSections.length > 0) {
+              setSelectedChapter(prevBook.id);
+              setSelectedFile(prevSections[prevSections.length - 1]);
+              setSelectedPage(Number.MAX_SAFE_INTEGER);
+              return;
+            }
+          }
+        }
+        return; // nowhere to go
+      }
+    }
+
+    // ── Normal page change within current section ─────────
     setSelectedPage((current) => {
       const next = current + direction;
       const max = maxNavigablePage;
@@ -1831,7 +1898,10 @@ function App() {
         && canvasPoint.y >= imageRect.top
         && canvasPoint.y <= imageRect.top + imageRect.height;
     });
-    if (!langId) return null;
+    if (!langId) {
+      console.log('[draw] resolveAnnotationTarget — no langId matched. pageImageRects:', JSON.stringify(Object.keys(pageImageRects)), 'canvasPoint:', canvasPoint, 'visibleLanguages:', visibleLanguages);
+      return null;
+    }
     const imageRect = pageImageRects[langId];
     return {
       langId,
@@ -2064,12 +2134,17 @@ function App() {
   };
 
   const handlePointerDown = (event) => {
-    if (tool !== 'pen' && tool !== 'highlight' && tool !== 'move') return;
+    console.log('[draw] pointerdown — tool:', tool, 'pointerId:', event.pointerId, 'target:', event.target?.tagName, event.target?.className);
+    if (tool !== 'pen' && tool !== 'highlight' && tool !== 'move') {
+      console.log('[draw] SKIP: tool not pen/highlight/move');
+      return;
+    }
 
     // Multi-touch: if another pointer is already down, cancel any in-progress
     // drawing and let both fingers scroll (don't draw).
     activePointersRef.current.add(event.pointerId);
     if (activePointersRef.current.size > 1) {
+      console.log('[draw] SKIP: multi-touch (' + activePointersRef.current.size + ' pointers)');
       // Cancel in-progress stroke
       if (drawingRef.current && currentStrokeRef.current) {
         drawingRef.current = false;
@@ -2079,7 +2154,11 @@ function App() {
     }
 
     const target = resolveAnnotationTarget(event);
-    if (!target) return;
+    if (!target) {
+      console.log('[draw] SKIP: resolveAnnotationTarget returned null');
+      return;
+    }
+    console.log('[draw] target found — langId:', target.langId, 'point:', target.point);
     setActiveAnnotationLangId(target.langId);
 
     if (tool === 'move') {
@@ -2094,11 +2173,9 @@ function App() {
     }
 
     drawingRef.current = true;
+    console.log('[draw] drawingRef set to TRUE');
     // Prevent browser from interpreting this drag as a scroll
     event.preventDefault();
-    if (event.target && typeof event.target.setPointerCapture === 'function') {
-      event.target.setPointerCapture(event.pointerId);
-    }
     currentStrokeRef.current = {
       type: 'stroke',
       chapter: selectedChapter,
@@ -2164,22 +2241,19 @@ function App() {
     // Handle drawing stroke
     if (!drawingRef.current || !currentStrokeRef.current) return;
     const target = resolveAnnotationTarget(event);
-    if (!target || target.langId !== currentStrokeRef.current.langId || target.pageNum !== currentStrokeRef.current.page) {
-      // Pointer left the canvas, crossed into a different language pane, or moved to another page — stop the stroke.
-      const completedStroke = currentStrokeRef.current;
-      if (completedStroke && completedStroke.points.length > 0) {
-        drawingRef.current = false;
-        currentStrokeRef.current = null;
-        saveRemark({
-          ...completedStroke,
-          coordsNormalized: true,
-          ...normalizeAnnotationCoords(completedStroke, getPageImageRects()[displayModeRef.current === 'scrolling' ? `${completedStroke.langId}-${completedStroke.page}` : completedStroke.langId])
-        });
+    if (!target || target.langId !== currentStrokeRef.current.langId || (target.pageNum || selectedPage) !== (currentStrokeRef.current.page || selectedPage)) {
+      // Pointer is outside the page image or crossed language panes — skip this event
+      // but keep the stroke alive (don't stop it). It will be saved on pointerup.
+      if (!target) {
+        console.log('[draw] pointermove — resolveAnnotationTarget returned null');
+      } else {
+        console.log('[draw] pointermove — langId/page mismatch: target=' + target.langId + '/' + target.pageNum + ' stroke=' + currentStrokeRef.current.langId + '/' + currentStrokeRef.current.page);
       }
       return;
     }
     const nextPoint = target.point;
     currentStrokeRef.current.points.push(nextPoint);
+    console.count('[draw] pointermove points');
     const context = canvasRef.current.getContext('2d');
     const rect = canvasRef.current.getBoundingClientRect();
     redraw(context, rect.width, rect.height, [...(displayMode === 'scrolling' ? allSectionAnnotations : pageAnnotations), currentStrokeRef.current]);
@@ -2227,10 +2301,7 @@ function App() {
     drawingRef.current = false;
     const stroke = currentStrokeRef.current;
     currentStrokeRef.current = null;
-    // Release pointer capture so scrolling resumes
-    if (event.target && typeof event.target.releasePointerCapture === 'function') {
-      try { event.target.releasePointerCapture(event.pointerId); } catch {}
-    }
+    console.log('[draw] pointerup — stroke points:', stroke.points.length);
     // Normalize coordinates to percentages relative to page image size
     const pageImageRects = getPageImageRects();
     const isScrollMode = displayModeRef.current === 'scrolling';
@@ -2241,6 +2312,30 @@ function App() {
       : stroke;
     await saveRemark(normalizedStroke);
   };
+
+  // Native pointermove/pointerup listeners on the DOCUMENT to work around
+  // browser quirks where pointer capture doesn't dispatch to the target element.
+  useEffect(() => {
+    const onNativeMove = (e) => {
+      if (!drawingRef.current && !moveAnnotationRef.current) return;
+      console.count('[draw] document pointermove — drawing=' + drawingRef.current + ' move=' + !!moveAnnotationRef.current);
+      handlePointerMove(e);
+    };
+    const onNativeUp = (e) => {
+      if (!drawingRef.current && !moveAnnotationRef.current) return;
+      console.log('[draw] document pointerup — drawing=' + drawingRef.current);
+      handlePointerUp(e);
+    };
+
+    document.addEventListener('pointermove', onNativeMove, true);
+    document.addEventListener('pointerup', onNativeUp, true);
+    document.addEventListener('pointercancel', onNativeUp, true);
+    return () => {
+      document.removeEventListener('pointermove', onNativeMove, true);
+      document.removeEventListener('pointerup', onNativeUp, true);
+      document.removeEventListener('pointercancel', onNativeUp, true);
+    };
+  }, [handlePointerMove, handlePointerUp]);
 
   const commitTextAnnotation = async () => {
     const el = textInputRef.current;
@@ -3459,6 +3554,21 @@ function App() {
     return () => document.removeEventListener('pointerdown', onPointer, true);
   }, [toolMenuOpen, studyMenuOpen]);
 
+  // DEBUG: track all pointer events on document
+  useEffect(() => {
+    const onDown = (e) => console.log('[debug-doc] pointerdown — target:', e.target?.tagName, e.target?.className?.slice(0, 30));
+    const onMove = (e) => console.count('[debug-doc] pointermove');
+    const onUp = (e) => console.log('[debug-doc] pointerup');
+    document.addEventListener('pointerdown', onDown, true);
+    document.addEventListener('pointermove', onMove, true);
+    document.addEventListener('pointerup', onUp, true);
+    return () => {
+      document.removeEventListener('pointerdown', onDown, true);
+      document.removeEventListener('pointermove', onMove, true);
+      document.removeEventListener('pointerup', onUp, true);
+    };
+  }, []);
+
   useEffect(() => {
     if (typeof document === 'undefined') return undefined;
     const onFullscreenChange = () => setIsFullscreen(Boolean(document.fullscreenElement));
@@ -3989,7 +4099,7 @@ function App() {
             className="annotation-canvas"
             style={{
               pointerEvents: tool === 'hand' ? 'none' : 'auto',
-              touchAction: tool === 'hand' ? 'pan-x pan-y' : displayMode === 'pagination' ? 'pan-y' : 'none',
+              touchAction: tool === 'hand' ? 'pan-x pan-y' : 'none',
               cursor: tool === 'move' ? 'move' : tool === 'eraser' ? 'pointer' : tool === 'text' ? 'text' : tool === 'pen' || tool === 'highlight' ? 'crosshair' : 'default'
             }}
             onPointerDown={handlePointerDown}

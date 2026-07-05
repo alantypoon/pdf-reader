@@ -158,6 +158,9 @@ def content_exists(subject_id, book_id, section_id, page_id):
     def _is_complete(lang_content):
         if not isinstance(lang_content, dict):
             return False
+        # Skip error envelopes (failed gateway calls)
+        if lang_content.get('error') and (lang_content.get('success') is not None or lang_content.get('provider')):
+            return False
         has_summary = isinstance(lang_content.get('summary'), list) and len(lang_content.get('summary', [])) > 0
         has_flashcards = isinstance(lang_content.get('flashcards'), list) and len(lang_content.get('flashcards', [])) > 0
         has_mcq = isinstance(lang_content.get('mcq'), list) and len(lang_content.get('mcq', [])) > 0
@@ -176,6 +179,32 @@ def content_exists(subject_id, book_id, section_id, page_id):
             missing.append('zh')
         print(f'    [incomplete] missing {", ".join(missing)} — will regenerate')
     return bool(en_ok and zh_ok)
+
+
+def en_exists_zh_missing(subject_id, book_id, section_id, page_id):
+    """Return (en_content, True) if en is complete but zh is missing/broken, else (None, False)."""
+    doc = _find_ai_doc(subject_id, book_id, section_id, page_id)
+    if not doc:
+        return None, False
+
+    def _is_complete(lang_content):
+        if not isinstance(lang_content, dict):
+            return False
+        if lang_content.get('error') and (lang_content.get('success') is not None or lang_content.get('provider')):
+            return False
+        has_summary = isinstance(lang_content.get('summary'), list) and len(lang_content.get('summary', [])) > 0
+        has_flashcards = isinstance(lang_content.get('flashcards'), list) and len(lang_content.get('flashcards', [])) > 0
+        has_mcq = isinstance(lang_content.get('mcq'), list) and len(lang_content.get('mcq', [])) > 0
+        return has_summary and has_flashcards and has_mcq
+
+    en = doc.get('en') or {}
+    zh = doc.get('zh') or {}
+    en_ok = _is_complete(en)
+    zh_ok = _is_complete(zh)
+
+    if en_ok and not zh_ok:
+        return en, True
+    return None, False
 
 
 def _normalize_generated_content(content):
@@ -667,11 +696,26 @@ def generate_for_page(subject, book, section_num, page_num, section_name, force=
     """
     Generate English + Chinese study materials for one page.
     Steps: extract EN text → generate EN → extract ZH text → translate to ZH → save.
+    If EN already exists but ZH is missing/broken, translates directly from EN → ZH.
     """
     label = f'{subject}/{book}/{section_num}/{page_num}'
 
     if not force and content_exists(subject, book, section_num, page_num):
         return 'skipped'
+
+    # ── Shortcut: en exists, zh missing → translate directly ──
+    if not force:
+        existing_en, has_en = en_exists_zh_missing(subject, book, section_num, page_num)
+        if has_en:
+            print(f'  [{label}] English content exists, zh missing — translating directly from en')
+            zh_prompt = _build_translation_prompt(book, section_name, page_num, 'tc', existing_en, '')
+            zh_result = _run_vllm(zh_prompt)
+            if 'raw' in zh_result:
+                print(f'  [{label}]   ⚠  Chinese translation returned unparsed raw content')
+            # Only save zh, preserve existing en from DB
+            save_content(subject, book, section_num, page_num, existing_en, zh_result)
+            print(f'  [{label}] ✓  Saved zh translation to MongoDB')
+            return 'translated'
 
     print(f'  [{label}] Extracting English text …')
     en_text = extract_page_text(subject, book, section_num, page_num, 'en')
