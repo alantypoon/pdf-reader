@@ -259,6 +259,7 @@ function App() {
   const dragRef = useRef({ dragging: false, startX: 0, startY: 0, posX: 0, posY: 0 });
   const pageViewRef = useRef({ key: '', startedAt: 0, loginLogged: false });
   const touchScrollingRef = useRef(false);
+  const lastTouchScrollAtRef = useRef(0);
 
   // Position the color picker popover relative to the color button
   useLayoutEffect(() => {
@@ -1013,6 +1014,7 @@ function App() {
     const onWheel = (e) => {
       // Skip wheel events synthesized from touch gestures — touch handler already scrolls.
       if (touchScrollingRef.current) return;
+      if (Date.now() - lastTouchScrollAtRef.current < 250) return;
       const scrollTarget = getScrollTargetForGesture(e);
       if (!scrollTarget) return;
       e.preventDefault();
@@ -1060,6 +1062,7 @@ function App() {
         const midpoint = getTouchMidpoint(e.touches);
         if (!midpoint) return;
         e.preventDefault();
+        lastTouchScrollAtRef.current = Date.now();
         touchStartX = midpoint.x;
         touchStartY = midpoint.y;
         accumulatedDeltaX = 0;
@@ -1088,6 +1091,7 @@ function App() {
       const midpoint = getTouchMidpoint(e.touches);
       if (!midpoint) return;
       e.preventDefault();
+      lastTouchScrollAtRef.current = Date.now();
       accumulatedDeltaX += touchStartX - midpoint.x;
       accumulatedDeltaY += touchStartY - midpoint.y;
       touchStartX = midpoint.x;
@@ -1101,6 +1105,7 @@ function App() {
     const onTouchEnd = () => {
       touchActive = false;
       touchScrollingRef.current = false;
+      lastTouchScrollAtRef.current = Date.now();
       if (pendingRaf) {
         cancelAnimationFrame(pendingRaf);
         pendingRaf = null;
@@ -3577,7 +3582,7 @@ function App() {
   )}
 
       <main className="reader">
-        <div className={`book-stage ${displayMode} ${isBilingualView ? 'bilingual-layout' : ''}`} ref={stageRef} onClick={tool === 'text' ? handleCanvasClick : undefined}>
+        <div className={`book-stage ${displayMode} ${isBilingualView ? 'bilingual-layout' : ''} tool-${tool}`} ref={stageRef} onClick={tool === 'text' ? handleCanvasClick : undefined}>
           {visibleLanguages.map((language) => {
             const src = pageSources[language];
             const isImages = Array.isArray(src);

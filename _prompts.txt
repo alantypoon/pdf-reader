@@ -106,5 +106,6 @@ when raymond logs in, the user id will be shown as "up3g29ozb" instead of "raymo
 
 when using two fingers to scroll the screen on my iphone or ipad,
 the scrolling speed seems to be doubled.
-is there two event handling that makes the mistake?
+when scrolling on desktop by mouse, the speed is normal.
+are there two event handling processes in the code that makes the mistake?
 or i should reduce the scrolling speed in a half?

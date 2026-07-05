@@ -936,6 +936,7 @@ button, input, select {
   position: absolute;
   inset: 0;
   z-index: 2;
+  touch-action: none;
 }
 
 .text-annotation-textarea {
@@ -994,6 +995,14 @@ button, input, select {
   grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
   height: calc(100dvh - var(--bottom-toolbar-offset, 0px));
   min-height: 0;
+  overflow: hidden;
+}
+
+/* Prevent native iOS scroll on the PDF scroll containers when using
+   drawing/annotation tools — only the JS two-finger handler should scroll.
+   In hand mode the canvas passes through touches, so native scroll is needed. */
+.book-stage.scrolling:not(.tool-hand) .pdf-scroll,
+.book-stage.scrolling:not(.tool-hand) .pdf-scroll-pages {
   overflow: hidden;
 }
 
