@@ -129,6 +129,96 @@ async function fetchJson(url, options) {
   return data;
 }
 
+function FloatingAudioPlayer({ url, name, onClose }) {
+  const playerRef = useRef(null);
+  const dragState = useRef({ dragging: false, startX: 0, startY: 0 });
+  const [position, setPosition] = useState(() => {
+    // Start at the center of the viewport
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    return { x: Math.max(0, (w - 350) / 2), y: Math.max(0, (h - 80) / 2) };
+  });
+
+  const startDrag = useCallback((clientX, clientY) => {
+    dragState.current = {
+      dragging: true,
+      startX: clientX - position.x,
+      startY: clientY - position.y,
+    };
+  }, [position]);
+
+  // Mouse drag
+  const onMouseDown = useCallback((e) => {
+    if (e.target.tagName === 'BUTTON' || e.target.closest('audio')) return;
+    e.preventDefault();
+    startDrag(e.clientX, e.clientY);
+  }, [startDrag]);
+
+  // Touch drag (tablet / phone)
+  const onTouchStart = useCallback((e) => {
+    if (e.target.tagName === 'BUTTON' || e.target.closest('audio')) return;
+    const touch = e.touches[0];
+    startDrag(touch.clientX, touch.clientY);
+  }, [startDrag]);
+
+  useEffect(() => {
+    const onMove = (clientX, clientY) => {
+      if (!dragState.current.dragging) return;
+      setPosition({
+        x: clientX - dragState.current.startX,
+        y: clientY - dragState.current.startY,
+      });
+    };
+    const onMouseMove = (e) => onMove(e.clientX, e.clientY);
+    const onTouchMove = (e) => {
+      if (!dragState.current.dragging) return;
+      e.preventDefault();
+      const touch = e.touches[0];
+      onMove(touch.clientX, touch.clientY);
+    };
+    const onEnd = () => { dragState.current.dragging = false; };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onEnd);
+    window.addEventListener('touchmove', onTouchMove, { passive: false });
+    window.addEventListener('touchend', onEnd);
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onEnd);
+      window.removeEventListener('touchmove', onTouchMove);
+      window.removeEventListener('touchend', onEnd);
+    };
+  }, []);
+
+  return (
+    <div
+      className="floating-audio-player"
+      style={{ left: position.x, top: position.y }}
+      ref={playerRef}
+    >
+      <div
+        className="floating-audio-header"
+        onMouseDown={onMouseDown}
+        onTouchStart={onTouchStart}
+      >
+        <span className="floating-audio-title">{name || 'Audio'}</span>
+        <button
+          className="floating-audio-close"
+          onClick={onClose}
+          aria-label="Close player"
+        >
+          ✕
+        </button>
+      </div>
+      <div className="floating-audio-body">
+        <audio controls autoPlay className="floating-audio-el">
+          <source src={url} type="audio/mpeg" />
+        </audio>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const savedPrefs = loadPreferences();
   const initialTextColor = useMemo(() => {
@@ -198,6 +288,7 @@ function App() {
   const [pageCounts, setPageCounts] = useState({});
   const [redrawTick, setRedrawTick] = useState(0);
   const [modalInfo, setModalInfo] = useState(null);
+  const [floatingPlayer, setFloatingPlayer] = useState(null);
   const [activeAnnotationLangId, setActiveAnnotationLangId] = useState('en');
   const [resourcesDrawerOpen, setResourcesDrawerOpen] = useState(false);
   const [aiDrawerOpen, setAiDrawerOpen] = useState(false);
@@ -1674,14 +1765,14 @@ function App() {
   }, []);
 
   const openResource = (resource) => {
-    // MP3 files always use the audio player modal
+    // MP3 files use a floating draggable player instead of modal
     if (/\.mp3(\?|$)/i.test(resource.url)) {
-      setModalInfo({ url: resource.url, name: resource.name });
+      setFloatingPlayer({ url: resource.url, name: resource.name });
       return;
     }
-    // HTML pages (e.g. OUP e-learning interactives) open in the modal iframe
+    // HTML pages open in external tab
     if (/\.html?(\?|$|#)/i.test(resource.url)) {
-      setModalInfo({ url: resource.url, name: resource.name });
+      window.open(resource.url, '_blank', 'noopener,noreferrer');
       return;
     }
     try {
@@ -4276,7 +4367,7 @@ function App() {
               onClick={() => openSidebarAutocomplete('section')}
               data-tooltip={_('selectSection')}
               aria-label={_('selectSection')}
-            ><span className="sidebar-icon-btn-text">{currentSectionHeaderName.split(' ')[0] || selectedFile}</span></button>
+            ><span className="sidebar-icon-btn-text">{selectedFile ? `${selectedFile} ${currentSectionHeaderName.split(' ')[0]}` : (currentSectionHeaderName.split(' ')[0] || '···')}</span></button>
             {/* Page selector – collapsed */}
             {maxNavigablePage > 1 && (
               <button
@@ -5019,6 +5110,15 @@ function App() {
             )}
           </div>
         </div>
+      )}
+
+      {/* ── Floating MP3 Player (draggable, always-on-top) ──── */}
+      {floatingPlayer && (
+        <FloatingAudioPlayer
+          url={floatingPlayer.url}
+          name={floatingPlayer.name}
+          onClose={() => setFloatingPlayer(null)}
+        />
       )}
 
       {/* ── Collapsed Sidebar Autocomplete Portals ──────────── */}

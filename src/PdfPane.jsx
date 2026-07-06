@@ -551,49 +551,69 @@ function PdfPane({
     imgElements.forEach((img) => fragment.appendChild(img));
     mount.appendChild(fragment);
 
-    // Progressive loader — max 2 concurrent loads, first page first
+    // Viewport-aware lazy loader — max 2 concurrent, preload 3 pages around current page
+    const PRELOAD_WINDOW = 3;
     let loading = 0;
-    let nextIdx = 0;
-    let loadedCount = 0;
+    const loadedSet = new Set(); // indices of pages loaded or currently loading
     let disposed = false;
+    let lastVisiblePage = currentPage;
 
-    const loadNext = () => {
-      while (loading < 2 && nextIdx < imgElements.length && !disposed) {
-        const img = imgElements[nextIdx];
-        const url = img.dataset.src;
-        if (url && !img.src) {
-          loading++;
-          img.src = url;
-          img.onload = () => {
-            loading--;
-            loadedCount++;
-            img.style.minHeight = '';
-            img.style.opacity = '1';
-            if (!disposed) {
-              if (loadedCount >= imgElements.length) {
-                scrollToPage(currentPage);
-              }
-              loadNext();
-            }
-          };
-          img.onerror = () => {
-            loading--;
-            loadedCount++;
-            // Keep minHeight so the layout doesn't collapse; hide the broken-image icon
-            img.style.opacity = '0';
-            if (!disposed) {
-              if (loadedCount >= imgElements.length) {
-                scrollToPage(currentPage);
-              }
-              loadNext();
-            }
-          };
-        }
-        nextIdx++;
+    const loadOne = (idx) => {
+      if (idx < 0 || idx >= imgElements.length || disposed) return false;
+      if (loadedSet.has(idx)) return false; // already loaded/loading
+      if (loading >= 2) return false;
+      const img = imgElements[idx];
+      const url = img.dataset.src;
+      if (!url || img.src) return false;
+      loadedSet.add(idx);
+      loading++;
+      img.src = url;
+      img.onload = () => {
+        loading--;
+        img.style.minHeight = '';
+        img.style.opacity = '1';
+        if (!disposed) loadVisibleRange(lastVisiblePage);
+      };
+      img.onerror = () => {
+        loading--;
+        img.style.opacity = '0';
+        if (!disposed) loadVisibleRange(lastVisiblePage);
+      };
+      return true;
+    };
+
+    const loadVisibleRange = (centerPage) => {
+      // Always load the center page first
+      loadOne(centerPage - 1);
+      // Then load surrounding pages, expanding outward
+      for (let offset = 1; offset <= PRELOAD_WINDOW; offset++) {
+        loadOne(centerPage - 1 - offset);
+        loadOne(centerPage - 1 + offset);
       }
     };
 
-    loadNext();
+    // Initial load around the current page
+    loadVisibleRange(currentPage);
+
+    // After the current-page image loads (or is already cached), scroll into position
+    const scheduleScrollToCurrent = () => {
+      const currentImg = imgElements[currentPage - 1];
+      if (!currentImg || disposed) return;
+      if (currentImg.complete && currentImg.naturalHeight > 0) {
+        scrollToPage(currentPage);
+        return;
+      }
+      // Not loaded yet — wait for it
+      const onReady = () => {
+        currentImg.removeEventListener('load', onReady);
+        currentImg.removeEventListener('error', onReady);
+        if (!disposed) scrollToPage(currentPage);
+      };
+      currentImg.addEventListener('load', onReady, { once: true });
+      currentImg.addEventListener('error', onReady, { once: true });
+    };
+    // Small delay to let the DOM settle, then scroll
+    requestAnimationFrame(() => { scheduleScrollToCurrent(); });
 
     const onScroll = () => {
       const nodes = [...mount.querySelectorAll('img[data-page]')];
@@ -608,6 +628,13 @@ function PdfPane({
         }
       });
       setRenderedPage(nearest);
+
+      // Load newly-visible pages when the visible page changes
+      if (nearest !== lastVisiblePage) {
+        lastVisiblePage = nearest;
+        loadVisibleRange(nearest);
+      }
+
       const cp = currentPageRef.current;
       if (nearest !== cp) {
         lastScrolledFromSyncRef.current = true;
@@ -624,11 +651,6 @@ function PdfPane({
     };
 
     mount.addEventListener('scroll', onScroll, { passive: true });
-
-    // Initial scroll position — approximate because images have min-height 120px
-    // and their final heights aren't known yet.  After all images load,
-    // scrollToPage is called again with the correct offsets.
-    scrollToPage(currentPage);
 
     return () => {
       disposed = true;

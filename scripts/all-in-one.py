@@ -69,6 +69,10 @@ Output:
 
     6. Downloads MP3 resources and rewrites the URLs to local paths.
 
+    7. Downloads HTML resources and rewrites the URLs to local paths.
+       Also downloads all files referenced within each HTML (images, CSS,
+       JS, etc.) and rewrites those URLs to local paths too.
+
 
 """
 
@@ -220,6 +224,15 @@ def _process_scope(scope_dir, scope_label, args, base_dir):
             download_mp3s(book_dir)
         else:
             print("[skip] Step 6 — Download MP3s")
+
+        # ── Step 7: Download HTMLs ─────────────────────────────────
+        if not args.skip_htmls:
+            print("\n" + "=" * 60)
+            print("  Step 7 — Downloading HTML resources")
+            print("=" * 60)
+            download_htmls(book_dir)
+        else:
+            print("[skip] Step 7 — Download HTMLs")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -924,6 +937,295 @@ def download_mp3s(data_dir):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  Step 7 — Download HTML resources and rewrite URLs to local paths
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# HTML tags/attributes that reference external resources
+_HTML_RESOURCE_ATTRS = [
+    # (tag, attr) — order matters for matching
+    ("img", "src"),
+    ("script", "src"),
+    ("link", "href"),
+    ("source", "src"),
+    ("video", "src"),
+    ("video", "poster"),
+    ("audio", "src"),
+    ("object", "data"),
+    ("embed", "src"),
+    ("iframe", "src"),
+    ("track", "src"),
+]
+
+_CSS_URL_RE = re.compile(r'url\(["\']?([^)"\']+)["\']?\)', re.IGNORECASE)
+
+
+def _extract_resource_urls(html_text, base_url):
+    """Parse HTML and extract all external resource URLs (absolute & relative).
+    Returns a set of resolved absolute URLs."""
+    urls = set()
+
+    # 1. Tag attributes
+    for tag, attr in _HTML_RESOURCE_ATTRS:
+        # Match <tag ... attr="..." ...>  or  <tag ... attr='...' ...>
+        pattern = re.compile(
+            r'<' + re.escape(tag) + r'\b[^>]*?\b' + re.escape(attr)
+            + r'\s*=\s*["\']([^"\']+)["\']',
+            re.IGNORECASE | re.DOTALL,
+        )
+        for m in pattern.finditer(html_text):
+            urls.add(m.group(1).strip())
+
+    # 2. srcset attributes (comma-separated URLs)
+    for m in re.finditer(r'srcset\s*=\s*["\']([^"\']+)["\']', html_text, re.IGNORECASE):
+        for part in m.group(1).split(","):
+            part = part.strip().split()[0]  # strip descriptor like "2x" or "600w"
+            if part:
+                urls.add(part)
+
+    # 3. CSS url() references in <style> blocks and inline style attributes
+    for m in re.finditer(r'<style[^>]*>(.*?)</style>', html_text, re.IGNORECASE | re.DOTALL):
+        for css_match in _CSS_URL_RE.finditer(m.group(1)):
+            urls.add(css_match.group(1).strip())
+    for m in re.finditer(r'style\s*=\s*["\']([^"\']+)["\']', html_text, re.IGNORECASE):
+        for css_match in _CSS_URL_RE.finditer(m.group(1)):
+            urls.add(css_match.group(1).strip())
+
+    # Resolve relative URLs to absolute, filter out data: URIs and anchors
+    from urllib.parse import urljoin, urlparse as uparse
+    resolved = set()
+    for u in urls:
+        u = u.strip()
+        if not u or u.startswith("data:") or u.startswith("#") or u.startswith("javascript:"):
+            continue
+        if u.startswith("http://") or u.startswith("https://"):
+            resolved.add(u)
+        elif u.startswith("//"):
+            resolved.add("https:" + u)
+        else:
+            resolved.add(urljoin(base_url, u))
+
+    return resolved
+
+
+def _path_safe_filename(url):
+    """Derive a safe local filename from a URL path."""
+    from urllib.parse import urlparse as uparse
+    path = uparse(url).path
+    filename = os.path.basename(path)
+    if not filename or "." not in filename:
+        # Fallback: hash-based name with extension guess from URL
+        ext = os.path.splitext(path)[1] or ".dat"
+        filename = f"{abs(hash(url)):x}{ext}"
+    return filename
+
+
+def _download_file(url, dest_path, timeout=30):
+    """Download a single file to dest_path. Returns True on success."""
+    if os.path.exists(dest_path) and os.path.getsize(dest_path) > 0:
+        return True  # already downloaded
+    try:
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urlopen(req, timeout=timeout) as resp:
+            with open(dest_path, "wb") as f:
+                f.write(resp.read())
+        return True
+    except Exception as e:
+        print(f"      ⚠ failed: {url} → {e}")
+        return False
+
+
+def download_htmls(data_dir):
+    """Download all HTML resources referenced in contents.json to local htmls/
+    folders. Also download all files referenced within each HTML (images, CSS,
+    JS, etc.) and rewrite URLs to local paths."""
+
+    contents_path = os.path.join(data_dir, "contents.json")
+    if not os.path.exists(contents_path):
+        print(f"  [skip] {contents_path} — not found")
+        return
+
+    with open(contents_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    book = data.get("chapter", os.path.basename(data_dir))
+    total_html = 0
+    total_assets = 0
+    total_skipped = 0
+    total_errors = 0
+    modified = False
+
+    for section in data.get("contents", []):
+        sec = section.get("section")
+        if not sec:
+            continue
+        for lang in ("en", "tc"):
+            resources = section.get(lang, {}).get("resources", [])
+            for res in resources:
+                url = res.get("url", "")
+                if not url or not re.search(r'\.html(\?|$|#)', url, re.IGNORECASE):
+                    continue
+
+                # Derive a unique local name for the HTML
+                parsed = urlparse(url)
+                html_basename = os.path.basename(parsed.path)
+                if not html_basename or not html_basename.endswith(".html"):
+                    html_basename = f"{abs(hash(url)):x}.html"
+
+                # Local directory: data/{book}/{lang}/htmls/
+                html_dir = os.path.join(data_dir, lang, "htmls")
+                os.makedirs(html_dir, exist_ok=True)
+
+                # If name collision, add the section prefix
+                local_html_path = os.path.join(html_dir, html_basename)
+                if os.path.exists(local_html_path) and not html_basename.startswith(f"{sec}-"):
+                    html_basename = f"{sec}-{html_basename}"
+                    local_html_path = os.path.join(html_dir, html_basename)
+
+                # Also make a subdirectory for supporting files
+                assets_dir_name = html_basename.replace(".html", "_files")
+                assets_dir = os.path.join(html_dir, assets_dir_name)
+
+                # Download the HTML
+                html_content = None
+                if os.path.exists(local_html_path) and os.path.getsize(local_html_path) > 0:
+                    with open(local_html_path, "r", encoding="utf-8") as f:
+                        html_content = f.read()
+                    total_skipped += 1
+                    print(f"    [skip] {html_basename}")
+                else:
+                    print(f"    downloading {html_basename} ...", end=" ", flush=True)
+                    try:
+                        req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                        with urlopen(req, timeout=30) as resp:
+                            raw = resp.read()
+                        # Try to decode; fall back to utf-8 with replacement
+                        try:
+                            html_content = raw.decode("utf-8")
+                        except UnicodeDecodeError:
+                            html_content = raw.decode("utf-8", errors="replace")
+                        with open(local_html_path, "w", encoding="utf-8") as f:
+                            f.write(html_content)
+                        print("ok")
+                        total_html += 1
+                    except Exception as e:
+                        print(f"FAILED ({e})")
+                        total_errors += 1
+                        continue
+
+                if html_content is None:
+                    continue
+
+                # Check if this HTML is just a meta-refresh redirect to an MP3.
+                # Example: <meta http-equiv="refresh" content="0;url=...mp3">
+                mp3_redirect_match = re.search(
+                    r'<meta\s+http-equiv\s*=\s*["\']refresh["\']\s+content\s*=\s*["\']\d+\s*;\s*url\s*=\s*([^"\']+\.mp3)["\']',
+                    html_content, re.IGNORECASE,
+                )
+                if mp3_redirect_match:
+                    mp3_url = mp3_redirect_match.group(1)
+                    print(f"    → meta redirect to MP3: {mp3_url}")
+                    # Download the MP3 to the mp3s/ folder
+                    mp3_filename = os.path.basename(urlparse(mp3_url).path)
+                    if not mp3_filename:
+                        mp3_filename = f"audio_{abs(hash(mp3_url))}.mp3"
+                    mp3_dir = os.path.join(data_dir, lang, "mp3s")
+                    os.makedirs(mp3_dir, exist_ok=True)
+                    mp3_local_path = os.path.join(mp3_dir, mp3_filename)
+
+                    if not (os.path.exists(mp3_local_path) and os.path.getsize(mp3_local_path) > 0):
+                        print(f"      downloading {mp3_filename} ...", end=" ", flush=True)
+                        try:
+                            urlretrieve(mp3_url, mp3_local_path)
+                            print("ok")
+                        except Exception as e:
+                            print(f"FAILED ({e})")
+                            total_errors += 1
+                            continue
+
+                    # Rewrite the resource URL to local MP3 path (not HTML)
+                    parts = os.path.normpath(data_dir).split(os.sep)
+                    rel_book = os.sep.join(parts[-2:])
+                    local_url = f"/pdf-reader/data/{rel_book}/{lang}/mp3s/{mp3_filename}"
+                    if res.get("url") != local_url:
+                        res["url"] = local_url
+                        modified = True
+                    # Remove the downloaded HTML stub since this isn't really an HTML resource
+                    if os.path.exists(local_html_path):
+                        os.remove(local_html_path)
+                    continue
+
+                # Extract all resource URLs from the HTML
+                resource_urls = _extract_resource_urls(html_content, url)
+                if not resource_urls:
+                    # No sub-resources to download — just rewrite the main URL
+                    parts = os.path.normpath(data_dir).split(os.sep)
+                    rel_book = os.sep.join(parts[-2:])
+                    local_url = f"/pdf-reader/data/{rel_book}/{lang}/htmls/{html_basename}"
+                    if res.get("url") != local_url:
+                        res["url"] = local_url
+                        modified = True
+                    continue
+
+                # Download each sub-resource
+                rewritten = False
+                url_map = {}  # absolute_url → local_relative_path (from HTML's dir)
+
+                for asset_url in sorted(resource_urls):
+                    asset_name = _path_safe_filename(asset_url)
+                    asset_dest = os.path.join(assets_dir, asset_name)
+
+                    # Avoid filename collisions
+                    counter = 1
+                    base, ext = os.path.splitext(asset_name)
+                    while os.path.exists(asset_dest):
+                        if os.path.getsize(asset_dest) > 0:
+                            break  # already exists with content
+                        asset_name = f"{base}_{counter}{ext}"
+                        asset_dest = os.path.join(assets_dir, asset_name)
+                        counter += 1
+
+                    if _download_file(asset_url, asset_dest):
+                        # Map absolute URL to local relative path
+                        local_rel = f"{assets_dir_name}/{asset_name}"
+                        url_map[asset_url] = local_rel
+                        total_assets += 1
+
+                # Rewrite URLs in the HTML content
+                if url_map:
+                    # Replace absolute URLs with local relative paths
+                    for abs_url, local_rel in url_map.items():
+                        # Also handle protocol-relative variants
+                        html_content = html_content.replace(abs_url, local_rel)
+                        # Handle // prefix variant
+                        if abs_url.startswith("https://"):
+                            html_content = html_content.replace(
+                                abs_url.replace("https://", "http://", 1), local_rel)
+                        if abs_url.startswith("http://"):
+                            html_content = html_content.replace(
+                                abs_url.replace("http://", "https://", 1), local_rel)
+
+                    with open(local_html_path, "w", encoding="utf-8") as f:
+                        f.write(html_content)
+                    rewritten = True
+
+                # Rewrite the resource URL in contents.json
+                parts = os.path.normpath(data_dir).split(os.sep)
+                rel_book = os.sep.join(parts[-2:])
+                local_url = f"/pdf-reader/data/{rel_book}/{lang}/htmls/{html_basename}"
+                if res.get("url") != local_url:
+                    res["url"] = local_url
+                    modified = True
+
+    if modified:
+        with open(contents_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+
+    print(f"\n  HTMLs: {total_html} downloaded, {total_skipped} skipped, "
+          f"{total_assets} sub-resources, {total_errors} errors  → {contents_path}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  Main
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -977,6 +1279,11 @@ def main():
         "--skip-mp3s",
         action="store_true",
         help="Skip step 6 (download MP3s)",
+    )
+    parser.add_argument(
+        "--skip-htmls",
+        action="store_true",
+        help="Skip step 7 (download HTMLs and their sub-resources)",
     )
     args = parser.parse_args()
 
