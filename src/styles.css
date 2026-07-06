@@ -842,11 +842,7 @@ button, input, select {
 }
 
 .autocomplete-dropdown {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: calc(100% + 6px);
-  z-index: 20;
+  /* position/left/top/z-index are now set via inline style (portal to body) */
   border: 1px solid #c9d7e3;
   border-radius: 14px;
   background: white;
@@ -899,6 +895,7 @@ button, input, select {
   border-radius: 10px;
   cursor: pointer;
   transition: background 120ms ease;
+  white-space: nowrap;
 }
 
 .autocomplete-item.highlighted {
@@ -940,13 +937,11 @@ button, input, select {
 .autocomplete-names strong {
   font-size: 0.88rem;
   color: #102033;
-  word-break: break-word;
 }
 
 .autocomplete-names small {
   font-size: 0.78rem;
   color: #5d7184;
-  word-break: break-word;
 }
 
 .autocomplete-empty {
@@ -964,11 +959,7 @@ button, input, select {
 }
 
 .autocomplete-empty--standalone {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: calc(100% + 6px);
-  z-index: 20;
+  /* position/left/right/top/z-index are now set via inline style (portal to body) */
   padding: 14px;
   border: 1px solid #c9d7e3;
   border-radius: 14px;

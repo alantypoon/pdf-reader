@@ -27,12 +27,9 @@ function SectionAutocomplete({ sections, onSelect, getSectionName, currentSectio
   };
 
   const getSecondarySectionName = (item) => {
-    if (language === 'tc') {
-      return getSectionName(item, 'en') || '';
-    }
-    if (language === 'en') {
-      return getSectionName(item, 'tc') || '';
-    }
+    // Monolingual: show only the selected language, no secondary
+    if (language !== 'bilingual') return '';
+    // Bilingual: show the complementary language as secondary
     return getSectionName(item, 'tc') || '';
   };
 

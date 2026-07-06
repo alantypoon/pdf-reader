@@ -1221,6 +1221,21 @@ function App() {
     });
   }, [selectedPage, displayMode]);
 
+  // Scroll content to top when book or section changes (all display modes)
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    requestAnimationFrame(() => {
+      // Scroll all possible content containers regardless of current mode
+      const selectors = ['.pdf-scroll-pages', '.pdf-single-page', '.thumbnail-grid'];
+      selectors.forEach((sel) => {
+        stage.querySelectorAll(sel).forEach((el) => {
+          el.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+        });
+      });
+    });
+  }, [selectedChapter, selectedFile]);
+
   // Track mousedown on stage (outside textarea) to flag reposition intent
   useEffect(() => {
     const onMouseDown = (e) => {

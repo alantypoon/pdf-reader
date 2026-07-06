@@ -1,5 +1,6 @@
 // @ts-nocheck
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 function normalizeText(value) {
 	return String(value || '').trim();
@@ -34,8 +35,11 @@ function AutocompleteDropdown({
 	const [open, setOpen] = useState(false);
 	const [highlightIndex, setHighlightIndex] = useState(-1);
 	const [dropdownFilter, setDropdownFilter] = useState('');
+	const [dropdownStyle, setDropdownStyle] = useState({});
 	const inputRef = useRef(null);
 	const dropdownFilterRef = useRef(null);
+	const listRef = useRef(null);
+	const containerRef = useRef(null);
 
 	const filtered = useMemo(() => {
 		if (!query.trim()) return items || [];
@@ -50,6 +54,45 @@ function AutocompleteDropdown({
 	}, [filtered, dropdownFilter]);
 
 	const resolvedPlaceholder = query ? placeholder : (placeholder || '');
+
+	// Recalculate the dropdown position relative to the viewport
+	const updateDropdownPosition = useCallback(() => {
+		if (!containerRef.current) return;
+		const rect = containerRef.current.getBoundingClientRect();
+		setDropdownStyle({
+			position: 'fixed',
+			left: rect.left,
+			top: rect.bottom + 6,
+			minWidth: rect.width,
+			maxWidth: Math.max(rect.width, window.innerWidth - rect.left - 16),
+			zIndex: 99999,
+		});
+	}, []);
+
+	// Update dropdown position when it opens and on scroll/resize
+	useEffect(() => {
+		if (!open) return;
+		updateDropdownPosition();
+		window.addEventListener('scroll', updateDropdownPosition, true);
+		window.addEventListener('resize', updateDropdownPosition);
+		return () => {
+			window.removeEventListener('scroll', updateDropdownPosition, true);
+			window.removeEventListener('resize', updateDropdownPosition);
+		};
+	}, [open, updateDropdownPosition]);
+
+	// Scroll the selected item to the center of the list when the dropdown opens
+	useEffect(() => {
+		if (!open) return;
+		// Wait for the DOM to render the list
+		const timer = setTimeout(() => {
+			const selectedEl = listRef.current?.querySelector('.autocomplete-item.selected');
+			if (selectedEl) {
+				selectedEl.scrollIntoView({ block: 'center', behavior: 'instant' });
+			}
+		}, 0);
+		return () => clearTimeout(timer);
+	}, [open, dropdownFiltered]);
 
 	const handleSelect = (item) => {
 		onSelect?.(item.id, item);
@@ -152,7 +195,7 @@ function AutocompleteDropdown({
 	const selectedKey = String(value ?? '');
 
 	return (
-		<div className={`section-autocomplete ${containerClassName}`.trim()}>
+		<div className={`section-autocomplete ${containerClassName}`.trim()} ref={containerRef}>
 			<div className={`autocomplete-input-wrapper ${!showSearchIcon ? 'no-search-icon' : ''} ${showStepper ? 'has-stepper' : ''} ${inputWrapperClassName}`.trim()}>
 				{showStepper && (
 					<button
@@ -216,89 +259,94 @@ function AutocompleteDropdown({
 				)}
 			</div>
 
-			{open && filtered.length > 0 && (
-				<div className="autocomplete-dropdown" onMouseDown={(e) => e.preventDefault()}>
-					<div className="autocomplete-dropdown-filter">
-						<svg className="autocomplete-dropdown-filter-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-							<circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" strokeWidth="2" />
-							<line x1="15" y1="15" x2="21" y2="21" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
-						</svg>
-						<input
-							ref={dropdownFilterRef}
-							type="text"
-							className="autocomplete-dropdown-filter-input"
-							placeholder="Filter…"
-							value={dropdownFilter}
-							onChange={(event) => {
-								setDropdownFilter(event.target.value);
-								setHighlightIndex(-1);
-							}}
-							onKeyDown={(event) => {
-								if (event.key === 'ArrowDown') {
-									event.preventDefault();
-									setHighlightIndex((current) => Math.min(dropdownFiltered.length - 1, current + 1));
-								} else if (event.key === 'ArrowUp') {
-									event.preventDefault();
-									setHighlightIndex((current) => Math.max(0, current - 1));
-								} else if (event.key === 'Enter') {
-									event.preventDefault();
-									if (highlightIndex >= 0) {
-										const item = dropdownFiltered[highlightIndex];
-										if (item) {
-											handleSelect(item);
+		{open && createPortal(
+			<>
+				{filtered.length > 0 && (
+					<div className="autocomplete-dropdown" style={dropdownStyle} onMouseDown={(e) => e.preventDefault()}>
+						<div className="autocomplete-dropdown-filter">
+							<svg className="autocomplete-dropdown-filter-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+								<circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" strokeWidth="2" />
+								<line x1="15" y1="15" x2="21" y2="21" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+							</svg>
+							<input
+								ref={dropdownFilterRef}
+								type="text"
+								className="autocomplete-dropdown-filter-input"
+								placeholder="Filter…"
+								value={dropdownFilter}
+								onChange={(event) => {
+									setDropdownFilter(event.target.value);
+									setHighlightIndex(-1);
+								}}
+								onKeyDown={(event) => {
+									if (event.key === 'ArrowDown') {
+										event.preventDefault();
+										setHighlightIndex((current) => Math.min(dropdownFiltered.length - 1, current + 1));
+									} else if (event.key === 'ArrowUp') {
+										event.preventDefault();
+										setHighlightIndex((current) => Math.max(0, current - 1));
+									} else if (event.key === 'Enter') {
+										event.preventDefault();
+										if (highlightIndex >= 0) {
+											const item = dropdownFiltered[highlightIndex];
+											if (item) {
+												handleSelect(item);
+											}
 										}
+									} else if (event.key === 'Escape') {
+										setOpen(false);
+										setQuery('');
+										setDropdownFilter('');
+										inputRef.current?.blur();
 									}
-								} else if (event.key === 'Escape') {
-									setOpen(false);
-									setQuery('');
-									setDropdownFilter('');
-									inputRef.current?.blur();
-								}
-							}}
-						/>
+								}}
+							/>
+						</div>
+						{dropdownFiltered.length > 0 ? (
+							<ul className="autocomplete-list" role="listbox" ref={listRef}>
+								{dropdownFiltered.map((item, index) => {
+									const itemKey = String(item.id ?? '');
+									const isSelected = !query && !dropdownFilter && itemKey === selectedKey;
+									const isHighlighted = index === highlightIndex;
+									const classNames = [
+										'autocomplete-item',
+										isSelected ? 'selected' : '',
+										isHighlighted ? 'highlighted' : '',
+									].filter(Boolean).join(' ');
+									return (
+										<li
+											key={itemKey}
+											className={classNames}
+											role="option"
+											aria-selected={isSelected || isHighlighted}
+											onMouseDown={(event) => {
+												event.preventDefault();
+												handleSelect(item);
+											}}
+											onMouseEnter={() => setHighlightIndex(index)}
+										>
+											{item.badge ? <span className="autocomplete-section-badge">{item.badge}</span> : null}
+											<div className="autocomplete-names">
+												<strong>{item.primary}</strong>
+												{item.secondary ? <small>{item.secondary}</small> : null}
+											</div>
+										</li>
+									);
+								})}
+							</ul>
+						) : (
+							<div className="autocomplete-empty">{emptyText}</div>
+						)}
 					</div>
-					{dropdownFiltered.length > 0 ? (
-						<ul className="autocomplete-list" role="listbox">
-							{dropdownFiltered.map((item, index) => {
-								const itemKey = String(item.id ?? '');
-								const isSelected = !query && !dropdownFilter && itemKey === selectedKey;
-								const isHighlighted = index === highlightIndex;
-								const classNames = [
-									'autocomplete-item',
-									isSelected ? 'selected' : '',
-									isHighlighted ? 'highlighted' : '',
-								].filter(Boolean).join(' ');
-								return (
-									<li
-										key={itemKey}
-										className={classNames}
-										role="option"
-										aria-selected={isSelected || isHighlighted}
-										onMouseDown={(event) => {
-											event.preventDefault();
-											handleSelect(item);
-										}}
-										onMouseEnter={() => setHighlightIndex(index)}
-									>
-										{item.badge ? <span className="autocomplete-section-badge">{item.badge}</span> : null}
-										<div className="autocomplete-names">
-											<strong>{item.primary}</strong>
-											{item.secondary ? <small>{item.secondary}</small> : null}
-										</div>
-									</li>
-								);
-							})}
-						</ul>
-					) : (
-						<div className="autocomplete-empty">{emptyText}</div>
-					)}
-				</div>
-			)}
+				)}
 
-			{open && query && filtered.length === 0 && (
-				<div className="autocomplete-empty autocomplete-empty--standalone">{emptyText}</div>
-			)}
-		</div>
+				{query && filtered.length === 0 && (
+					<div className="autocomplete-empty autocomplete-empty--standalone" style={dropdownStyle}>{emptyText}</div>
+				)}
+			</>,
+			document.body
+		)}
+	</div>
 	);
 }
 

@@ -86,16 +86,14 @@ function getBookPrimaryLabel(item, subjectId, language) {
 function getBookSecondaryLabel(item, language) {
   const id = String(item?.id || '').trim();
   if (!item || !id) return '';
+
+  // Monolingual: show only the selected language, no secondary
+  if (language !== 'bilingual') return '';
+
+  // Bilingual: show the complementary language as secondary
   const fallbackName = stripLeadingId(item.name, id);
   const nameEn = stripLeadingId(item.nameEn, id) || fallbackName;
   const nameZh = stripLeadingId(item.nameZh, id);
-
-  if (language === 'tc') {
-    return nameEn || '';
-  }
-  if (language === 'en') {
-    return nameZh || '';
-  }
   return nameZh || '';
 }
 
