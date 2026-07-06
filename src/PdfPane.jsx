@@ -80,13 +80,18 @@ function PdfPane({
   const scrollRef = useRef(null);
   const contentRef = useRef(null);
   const currentPageRef = useRef(currentPage);
+  const renderedPageRef = useRef(1);
   const syncingFromRemoteRef = useRef(false);
   const modeGenRef = useRef(0);
 
-  // Keep the ref in sync so the scrolling effect always sees the latest page
+  // Keep the refs in sync so the scrolling effect always sees the latest page
   useEffect(() => {
     currentPageRef.current = currentPage;
   }, [currentPage]);
+
+  useEffect(() => {
+    renderedPageRef.current = renderedPage;
+  }, [renderedPage]);
 
   // Increment generation on mode change to cancel stale async work
   useEffect(() => {
@@ -367,14 +372,6 @@ function PdfPane({
       mount.innerHTML = '';
       mount.appendChild(fragment);
 
-      // Restore center-anchored scroll position after layout settles
-      if (savedScrollHeight !== mount.scrollHeight) {
-        requestAnimationFrame(() => {
-          if (disposed || modeGenRef.current !== gen) return;
-          mount.scrollTo(centerAnchoredScroll(mount, savedScrollTop, savedScrollHeight));
-        });
-      }
-
       if (typeof onRenderScaleChange === 'function') {
         onRenderScaleChange(lastScale);
       }
@@ -399,8 +396,6 @@ function PdfPane({
         return nearest;
       };
 
-      const nodes = [...mount.querySelectorAll('canvas[data-page]')];
-
       const onScroll = () => {
         syncPageIndicator();
 
@@ -418,7 +413,28 @@ function PdfPane({
       };
 
       mount.addEventListener('scroll', onScroll, { passive: true });
-      onScroll();
+
+      // Restore center-anchored scroll position after layout settles,
+      // then sync the page indicator from the restored position.
+      // We MUST NOT call onScroll() synchronously here — the DOM layout
+      // hasn't settled yet and scrollTop may be stale.  Instead we piggy-
+      // back on the same RAF that restores the scroll position.
+      requestAnimationFrame(() => {
+        if (disposed || modeGenRef.current !== gen) return;
+
+        if (savedScrollHeight !== mount.scrollHeight) {
+          mount.scrollTo(centerAnchoredScroll(mount, savedScrollTop, savedScrollHeight));
+        }
+
+        // After restoring scroll (or even if heights matched), fire the
+        // scroll handler once so the parent knows which page is visible.
+        // Use a microtask to let the scrollTo layout settle first.
+        requestAnimationFrame(() => {
+          if (disposed || modeGenRef.current !== gen) return;
+          onScroll();
+        });
+      });
+
       return () => mount.removeEventListener('scroll', onScroll);
     };
 

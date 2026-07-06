@@ -3711,7 +3711,7 @@ function App() {
     setPanelVisible(true);
   }, []);
 
-  const canRestoreHiddenSidebar = sidebarHidden && !panelVisible;
+  const canRestoreHiddenSidebar = sidebarHidden;
 
   const secondaryToolbar = (
     <div className="toolbar-group toolbar-secondary" ref={secondaryToolbarRef}>
@@ -4021,7 +4021,7 @@ function App() {
               restoreLongPressRef.current = false;
               return;
             }
-            restoreSidebarCollapsed();
+            restoreSidebarAndPanel();
           }}
           aria-label={_('showSidebar')}
           title={_('showSidebar')}
