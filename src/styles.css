@@ -150,7 +150,17 @@ button, input, select {
   -webkit-appearance: none;
   appearance: none;
   line-height: 1;
-  padding: 0;
+  padding: 0 10px;
+}
+
+.sidebar-icon-btn-text {
+  display: block;
+  max-width: calc(100% - 20px);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.75rem;
+  font-weight: 600;
 }
 
 .sidebar-icon-btn svg {
@@ -1077,6 +1087,17 @@ button, input, select {
   touch-action: none;
 }
 
+/* In hand mode, allow native touch panning on PDF scroll containers */
+.book-stage.tool-hand .pdf-scroll-pages,
+.book-stage.tool-hand .pdf-single-page {
+  touch-action: pan-x pan-y;
+}
+
+/* In hand mode, ensure pdf-content doesn't block touch events */
+.book-stage.tool-hand .pdf-content {
+  overflow: visible;
+}
+
 /* Also block touch scrolling on the annotation canvas itself when tools active */
 .book-stage:not(.tool-hand) .annotation-canvas {
   touch-action: none;
@@ -1317,6 +1338,7 @@ button, input, select {
   height: 100%;
   padding: 0;
   overflow: hidden;
+  touch-action: inherit;
 }
 
 .pdf-single-page {
@@ -1325,7 +1347,7 @@ button, input, select {
   display: grid;
   place-items: center;
   overflow: auto;
-  touch-action: pan-y;
+  touch-action: pan-x pan-y;
   -webkit-overflow-scrolling: touch;
 }
 
@@ -1343,6 +1365,7 @@ button, input, select {
   display: grid;
   gap: 0;
   justify-items: center;
+  touch-action: pan-x pan-y;
 }
 
 .pdf-scroll-pages canvas,
@@ -1439,8 +1462,8 @@ button, input, select {
 }
 
 .color-swatch.active {
-  border-color: #12324a;
-  box-shadow: 0 0 0 2px white, 0 0 0 4px #12324a;
+  border-color: #1a3a5c;
+  box-shadow: 0 0 0 2px white, 0 0 0 4px #1a3a5c;
 }
 
 .color-picker-divider {
@@ -1854,8 +1877,13 @@ button, input, select {
 }
 
 .annotation-panel button.active {
-  background: #12324a;
+  background: #1a3a5c;
   color: white;
+  box-shadow: 0 0 0 2px rgba(26, 58, 92, 0.25);
+}
+
+.annotation-panel button.active svg {
+  fill: #ffffff;
 }
 
 .annotation-panel input[type="color"] {
@@ -1975,14 +2003,37 @@ button, input, select {
 }
 
 .tool-menu-item.active {
-  background: #12324a !important;
+  background: #1a3a5c !important;
   color: #ffffff !important;
+  border-color: #2d5f8b !important;
+  box-shadow: 0 0 0 2px rgba(26, 58, 92, 0.3), inset 0 1px 0 rgba(255,255,255,0.1);
+}
+
+.tool-menu-item.active .tool-menu-item-icon {
+  color: #ffffff;
 }
 
 .tool-menu-sep {
   height: 1px;
   background: #d7e0e8;
   margin: 4px 0;
+}
+
+.tool-menu-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+
+.tool-menu-grid .tool-menu-item {
+  text-align: center;
+  justify-content: center;
+  padding: 10px 8px !important;
+}
+
+.tool-menu-erase-item {
+  text-align: center !important;
+  justify-content: center !important;
 }
 
 .tool-menu-colors {
@@ -2007,8 +2058,8 @@ button, input, select {
 }
 
 .tool-menu-color-dot.active {
-  border-color: #12324a;
-  box-shadow: 0 0 0 2px #ffffff, 0 0 0 4px #12324a;
+  border-color: #1a3a5c;
+  box-shadow: 0 0 0 2px #ffffff, 0 0 0 4px #1a3a5c;
 }
 
 .tool-menu-color-custom {

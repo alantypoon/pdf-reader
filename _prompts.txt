@@ -126,3 +126,5 @@ add icons on the highlighter, pen, text, rubber, move, color.
 
 i.e. - 100% +. remove the annotation TOGGLE button, show the grouped buttons as mentioned before: it groups all the tool buttons (highlighter, pen, text, rubber, move) into one single button on the bottombar with a right button with a upward smaller button that will open a pullup menu to select the tools instead. default it is highlighter tool. keep the menu in this order: highlighter, pen, text, rubber, move, color.
 
+////
+

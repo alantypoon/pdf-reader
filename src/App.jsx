@@ -9,7 +9,8 @@ import { t, uiLang } from './i18n';
 
 const PREFERENCES_KEY = 'pdfReaderPreferences';
 const DEFAULT_ANNOTATION_COLOR = '#9acd32';
-const ANNOTATION_TOOLS = new Set(['pen', 'highlight', 'text', 'eraser', 'move']);
+const ANNOTATION_TOOLS = new Set(['pen', 'highlight', 'text', 'eraser', 'move', 'hand']);
+const COLOR_TOOLS = new Set(['pen', 'highlight', 'text']);
 
 /** Return an ISO-8601 timestamp in Hong Kong time (UTC+8) */
 function hkNow() {
@@ -37,6 +38,7 @@ const POPULAR_COLORS = [
   '#2980b9', // Dark Blue
   '#9b59b6', // Purple
   '#e91e63', // Pink
+  '#795548', // Brown
   '#95a5a6', // Gray
 ];
 
@@ -258,6 +260,8 @@ function App() {
   const pageViewRef = useRef({ key: '', startedAt: 0, loginLogged: false });
   const touchScrollingRef = useRef(false);
   const lastTouchScrollAtRef = useRef(0);
+  const momentumRef = useRef({ animating: false, vx: 0, vy: 0, target: null, lastTime: 0, rafId: null });
+  const wheelVelocityRef = useRef({ vx: 0, vy: 0, lastTime: 0, timeoutId: null });
 
   // Position the color picker popover relative to the color button
   useLayoutEffect(() => {
@@ -946,39 +950,92 @@ function App() {
     panelVisible
   ]);
 
+  // ── Canvas sizing — only fire when the canvas element's pixel dimensions
+  //     may have changed (window resize, sidebar toggle, fullscreen, etc.).
+  //     Resizing clears the canvas, so we must redraw immediately after.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const context = canvas.getContext('2d');
-    const resize = () => {
+
+    let lastW = 0;
+    let lastH = 0;
+
+    const resizeAndRedraw = () => {
       const frame = canvas.parentElement;
       const rect = frame.getBoundingClientRect();
-      canvas.width = Math.floor(rect.width * window.devicePixelRatio);
-      canvas.height = Math.floor(rect.height * window.devicePixelRatio);
-      canvas.style.width = `${rect.width}px`;
-      canvas.style.height = `${rect.height}px`;
-      context.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
-      const annotationsToDraw = (displayMode === 'thumbnails' || displayMode === 'scrolling') ? allSectionAnnotations : pageAnnotations;
+      const w = Math.floor(rect.width * window.devicePixelRatio);
+      const h = Math.floor(rect.height * window.devicePixelRatio);
+
+      // Only touch canvas.width/height if dimensions actually changed.
+      // Setting them clears the canvas — avoid doing it unnecessarily.
+      if (w !== lastW || h !== lastH || canvas.width !== w || canvas.height !== h) {
+        lastW = w;
+        lastH = h;
+        canvas.width = w;
+        canvas.height = h;
+        canvas.style.width = `${rect.width}px`;
+        canvas.style.height = `${rect.height}px`;
+        context.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
+      }
+
+      const annotationsToDraw = (displayMode === 'thumbnails' || displayMode === 'scrolling')
+        ? allSectionAnnotations
+        : pageAnnotations;
       redraw(context, rect.width, rect.height, annotationsToDraw);
     };
 
-    resize();
-    window.addEventListener('resize', resize);
-    return () => window.removeEventListener('resize', resize);
-  }, [pageAnnotations, allSectionAnnotations, displayMode]);
+    // Immediate draw
+    resizeAndRedraw();
 
+    window.addEventListener('resize', resizeAndRedraw);
+    return () => window.removeEventListener('resize', resizeAndRedraw);
+  }, [displayMode, sidebarCollapsed, sidebarHidden, isFullscreen, panelVisible, allSectionAnnotations, pageAnnotations]);
+
+  // ── Annotation / layout redraw — fires when annotations, page sources, or
+  //     any layout-affecting state changes.  Uses a DOUBLE rAF so the browser
+  //     has definitely completed layout before we measure image rects.
+  //     Also schedules a follow-up redraw ~100ms later as a safety net for
+  //     slow-loading page canvases (PDF.js renders can span multiple frames).
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    // Use rAF so the DOM has settled after a layout change before
-    // we measure page image rects in getPageImageRects()
-    const raf = requestAnimationFrame(() => {
+
+    let cancelled = false;
+    let timerId = null;
+
+    const doRedraw = () => {
+      if (cancelled) return;
       const context = canvas.getContext('2d');
       const rect = canvas.getBoundingClientRect();
-      const annotationsToDraw = (displayMode === 'thumbnails' || displayMode === 'scrolling') ? allSectionAnnotations : pageAnnotations;
+      const annotationsToDraw = (displayMode === 'thumbnails' || displayMode === 'scrolling')
+        ? allSectionAnnotations
+        : pageAnnotations;
       redraw(context, rect.width, rect.height, annotationsToDraw);
+    };
+
+    // First rAF: browser has processed the DOM mutations.
+    // Second rAF: browser has completed layout & paint for the new content.
+    const raf1 = requestAnimationFrame(() => {
+      if (cancelled) return;
+      requestAnimationFrame(() => {
+        if (cancelled) return;
+        doRedraw();
+
+        // Safety net: page canvases (especially from PDF.js) can take several
+        // frames to fully render.  Schedule one more redraw ~100ms later.
+        timerId = setTimeout(() => {
+          if (cancelled) return;
+          doRedraw();
+        }, 100);
+      });
     });
-    return () => cancelAnimationFrame(raf);
+
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf1);
+      if (timerId) clearTimeout(timerId);
+    };
   }, [pageAnnotations, allSectionAnnotations, pageSources, displayMode, selectedLanguage, sidebarCollapsed, zoomLevel, fitMode, fitRefreshToken, visibleLanguages, redrawTick]);
 
   // Sync annotationToolsOpen with panelVisible
@@ -997,6 +1054,70 @@ function App() {
       setTool('pen');
     }
   }, [annotationToolsOpen, tool]);
+
+  // ── Momentum / inertia scrolling ──────────────────────
+  const animateMomentum = useCallback(() => {
+    const m = momentumRef.current;
+    if (!m.animating || !m.target || !m.target.isConnected) {
+      m.animating = false;
+      m.rafId = null;
+      m.target = null;
+      return;
+    }
+
+    const now = performance.now();
+    const dt = Math.min(now - (m.lastTime || now), 50); // cap at 50ms to avoid huge jumps
+    m.lastTime = now;
+
+    if (dt > 0) {
+      // Apply displacement: dx = v * dt  (v is px/ms)
+      m.target.scrollBy({
+        left: m.vx * dt,
+        top: m.vy * dt,
+        behavior: 'auto',
+      });
+
+      // Frame-rate-independent friction: v *= 0.95^(dt / 16.67)
+      // At 60fps, 0.95 per frame gives ~1.5s to stop — feels natural
+      const friction = Math.pow(0.95, dt / 16.67);
+      m.vx *= friction;
+      m.vy *= friction;
+    }
+
+    const speed = Math.sqrt(m.vx * m.vx + m.vy * m.vy);
+    if (speed > 0.02 && m.target.isConnected) {
+      m.rafId = requestAnimationFrame(animateMomentum);
+    } else {
+      m.animating = false;
+      m.rafId = null;
+      m.target = null;
+    }
+  }, []);
+
+  const startMomentum = useCallback((vx, vy, target) => {
+    if (!target) return;
+    const m = momentumRef.current;
+    if (m.rafId) cancelAnimationFrame(m.rafId);
+
+    m.animating = true;
+    m.vx = vx;   // px/ms
+    m.vy = vy;
+    m.target = target;
+    m.lastTime = performance.now();
+    m.rafId = requestAnimationFrame(animateMomentum);
+  }, [animateMomentum]);
+
+  const cancelMomentum = useCallback(() => {
+    const m = momentumRef.current;
+    m.animating = false;
+    m.vx = 0;
+    m.vy = 0;
+    m.target = null;
+    if (m.rafId) {
+      cancelAnimationFrame(m.rafId);
+      m.rafId = null;
+    }
+  }, []);
 
   const getScrollTargetForGesture = useCallback((event) => {
     const stage = stageRef.current;
@@ -1046,6 +1167,7 @@ function App() {
   }, []);
 
   // Pass through wheel events on annotation canvas to scroll the stage
+  // with momentum/inertia: after the last wheel tick, scroll keeps decelerating.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -1053,16 +1175,54 @@ function App() {
       // Skip wheel events synthesized from touch gestures — touch handler already scrolls.
       if (touchScrollingRef.current) return;
       if (Date.now() - lastTouchScrollAtRef.current < 250) return;
+
+      // Cancel any running momentum so it doesn't fight the user's new input
+      cancelMomentum();
+
       const scrollTarget = getScrollTargetForGesture(e);
       if (!scrollTarget) return;
       e.preventDefault();
       scrollTarget.scrollBy({ left: e.deltaX, top: e.deltaY, behavior: 'auto' });
+
+      // Track wheel velocity for post-gesture momentum
+      const wv = wheelVelocityRef.current;
+      const now = performance.now();
+      const dt = now - wv.lastTime;
+
+      if (dt > 0 && wv.lastTime > 0 && dt < 200) {
+        // Instantaneous velocity from this wheel tick (px/ms)
+        const instantVX = e.deltaX / dt;
+        const instantVY = e.deltaY / dt;
+        // Exponential moving average to smooth out jitter
+        const alpha = 0.4;
+        wv.vx = wv.vx * (1 - alpha) + instantVX * alpha;
+        wv.vy = wv.vy * (1 - alpha) + instantVY * alpha;
+      }
+      wv.lastTime = now;
+
+      // Reset debounce — when wheel events stop, launch momentum
+      if (wv.timeoutId) clearTimeout(wv.timeoutId);
+      wv.timeoutId = setTimeout(() => {
+        const speed = Math.sqrt(wv.vx * wv.vx + wv.vy * wv.vy);
+        if (speed > 0.3 && scrollTarget && scrollTarget.isConnected) {
+          startMomentum(wv.vx, wv.vy, scrollTarget);
+        }
+        wv.vx = 0;
+        wv.vy = 0;
+        wv.lastTime = 0;
+      }, 120); // 120ms after last wheel tick → start coasting
     };
     canvas.addEventListener('wheel', onWheel, { passive: false });
-    return () => canvas.removeEventListener('wheel', onWheel);
-  }, [getScrollTargetForGesture]);
+    return () => {
+      canvas.removeEventListener('wheel', onWheel);
+      if (wheelVelocityRef.current.timeoutId) {
+        clearTimeout(wheelVelocityRef.current.timeoutId);
+      }
+    };
+  }, [getScrollTargetForGesture, cancelMomentum, startMomentum]);
 
   // In scrolling/pagination mode on touch devices: one finger draws, two fingers scroll.
+  // Momentum: on finger lift, scroll continues with captured velocity and decelerates.
   useEffect(() => {
     if ((displayMode !== 'scrolling' && displayMode !== 'pagination') || tool === 'hand') return;
     const canvas = canvasRef.current;
@@ -1075,6 +1235,13 @@ function App() {
     let pendingRaf = null;
     let accumulatedDeltaX = 0;
     let accumulatedDeltaY = 0;
+
+    // Velocity tracking for momentum on release
+    let velocityX = 0;
+    let velocityY = 0;
+    let lastVelocityTime = 0;
+    let lastVelocityX = 0;
+    let lastVelocityY = 0;
 
     const getTouchMidpoint = (touches) => {
       if (!touches || touches.length < 2) return null;
@@ -1096,6 +1263,9 @@ function App() {
     };
 
     const onTouchStart = (e) => {
+      // Cancel any running momentum when user touches again
+      cancelMomentum();
+
       if (e.touches.length === 2) {
         const midpoint = getTouchMidpoint(e.touches);
         if (!midpoint) return;
@@ -1108,6 +1278,11 @@ function App() {
         touchActive = true;
         touchScrollTarget = getScrollTargetForGesture(e);
         touchScrollingRef.current = true;
+
+        // Reset velocity trackers for the new gesture
+        velocityX = 0;
+        velocityY = 0;
+        lastVelocityTime = 0;
 
         if (drawingRef.current && currentStrokeRef.current) {
           drawingRef.current = false;
@@ -1130,6 +1305,24 @@ function App() {
       if (!midpoint) return;
       e.preventDefault();
       lastTouchScrollAtRef.current = Date.now();
+
+      // ── Track velocity for momentum ──
+      const now = performance.now();
+      const dt = now - lastVelocityTime;
+      if (dt > 0 && lastVelocityTime > 0) {
+        // Instantaneous velocity (px/ms) — finger moved from last pos to current
+        const instantVX = (midpoint.x - lastVelocityX) / dt;
+        const instantVY = (midpoint.y - lastVelocityY) / dt;
+        // Exponential moving average smooths jitter; α=0.3 responds quickly
+        const alpha = 0.3;
+        velocityX = velocityX * (1 - alpha) + instantVX * alpha;
+        velocityY = velocityY * (1 - alpha) + instantVY * alpha;
+      }
+      lastVelocityTime = now;
+      lastVelocityX = midpoint.x;
+      lastVelocityY = midpoint.y;
+      // ── End velocity tracking ──
+
       accumulatedDeltaX += touchStartX - midpoint.x;
       accumulatedDeltaY += touchStartY - midpoint.y;
       touchStartX = midpoint.x;
@@ -1154,6 +1347,22 @@ function App() {
         accumulatedDeltaX = 0;
         accumulatedDeltaY = 0;
       }
+
+      // ── Launch momentum on release ──
+      // velocityX/Y is the finger movement direction (px/ms).
+      // Our scroll deltas are (start - current), so the scroll direction IS the
+      // finger movement direction.  Pass velocity as-is.
+      const speed = Math.sqrt(velocityX * velocityX + velocityY * velocityY);
+      if (speed > 0.05 && touchScrollTarget && displayModeRef.current === 'scrolling') {
+        startMomentum(velocityX, velocityY, touchScrollTarget);
+      }
+      // ── End momentum ──
+
+      // Reset trackers
+      velocityX = 0;
+      velocityY = 0;
+      lastVelocityTime = 0;
+
       touchScrollTarget = null;
     };
 
@@ -1171,7 +1380,7 @@ function App() {
       canvas.removeEventListener('touchend', onTouchEnd);
       canvas.removeEventListener('touchcancel', onTouchEnd);
     };
-  }, [displayMode, getScrollTargetForGesture, tool]);
+  }, [displayMode, getScrollTargetForGesture, tool, cancelMomentum, startMomentum]);
 
   // Re-trigger canvas redraw when thumbnail images finish loading
   useEffect(() => {
@@ -1445,26 +1654,39 @@ function App() {
       page: remark.page || selectedPage,
       langId: remark.langId || annotationScopeLangId,
     };
-    const data = await fetchJson('api/remarks', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        userId,
-        subjectId: selectedBook,
-        bookId: selectedChapter,
-        sectionId: selectedFile,
-        pageId: savedRemark.page,
-        langId: savedRemark.langId,
-        ...savedRemark,
-      })
-    });
-    setUndoStack((prev) => [...prev, { type: 'add', remark: savedRemark }]);
-    setRedoStack([]);
-    if (sectionScopedAnnotations) {
-      await loadRemarksForCurrentScope();
-      return;
+
+    // Optimistic: add to local remarks immediately so the stroke/annotation
+    // appears instantly even if the backend is slow.  Scrolling no longer
+    // makes the stroke disappear while we wait for the server.
+    const optimistic = { ...savedRemark, chapter: savedRemark.chapter || selectedChapter, _optimistic: true };
+    setRemarks((prev) => [...prev, optimistic]);
+
+    try {
+      const data = await fetchJson('api/remarks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          subjectId: selectedBook,
+          bookId: selectedChapter,
+          sectionId: selectedFile,
+          pageId: savedRemark.page,
+          langId: savedRemark.langId,
+          ...savedRemark,
+        })
+      });
+      setUndoStack((prev) => [...prev, { type: 'add', remark: savedRemark }]);
+      setRedoStack([]);
+      if (sectionScopedAnnotations) {
+        await loadRemarksForCurrentScope();
+        return;
+      }
+      setRemarks(data.remarks || []);
+    } catch (err) {
+      // Rollback: remove the optimistic remark on failure
+      setRemarks((prev) => prev.filter((r) => !(r._optimistic && r.createdAt === savedRemark.createdAt)));
+      throw err;
     }
-    setRemarks(data.remarks || []);
   };
 
   const clearPageRemarks = async () => {
@@ -1535,19 +1757,42 @@ function App() {
       ? pageIdOverrideOrOptions
       : { pageIdOverride: pageIdOverrideOrOptions };
     const resolvedPageId = options.pageIdOverride != null ? options.pageIdOverride : selectedPage;
-    const data = await fetchJson(
-      `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&sectionId=${selectedFile}&pageId=${resolvedPageId}&langId=${encodeURIComponent(langId)}&createdAt=${encodeURIComponent(createdAtValue)}`,
-      { method: 'DELETE' }
-    );
-    if (options.recordUndo && options.deletedRemark) {
-      setUndoStack((prev) => [...prev, { type: 'delete', remark: options.deletedRemark }]);
-      setRedoStack([]);
+
+    // Optimistic: remove from local remarks immediately so the erased stroke
+    // disappears instantly even while the backend is processing.
+    const removed = remarks.find(
+      (r) => r.createdAt === createdAtValue && r.langId === langId
+    ) || options.deletedRemark || null;
+    if (removed) {
+      setRemarks((prev) => prev.filter(
+        (r) => !(r.createdAt === createdAtValue && r.langId === langId)
+      ));
     }
-    if (sectionScopedAnnotations) {
-      return loadRemarksForCurrentScope();
+
+    try {
+      const data = await fetchJson(
+        `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&sectionId=${selectedFile}&pageId=${resolvedPageId}&langId=${encodeURIComponent(langId)}&createdAt=${encodeURIComponent(createdAtValue)}`,
+        { method: 'DELETE' }
+      );
+      if (options.recordUndo && removed) {
+        setUndoStack((prev) => [...prev, { type: 'delete', remark: removed }]);
+        setRedoStack([]);
+      }
+      if (sectionScopedAnnotations) {
+        return loadRemarksForCurrentScope();
+      }
+      setRemarks(data.remarks || []);
+      return data.remarks || [];
+    } catch (err) {
+      // Rollback: restore the removed remark if the server call fails
+      if (removed) {
+        setRemarks((prev) => {
+          if (prev.some((r) => r.createdAt === removed.createdAt && r.langId === removed.langId)) return prev;
+          return [...prev, removed];
+        });
+      }
+      throw err;
     }
-    setRemarks(data.remarks || []);
-    return data.remarks || [];
   };
 
   const undoRemark = async () => {
@@ -1892,7 +2137,7 @@ function App() {
         && canvasPoint.y <= imageRect.top + imageRect.height;
     });
     if (!langId) {
-      console.log('[draw] resolveAnnotationTarget — no langId matched. pageImageRects:', JSON.stringify(Object.keys(pageImageRects)), 'canvasPoint:', canvasPoint, 'visibleLanguages:', visibleLanguages);
+      // console.log('[draw] resolveAnnotationTarget — no langId matched. pageImageRects:', JSON.stringify(Object.keys(pageImageRects)), 'canvasPoint:', canvasPoint, 'visibleLanguages:', visibleLanguages);
       return null;
     }
     const imageRect = pageImageRects[langId];
@@ -2127,9 +2372,9 @@ function App() {
   };
 
   const handlePointerDown = (event) => {
-    console.log('[draw] pointerdown — tool:', tool, 'pointerId:', event.pointerId, 'target:', event.target?.tagName, event.target?.className);
+    // console.log('[draw] pointerdown — tool:', tool, 'pointerId:', event.pointerId, 'target:', event.target?.tagName, event.target?.className);
     if (tool !== 'pen' && tool !== 'highlight' && tool !== 'move') {
-      console.log('[draw] SKIP: tool not pen/highlight/move');
+      // console.log('[draw] SKIP: tool not pen/highlight/move');
       return;
     }
 
@@ -2137,7 +2382,7 @@ function App() {
     // drawing and let both fingers scroll (don't draw).
     activePointersRef.current.add(event.pointerId);
     if (activePointersRef.current.size > 1) {
-      console.log('[draw] SKIP: multi-touch (' + activePointersRef.current.size + ' pointers)');
+      // console.log('[draw] SKIP: multi-touch (' + activePointersRef.current.size + ' pointers)');
       // Cancel in-progress stroke
       if (drawingRef.current && currentStrokeRef.current) {
         drawingRef.current = false;
@@ -2148,10 +2393,10 @@ function App() {
 
     const target = resolveAnnotationTarget(event);
     if (!target) {
-      console.log('[draw] SKIP: resolveAnnotationTarget returned null');
+      // console.log('[draw] SKIP: resolveAnnotationTarget returned null');
       return;
     }
-    console.log('[draw] target found — langId:', target.langId, 'point:', target.point);
+    // console.log('[draw] target found — langId:', target.langId, 'point:', target.point);
     setActiveAnnotationLangId(target.langId);
 
     if (tool === 'move') {
@@ -2166,7 +2411,7 @@ function App() {
     }
 
     drawingRef.current = true;
-    console.log('[draw] drawingRef set to TRUE');
+    // console.log('[draw] drawingRef set to TRUE');
     // Prevent browser from interpreting this drag as a scroll
     event.preventDefault();
     currentStrokeRef.current = {
@@ -2238,15 +2483,15 @@ function App() {
       // Pointer is outside the page image or crossed language panes — skip this event
       // but keep the stroke alive (don't stop it). It will be saved on pointerup.
       if (!target) {
-        console.log('[draw] pointermove — resolveAnnotationTarget returned null');
+        // console.log('[draw] pointermove — resolveAnnotationTarget returned null');
       } else {
-        console.log('[draw] pointermove — langId/page mismatch: target=' + target.langId + '/' + target.pageNum + ' stroke=' + currentStrokeRef.current.langId + '/' + currentStrokeRef.current.page);
+        // console.log('[draw] pointermove — langId/page mismatch: target=' + target.langId + '/' + target.pageNum + ' stroke=' + currentStrokeRef.current.langId + '/' + currentStrokeRef.current.page);
       }
       return;
     }
     const nextPoint = target.point;
     currentStrokeRef.current.points.push(nextPoint);
-    console.count('[draw] pointermove points');
+    // console.count('[draw] pointermove points');
     const context = canvasRef.current.getContext('2d');
     const rect = canvasRef.current.getBoundingClientRect();
     redraw(context, rect.width, rect.height, [...(displayMode === 'scrolling' ? allSectionAnnotations : pageAnnotations), currentStrokeRef.current]);
@@ -2294,7 +2539,7 @@ function App() {
     drawingRef.current = false;
     const stroke = currentStrokeRef.current;
     currentStrokeRef.current = null;
-    console.log('[draw] pointerup — stroke points:', stroke.points.length);
+    // console.log('[draw] pointerup — stroke points:', stroke.points.length);
     // Normalize coordinates to percentages relative to page image size
     const pageImageRects = getPageImageRects();
     const isScrollMode = displayModeRef.current === 'scrolling';
@@ -2311,12 +2556,12 @@ function App() {
   useEffect(() => {
     const onNativeMove = (e) => {
       if (!drawingRef.current && !moveAnnotationRef.current) return;
-      console.count('[draw] document pointermove — drawing=' + drawingRef.current + ' move=' + !!moveAnnotationRef.current);
+      // console.count('[draw] document pointermove — drawing=' + drawingRef.current + ' move=' + !!moveAnnotationRef.current);
       handlePointerMove(e);
     };
     const onNativeUp = (e) => {
       if (!drawingRef.current && !moveAnnotationRef.current) return;
-      console.log('[draw] document pointerup — drawing=' + drawingRef.current);
+      // console.log('[draw] document pointerup — drawing=' + drawingRef.current);
       handlePointerUp(e);
     };
 
@@ -3344,33 +3589,40 @@ function App() {
             aria-label={_('annotation')}
           >
             {tool === 'highlight' && (
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" fill="currentColor">
                 <path d="M15.24 2.36l-11 11a1 1 0 0 0-.24.59V17a1 1 0 0 0 1 1h3.05a1 1 0 0 0 .59-.24l11-11a1 1 0 0 0 0-1.41l-3.4-3.4a1 1 0 0 0-1.41 0zM5 16v-2.5l9-9L16.5 7l-9 9H5z" />
                 <rect x="2" y="18" width="20" height="3" rx="1" />
               </svg>
             )}
             {tool === 'pen' && (
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" fill="currentColor">
                 <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z" />
               </svg>
             )}
             {tool === 'text' && (
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" fill="currentColor">
                 <path d="M5 4v3h5.5v12h3V7H19V4H5z" />
               </svg>
             )}
             {tool === 'eraser' && (
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" fill="currentColor">
                 <path d="M16.24 3.56a2 2 0 0 1 2.83 0l1.37 1.37a2 2 0 0 1 0 2.83l-8.49 8.48H8.71L3.56 10.9a2 2 0 0 1 0-2.83l7.85-7.85a2 2 0 0 1 2.83 0l2 2.34zM5.68 9.49l4.28 4.27h1.16l7.9-7.9-1.36-1.37-1.44-1.44-1.31-1.54L5.68 9.49z" />
                 <path d="M3 20h18v2H3z" />
               </svg>
             )}
             {tool === 'move' && (
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" fill="currentColor">
                 <path d="M12 2l3 3h-2v4h4V7l3 3-3 3v-2h-4v4h2l-3 3-3-3h2v-4H7v2l-3-3 3-3v2h4V5H9l3-3z" />
               </svg>
             )}
-            <span className="tool-color-indicator" style={{ background: textColor }} />
+            {tool === 'hand' && (
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" fill="currentColor">
+                <path d="M18 13.5v-6a1.5 1.5 0 0 0-3 0V11h-.5V6a1.5 1.5 0 0 0-3 0v5h-.5V4.5a1.5 1.5 0 0 0-3 0V11H7.5V7a1.5 1.5 0 0 0-3 0v8.5l-2.5-2.5-2 2L7 22h10.5a2 2 0 0 0 2-2l-.5-6.5z" />
+              </svg>
+            )}
+            {COLOR_TOOLS.has(tool) && (
+              <span className="tool-color-indicator" style={{ background: textColor, opacity: tool === 'highlight' ? 0.45 : 1 }} />
+            )}
           </button>
           <button
             className="tool-btn tool-split-arrow"
@@ -3386,34 +3638,40 @@ function App() {
         </div>
         {toolMenuOpen && (
           <div className="tool-menu-popup">
-            <div className="tool-menu-section-label">{_('annotation')}</div>
+            <div className="tool-menu-grid">
             <button className={`tool-menu-item ${tool === 'highlight' ? 'active' : ''}`} onClick={() => { setTool('highlight'); setToolMenuOpen(false); }}>
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon"><path d="M15.24 2.36l-11 11a1 1 0 0 0-.24.59V17a1 1 0 0 0 1 1h3.05a1 1 0 0 0 .59-.24l11-11a1 1 0 0 0 0-1.41l-3.4-3.4a1 1 0 0 0-1.41 0zM5 16v-2.5l9-9L16.5 7l-9 9H5z" /><rect x="2" y="18" width="20" height="3" rx="1" /></svg>
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon" fill="currentColor"><path d="M15.24 2.36l-11 11a1 1 0 0 0-.24.59V17a1 1 0 0 0 1 1h3.05a1 1 0 0 0 .59-.24l11-11a1 1 0 0 0 0-1.41l-3.4-3.4a1 1 0 0 0-1.41 0zM5 16v-2.5l9-9L16.5 7l-9 9H5z" /><rect x="2" y="18" width="20" height="3" rx="1" /></svg>
               {_('highlighter')}
             </button>
             <button className={`tool-menu-item ${tool === 'pen' ? 'active' : ''}`} onClick={() => { setTool('pen'); setToolMenuOpen(false); }}>
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z" /></svg>
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z" /></svg>
               {_('pen')}
             </button>
             <button className={`tool-menu-item ${tool === 'text' ? 'active' : ''}`} onClick={() => { setTool('text'); setToolMenuOpen(false); }}>
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon"><path d="M5 4v3h5.5v12h3V7H19V4H5z" /></svg>
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon" fill="currentColor"><path d="M5 4v3h5.5v12h3V7H19V4H5z" /></svg>
               {_('textTool')}
             </button>
             <button className={`tool-menu-item ${tool === 'eraser' ? 'active' : ''}`} onClick={() => { setTool('eraser'); setToolMenuOpen(false); }}>
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon"><path d="M16.24 3.56a2 2 0 0 1 2.83 0l1.37 1.37a2 2 0 0 1 0 2.83l-8.49 8.48H8.71L3.56 10.9a2 2 0 0 1 0-2.83l7.85-7.85a2 2 0 0 1 2.83 0l2 2.34zM5.68 9.49l4.28 4.27h1.16l7.9-7.9-1.36-1.37-1.44-1.44-1.31-1.54L5.68 9.49z" /><path d="M3 20h18v2H3z" /></svg>
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon" fill="currentColor"><path d="M16.24 3.56a2 2 0 0 1 2.83 0l1.37 1.37a2 2 0 0 1 0 2.83l-8.49 8.48H8.71L3.56 10.9a2 2 0 0 1 0-2.83l7.85-7.85a2 2 0 0 1 2.83 0l2 2.34zM5.68 9.49l4.28 4.27h1.16l7.9-7.9-1.36-1.37-1.44-1.44-1.31-1.54L5.68 9.49z" /><path d="M3 20h18v2H3z" /></svg>
               {_('rubber')}
             </button>
             <button className={`tool-menu-item ${tool === 'move' ? 'active' : ''}`} onClick={() => { setTool('move'); setToolMenuOpen(false); }}>
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon"><path d="M12 2l3 3h-2v4h4V7l3 3-3 3v-2h-4v4h2l-3 3-3-3h2v-4H7v2l-3-3 3-3v2h4V5H9l3-3z" /></svg>
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon" fill="currentColor"><path d="M12 2l3 3h-2v4h4V7l3 3-3 3v-2h-4v4h2l-3 3-3-3h2v-4H7v2l-3-3 3-3v2h4V5H9l3-3z" /></svg>
               {_('moveTool')}
             </button>
+            <button className={`tool-menu-item ${tool === 'hand' ? 'active' : ''}`} onClick={() => { setTool('hand'); setToolMenuOpen(false); }}>
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon" fill="currentColor"><path d="M18 13.5v-6a1.5 1.5 0 0 0-3 0V11h-.5V6a1.5 1.5 0 0 0-3 0v5h-.5V4.5a1.5 1.5 0 0 0-3 0V11H7.5V7a1.5 1.5 0 0 0-3 0v8.5l-2.5-2.5-2 2L7 22h10.5a2 2 0 0 0 2-2l-.5-6.5z" /></svg>
+              {_('handPan')}
+            </button>
+            </div>
             <span className="tool-menu-sep undo-redo-mobile" />
+            <div className="tool-menu-grid">
             <button
               className="tool-menu-item undo-redo-mobile"
               disabled={!undoStack.length && !remarks.filter(r => r.chapter === selectedChapter && Number(r.page) === Number(selectedPage)).length}
               onClick={() => { undoRemark(); setToolMenuOpen(false); }}
             >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon"><path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z" /></svg>
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon" fill="currentColor"><path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z" /></svg>
               {_('undo')}
             </button>
             <button
@@ -3421,12 +3679,13 @@ function App() {
               disabled={!redoStack.length}
               onClick={() => { redoRemark(); setToolMenuOpen(false); }}
             >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon"><path d="M18.4 10.6C16.55 8.99 14.15 8 11.5 8c-4.65 0-8.58 3.03-9.96 7.22L3.9 16a8.002 8.002 0 0 1 7.6-5.5c1.95 0 3.73.72 5.12 1.88L13 16h9V7l-3.6 3.6z" /></svg>
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon" fill="currentColor"><path d="M18.4 10.6C16.55 8.99 14.15 8 11.5 8c-4.65 0-8.58 3.03-9.96 7.22L3.9 16a8.002 8.002 0 0 1 7.6-5.5c1.95 0 3.73.72 5.12 1.88L13 16h9V7l-3.6 3.6z" /></svg>
               {_('redo')}
             </button>
+            </div>
             <span className="tool-menu-sep" />
             <button className="tool-menu-item tool-menu-erase-item" onClick={() => { setToolMenuOpen(false); openEraseDialog(); }}>
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM8 9h8v10H8V9zm7.5-5l-1-1h-5l-1 1H5v2h14V4h-3.5z" /></svg>
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon" fill="currentColor"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM8 9h8v10H8V9zm7.5-5l-1-1h-5l-1 1H5v2h14V4h-3.5z" /></svg>
               {_('erase')}
             </button>
             <span className="tool-menu-sep" />
@@ -3477,7 +3736,7 @@ function App() {
         data-tooltip={_('undo')}
         aria-label={_('undo')}
       >
-        <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+        <svg viewBox="0 0 24 24" role="presentation" focusable="false" fill="currentColor">
           <path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z" />
         </svg>
       </button>
@@ -3488,7 +3747,7 @@ function App() {
         data-tooltip={_('redo')}
         aria-label={_('redo')}
       >
-        <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+        <svg viewBox="0 0 24 24" role="presentation" focusable="false" fill="currentColor">
           <path d="M18.4 10.6C16.55 8.99 14.15 8 11.5 8c-4.65 0-8.58 3.03-9.96 7.22L3.9 16a8.002 8.002 0 0 1 7.6-5.5c1.95 0 3.73.72 5.12 1.88L13 16h9V7l-3.6 3.6z" />
         </svg>
       </button>
@@ -3503,10 +3762,10 @@ function App() {
             onClick={() => openStudyDrawer(lastStudyAction)}
           >
             {lastStudyAction === 'resources' && (
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4a5 5 0 0 0 5-5 5 5 0 0 0-5-5z" /></svg>
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" fill="currentColor"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4a5 5 0 0 0 5-5 5 5 0 0 0-5-5z" /></svg>
             )}
             {lastStudyAction === 'search' && (
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" /></svg>
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" /></svg>
             )}
             {lastStudyAction === 'ai' && (
               <svg viewBox="0 0 24 24" role="presentation" focusable="false" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"><path d="M10 7L9.48415 8.39405C8.80774 10.222 8.46953 11.136 7.80278 11.8028C7.13603 12.4695 6.22204 12.8077 4.39405 13.4842L3 14L4.39405 14.5158C6.22204 15.1923 7.13603 15.5305 7.80278 16.1972C8.46953 16.864 8.80774 17.778 9.48415 19.6059L10 21L10.5158 19.6059C11.1923 17.778 11.5305 16.864 12.1972 16.1972C12.864 15.5305 13.778 15.1923 15.6059 14.5158L17 14L15.6059 13.4842C13.778 12.8077 12.864 12.4695 12.1972 11.8028C11.5305 11.136 11.1923 10.222 10.5158 8.39405L10 7Z" /><path d="M18 3L17.7789 3.59745C17.489 4.38087 17.3441 4.77259 17.0583 5.05833C16.7726 5.34408 16.3809 5.48903 15.5975 5.77892L15 6L15.5975 6.22108C16.3809 6.51097 16.7726 6.65592 17.0583 6.94167C17.3441 7.22741 17.489 7.61913 17.7789 8.40255L18 9L18.2211 8.40255C18.511 7.61913 18.6559 7.22741 18.9417 6.94166C19.2274 6.65592 19.6191 6.51097 20.4025 6.22108L21 6L20.4025 5.77892C19.6191 5.48903 19.2274 5.34408 18.9417 5.05833C18.6559 4.77259 18.511 4.38087 18.2211 3.59745L18 3Z" /></svg>
@@ -3527,7 +3786,7 @@ function App() {
           <div className="tool-menu-popup">
             <div className="tool-menu-section-label">{_('resources')}</div>
             <button className={`tool-menu-item ${resourcesDrawerOpen ? 'active' : ''}`} onClick={() => { openStudyDrawer('resources'); setLastStudyAction('resources'); setStudyMenuOpen(false); }}>
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4a5 5 0 0 0 5-5 5 5 0 0 0-5-5z" /></svg>
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon" fill="currentColor"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4a5 5 0 0 0 5-5 5 5 0 0 0-5-5z" /></svg>
               {_('resources')}
             </button>
             <button className={`tool-menu-item ${aiDrawerOpen ? 'active' : ''}`} onClick={() => { openStudyDrawer('ai'); setLastStudyAction('ai'); setStudyMenuOpen(false); }}>
@@ -3535,7 +3794,7 @@ function App() {
               {aiLoading ? _('generating') : _('aiGeneration')}
             </button>
             <button className={`tool-menu-item ${searchDrawerOpen ? 'active' : ''}`} onClick={() => { openStudyDrawer('search'); setLastStudyAction('search'); setStudyMenuOpen(false); }}>
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" /></svg>
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" /></svg>
               {_('search')}
             </button>
           </div>
@@ -3952,20 +4211,20 @@ function App() {
               onClick={cycleBook}
               data-tooltip={_('switchBook')}
               aria-label={_('switchBook')}
-            >B</button>
+            ><span className="sidebar-icon-btn-text">{getSubjectLabel(selectedBook, selectedLanguage).split(' ')[0]}</span></button>
             <button
               className="sidebar-icon-btn section-stepper"
               onClick={() => moveSection(1)}
               data-tooltip={_('nextSection')}
               aria-label={_('nextSection')}
-            >S</button>
+            ><span className="sidebar-icon-btn-text">{currentSectionHeaderName.split(' ')[0] || selectedFile}</span></button>
             {maxNavigablePage > 1 && (
               <button
                 className="sidebar-icon-btn page-stepper"
                 onClick={() => jumpPage(1)}
                 data-tooltip={_('nextPage')}
                 aria-label={_('nextPage')}
-              >P</button>
+              ><span className="sidebar-icon-btn-text">{selectedPage}</span></button>
             )}
             <button
               className="sidebar-icon-btn"
