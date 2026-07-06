@@ -1349,12 +1349,12 @@ function App() {
       }
 
       // ── Launch momentum on release ──
-      // velocityX/Y is the finger movement direction (px/ms).
-      // Our scroll deltas are (start - current), so the scroll direction IS the
-      // finger movement direction.  Pass velocity as-is.
+      // velocityX/Y tracks finger movement direction (px/ms).
+      // Our scroll deltas are (start - midpoint), i.e. scroll = -fingerMovement.
+      // Negate so momentum continues scrolling in the same direction as the gesture.
       const speed = Math.sqrt(velocityX * velocityX + velocityY * velocityY);
       if (speed > 0.05 && touchScrollTarget && displayModeRef.current === 'scrolling') {
-        startMomentum(velocityX, velocityY, touchScrollTarget);
+        startMomentum(-velocityX, -velocityY, touchScrollTarget);
       }
       // ── End momentum ──
 
@@ -4258,11 +4258,7 @@ function App() {
               onClick={cycleLanguage}
               data-tooltip={_('switchLanguage')}
               aria-label={_('switchLanguage')}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <path d="M5 6h9v2H5V6zm2 4h5v2H7v-2zm7.5 0h2.4L20 18h-2.1l-.7-2h-3l-.7 2h-2.1l3.2-8zm.2 4h1.7l-.8-2.3-.9 2.3z" fill="#1f4d6c" />
-              </svg>
-            </button>
+            ><span className="sidebar-icon-btn-text">{selectedLanguage === 'en' ? 'EN' : selectedLanguage === 'tc' ? '中' : '雙'}</span></button>
             <button
               className={`sidebar-icon-btn ${panelVisible ? 'active' : ''}`}
               onClick={() => setPanelVisible((current) => !current)}

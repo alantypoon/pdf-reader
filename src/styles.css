@@ -1949,7 +1949,7 @@ button, input, select {
 
 .tool-menu-popup {
   position: absolute;
-  bottom: calc(100% + 8px);
+  bottom: calc(100% + 12px);
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -1957,9 +1957,9 @@ button, input, select {
   gap: 4px;
   padding: 10px;
   background: #ffffff;
-  border: 1px solid #d7e0e8;
+  border: 1px solid #c0c8d4;
   border-radius: 14px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.16);
+  box-shadow: 0 -4px 20px rgba(0,0,0,0.18), 0 -1px 4px rgba(0,0,0,0.10), 0 4px 16px rgba(0,0,0,0.08);
   z-index: 300;
   min-width: 180px;
 }

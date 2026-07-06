@@ -2,6 +2,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
+const isIOS = (() => {
+	if (typeof navigator === 'undefined') return false;
+	return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+		(navigator.maxTouchPoints > 1 && /MacIntel/.test(navigator.platform));
+})();
+
 function normalizeText(value) {
 	return String(value || '').trim();
 }
@@ -146,7 +152,7 @@ function AutocompleteDropdown({
 	const handleFocus = () => {
 		setOpen(true);
 		setHighlightIndex(-1);
-		if (!query && selectedDisplay) {
+		if (!isIOS && !query && selectedDisplay) {
 			setTimeout(() => {
 				inputRef.current?.select();
 			}, 0);
@@ -165,7 +171,11 @@ function AutocompleteDropdown({
 			}
 			return next;
 		});
-		inputRef.current?.focus();
+		// Avoid focusing the input on iOS — prevents the on-screen keyboard
+		// from obscuring the dropdown list.
+		if (!isIOS) {
+			inputRef.current?.focus();
+		}
 	};
 
 	const handleBlur = () => {
