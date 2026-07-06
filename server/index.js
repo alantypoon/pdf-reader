@@ -234,6 +234,73 @@ function loadDseAuthConfig() {
   return dseAuthConfigCache;
 }
 
+// ── Valid user whitelist from htpasswd ─────────────────────
+const HTPASSWD_FILE = process.env.HTPASSWD_FILE || '/etc/nginx/.htpasswd_dse';
+let validUsersCache;
+let validUsersCacheTime = 0;
+const VALID_USERS_CACHE_TTL_MS = 60_000; // re-read every 60 seconds
+
+function loadValidUsers() {
+  const now = Date.now();
+  if (validUsersCache && (now - validUsersCacheTime) < VALID_USERS_CACHE_TTL_MS) {
+    return validUsersCache;
+  }
+  try {
+    const text = readFileSync(HTPASSWD_FILE, 'utf8');
+    validUsersCache = new Set(
+      text.split('\n')
+        .map(line => line.trim())
+        .filter(line => line && !line.startsWith('#'))
+        .map(line => line.split(':', 1)[0])
+        .filter(Boolean)
+    );
+    validUsersCacheTime = now;
+    console.log(`[auth] loaded ${validUsersCache.size} valid users from ${HTPASSWD_FILE}`);
+  } catch (err) {
+    console.warn(`[auth] cannot read ${HTPASSWD_FILE}:`, err.message);
+    validUsersCache = new Set();
+    validUsersCacheTime = now;
+  }
+  return validUsersCache;
+}
+
+/** Returns true if the userId is a valid authenticated username from htpasswd. */
+function isValidUserId(userId) {
+  if (!userId || typeof userId !== 'string') return false;
+  const trimmed = userId.trim();
+  if (!trimmed) return false;
+  // Reject auto-generated client-side fallback IDs (e.g. "u3miqcow8")
+  if (/^u[a-z0-9]{8,}$/.test(trimmed)) return false;
+  const validUsers = loadValidUsers();
+  return validUsers.has(trimmed);
+}
+
+/** Middleware: extract and validate userId, respond 403 if invalid. */
+function requireValidUserId(allowQueryFallback = false) {
+  return (request, response, next) => {
+    const authenticatedUserId = getAuthenticatedUserId(request);
+    let userId = authenticatedUserId;
+
+    // Only allow query/body fallback if explicitly permitted AND the value is valid
+    if (!userId && allowQueryFallback) {
+      const candidate = String(
+        request.query.userId || (request.body && request.body.userId) || ''
+      ).trim();
+      if (candidate && isValidUserId(candidate)) {
+        userId = candidate;
+      }
+    }
+
+    if (!userId || !isValidUserId(userId)) {
+      response.status(403).json({ error: 'Access denied: valid authentication required.' });
+      return;
+    }
+
+    request.validatedUserId = userId;
+    next();
+  };
+}
+
 function parseCookies(cookieHeader) {
   const cookies = {};
   if (typeof cookieHeader !== 'string' || !cookieHeader.trim()) {
@@ -383,13 +450,8 @@ app.get('/api/session-user', (request, response) => {
   response.json({ userId: getAuthenticatedUserId(request) });
 });
 
-app.get('/api/user-selects', asyncRoute(async (request, response) => {
-  const authenticatedUserId = getAuthenticatedUserId(request);
-  const userId = String(request.query.userId || authenticatedUserId || '').trim();
-  if (!userId) {
-    response.status(400).json({ error: 'userId is required' });
-    return;
-  }
+app.get('/api/user-selects', requireValidUserId(true), asyncRoute(async (request, response) => {
+  const userId = request.validatedUserId;
   if (!userSelects) {
     response.json({ userId, lastSubjectId: '', selections: {} });
     return;
@@ -403,13 +465,12 @@ app.get('/api/user-selects', asyncRoute(async (request, response) => {
   });
 }));
 
-app.post('/api/user-selects', asyncRoute(async (request, response) => {
-  const authenticatedUserId = getAuthenticatedUserId(request);
+app.post('/api/user-selects', requireValidUserId(true), asyncRoute(async (request, response) => {
+  const userId = request.validatedUserId;
   const body = request.body || {};
-  const userId = String(body.userId || authenticatedUserId || '').trim();
   const subjectId = String(body.subjectId || body.lastSubjectId || '').trim();
-  if (!userId || !subjectId) {
-    response.status(400).json({ error: 'userId and subjectId are required' });
+  if (!subjectId) {
+    response.status(400).json({ error: 'subjectId is required' });
     return;
   }
   if (!userSelects) {
@@ -441,14 +502,9 @@ app.post('/api/user-selects', asyncRoute(async (request, response) => {
   response.json({ ok: true });
 }));
 
-app.post('/api/user-actions', asyncRoute(async (request, response) => {
-  const authenticatedUserId = getAuthenticatedUserId(request);
+app.post('/api/user-actions', requireValidUserId(true), asyncRoute(async (request, response) => {
+  const userId = request.validatedUserId;
   const body = request.body || {};
-  const userId = String(body.userId || authenticatedUserId || '').trim();
-  if (!userId) {
-    response.status(400).json({ error: 'userId is required' });
-    return;
-  }
 
   const actionType = String(body.actionType || '').trim();
   if (!actionType) {
@@ -471,12 +527,8 @@ app.post('/api/user-actions', asyncRoute(async (request, response) => {
   response.json({ ok: true });
 }));
 
-app.post('/api/user-actions/logout', asyncRoute(async (request, response) => {
-  const userId = String(getAuthenticatedUserId(request) || request.body?.userId || '').trim();
-  if (!userId) {
-    response.status(400).json({ error: 'userId is required' });
-    return;
-  }
+app.post('/api/user-actions/logout', requireValidUserId(true), asyncRoute(async (request, response) => {
+  const userId = request.validatedUserId;
 
   await logUserAction({
     userId,
@@ -589,9 +641,9 @@ app.get('/api/page', asyncRoute(async (request, response) => {
   }
 }));
 
-app.get('/api/remarks', asyncRoute(async (request, response) => {
-  const userId = String(request.query.userId || '').trim();
-  if (!annotationsCollection || !userId) {
+app.get('/api/remarks', requireValidUserId(true), asyncRoute(async (request, response) => {
+  const userId = request.validatedUserId;
+  if (!annotationsCollection) {
     response.json({ remarks: [] });
     return;
   }
@@ -604,15 +656,16 @@ app.get('/api/remarks', asyncRoute(async (request, response) => {
   response.json({ remarks: await listAnnotationRemarks(query) });
 }));
 
-app.post('/api/remarks', asyncRoute(async (request, response) => {
+app.post('/api/remarks', requireValidUserId(true), asyncRoute(async (request, response) => {
   try {
-    const { userId, subjectId, bookId, sectionId, pageId, langId, ...remark } = request.body || {};
+    const userId = request.validatedUserId;
+    const { subjectId, bookId, sectionId, pageId, langId, ...remark } = request.body || {};
     if (!annotationsCollection) {
       response.status(500).json({ error: 'MongoDB not connected', remarks: [] });
       return;
     }
     const identity = {
-      userId: String(userId || '').trim(),
+      userId,
       subjectId: String(subjectId || '').trim(),
       bookId: String(bookId || '').trim(),
       sectionId: Number(sectionId),
@@ -642,15 +695,16 @@ app.post('/api/remarks', asyncRoute(async (request, response) => {
   }
 }));
 
-app.delete('/api/remarks', asyncRoute(async (request, response) => {
+app.delete('/api/remarks', requireValidUserId(true), asyncRoute(async (request, response) => {
   try {
     if (!annotationsCollection) {
       response.status(500).json({ error: 'MongoDB not connected', remarks: [] });
       return;
     }
-    const { userId, subjectId, bookId, sectionId, pageId, createdAt, langId } = request.query;
+    const userId = request.validatedUserId;
+    const { subjectId, bookId, sectionId, pageId, createdAt, langId } = request.query;
     const identity = {
-      userId: String(userId || '').trim(),
+      userId,
       subjectId: String(subjectId || '').trim(),
       bookId: String(bookId || '').trim(),
       sectionId: Number(sectionId),

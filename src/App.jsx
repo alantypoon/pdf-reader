@@ -79,16 +79,6 @@ function getSubjectLabel(subjectId, selectedLanguage = 'en') {
   return String(subjectId || '').trim();
 }
 
-function getUserId() {
-  if (typeof window === 'undefined') return 'default';
-  let id = window.localStorage.getItem('pdfReaderUserId');
-  if (!id) {
-    id = 'u' + Math.random().toString(36).slice(2, 10);
-    window.localStorage.setItem('pdfReaderUserId', id);
-  }
-  return id;
-}
-
 async function fetchJson(url, options) {
   const response = await fetch(url, options);
 
@@ -144,8 +134,7 @@ function App() {
       ? value
       : DEFAULT_ANNOTATION_COLOR;
   }, [savedPrefs.textColor]);
-  const fallbackUserId = useMemo(() => getUserId(), []);
-  const [userId, setUserId] = useState(fallbackUserId);
+  const [userId, setUserId] = useState('');
   const isTestMode = useMemo(() => {
     if (typeof window === 'undefined') return false;
     const params = new URLSearchParams(window.location.search);
