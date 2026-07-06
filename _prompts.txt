@@ -128,3 +128,4 @@ i.e. - 100% +. remove the annotation TOGGLE button, show the grouped buttons as 
 
 ////
 
+on ipad, speed up the two-finger drag's scroll speed. but the speed up is not a static one. it just reduces the amount of the deceleration and make the initial last longer.

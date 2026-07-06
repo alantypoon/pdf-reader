@@ -262,6 +262,11 @@ function App() {
   const lastTouchScrollAtRef = useRef(0);
   const momentumRef = useRef({ animating: false, vx: 0, vy: 0, target: null, lastTime: 0, rafId: null });
   const wheelVelocityRef = useRef({ vx: 0, vy: 0, lastTime: 0, timeoutId: null });
+  const isIOSDevice = useRef((() => {
+    if (typeof navigator === 'undefined') return false;
+    return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.maxTouchPoints > 1 && /MacIntel/.test(navigator.platform));
+  })()).current;
 
   // Position the color picker popover relative to the color button
   useLayoutEffect(() => {
@@ -1079,7 +1084,9 @@ function App() {
 
       // Frame-rate-independent friction: v *= 0.95^(dt / 16.67)
       // At 60fps, 0.95 per frame gives ~1.5s to stop — feels natural
-      const friction = Math.pow(0.95, dt / 16.67);
+      // On iOS, use lower friction (0.975) so momentum coasts longer
+      const frictionBase = isIOSDevice ? 0.975 : 0.95;
+      const friction = Math.pow(frictionBase, dt / 16.67);
       m.vx *= friction;
       m.vy *= friction;
     }
@@ -1352,9 +1359,11 @@ function App() {
       // velocityX/Y tracks finger movement direction (px/ms).
       // Our scroll deltas are (start - midpoint), i.e. scroll = -fingerMovement.
       // Negate so momentum continues scrolling in the same direction as the gesture.
+      // On iOS, amplify initial velocity so the coasting feels more responsive.
+      const iosBoost = isIOSDevice ? 1.5 : 1.0;
       const speed = Math.sqrt(velocityX * velocityX + velocityY * velocityY);
       if (speed > 0.05 && touchScrollTarget && displayModeRef.current === 'scrolling') {
-        startMomentum(-velocityX, -velocityY, touchScrollTarget);
+        startMomentum(-velocityX * iosBoost, -velocityY * iosBoost, touchScrollTarget);
       }
       // ── End momentum ──
 
