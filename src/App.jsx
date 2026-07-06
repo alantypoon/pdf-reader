@@ -3062,7 +3062,7 @@ function App() {
 
   useEffect(() => {
     setRenderScaleByLanguage({});
-  }, [selectedChapter, selectedFile, selectedPage, selectedLanguage, displayMode]);
+  }, [selectedChapter, selectedFile, selectedLanguage, displayMode]);
 
   const fetchCachedAiContent = useCallback(async () => {
     const data = await fetchJson(
