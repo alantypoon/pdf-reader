@@ -543,6 +543,7 @@ function PdfPane({
       }
       img.style.display = 'block';
       img.style.minHeight = '120px';
+      img.style.opacity = '0'; // hidden until loaded (fades in via CSS transition)
       return img;
     });
 
@@ -563,13 +564,24 @@ function PdfPane({
         if (url && !img.src) {
           loading++;
           img.src = url;
-          img.onload = img.onerror = () => {
+          img.onload = () => {
             loading--;
             loadedCount++;
             img.style.minHeight = '';
+            img.style.opacity = '1';
             if (!disposed) {
-              // When all images have loaded, their final heights are known,
-              // so recalculate the scroll position to land on the correct page.
+              if (loadedCount >= imgElements.length) {
+                scrollToPage(currentPage);
+              }
+              loadNext();
+            }
+          };
+          img.onerror = () => {
+            loading--;
+            loadedCount++;
+            // Keep minHeight so the layout doesn't collapse; hide the broken-image icon
+            img.style.opacity = '0';
+            if (!disposed) {
               if (loadedCount >= imgElements.length) {
                 scrollToPage(currentPage);
               }
@@ -724,7 +736,11 @@ function PdfPane({
                   }
                 }}
               >
-                <img src={thumb.url} alt={`${_('pageN')} ${thumb.page}`} />
+                <img
+                  src={thumb.url}
+                  alt={`${_('pageN')} ${thumb.page}`}
+                  onError={(e) => { e.target.style.visibility = 'hidden'; }}
+                />
                 <span>{thumb.page}</span>
               </button>
             ))}
@@ -750,7 +766,12 @@ function PdfPane({
                       }
                     }}
                   >
-                    <img src={thumb.url} alt={`${_('pageN')} ${thumb.page}`} data-page={thumb.page} />
+                    <img
+                  src={thumb.url}
+                  alt={`${_('pageN')} ${thumb.page}`}
+                  data-page={thumb.page}
+                  onError={(e) => { e.target.style.visibility = 'hidden'; }}
+                />
                     <span>{thumb.page}</span>
                   </button>
                 ))}
@@ -784,14 +805,22 @@ function PdfPane({
               className="pdf-single-page"
               style={paginationPaneStyle}
             >
-              <img
-                ref={imgRef}
-                src={imgSrc}
-                alt={`${_('pageN')} ${currentPage}`}
-                className="page-img"
-                onLoad={handleImageLoad}
-                style={imageStyle}
-              />
+              {imgSrc ? (
+                <img
+                  ref={imgRef}
+                  src={imgSrc}
+                  alt={`${_('pageN')} ${currentPage}`}
+                  className="page-img"
+                  onLoad={handleImageLoad}
+                  onError={(e) => {
+                    // Hide the broken-image icon; placeholder background shows instead
+                    e.target.style.visibility = 'hidden';
+                  }}
+                  style={imageStyle}
+                />
+              ) : (
+                <div className="page-img" style={{ ...imageStyle, minHeight: '120px' }} />
+              )}
             </div>
               );
             })()

@@ -2,12 +2,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
-const isIOS = (() => {
-	if (typeof navigator === 'undefined') return false;
-	return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-		(navigator.maxTouchPoints > 1 && /MacIntel/.test(navigator.platform));
-})();
-
 function normalizeText(value) {
 	return String(value || '').trim();
 }
@@ -33,6 +27,7 @@ function AutocompleteDropdown({
 	disableNext,
 	onPrev,
 	onNext,
+	onOpenChange,
 	inputClassName = '',
 	inputWrapperClassName = '',
 	containerClassName = '',
@@ -60,6 +55,15 @@ function AutocompleteDropdown({
 	}, [filtered, dropdownFilter]);
 
 	const resolvedPlaceholder = query ? placeholder : (placeholder || '');
+
+	// Notify parent when open state changes (e.g. for cleanup after click-outside dismiss)
+	const prevOpenRef = useRef(open);
+	useEffect(() => {
+		if (prevOpenRef.current !== open) {
+			prevOpenRef.current = open;
+			onOpenChange?.(open);
+		}
+	}, [open, onOpenChange]);
 
 	// Recalculate the dropdown position relative to the viewport
 	const updateDropdownPosition = useCallback(() => {
@@ -152,11 +156,6 @@ function AutocompleteDropdown({
 	const handleFocus = () => {
 		setOpen(true);
 		setHighlightIndex(-1);
-		if (!isIOS && !query && selectedDisplay) {
-			setTimeout(() => {
-				inputRef.current?.select();
-			}, 0);
-		}
 	};
 
 	const handleToggleOpen = (event) => {
@@ -171,15 +170,13 @@ function AutocompleteDropdown({
 			}
 			return next;
 		});
-		// Avoid focusing the input on iOS — prevents the on-screen keyboard
-		// from obscuring the dropdown list.
-		if (!isIOS) {
-			inputRef.current?.focus();
-		}
+		inputRef.current?.focus();
 	};
 
 	const handleBlur = () => {
 		setTimeout(() => {
+			// Don't close the dropdown if focus moved to the filter input inside it
+			if (document.activeElement === dropdownFilterRef.current) return;
 			setOpen(false);
 			setQuery('');
 			setDropdownFilter('');
@@ -228,15 +225,11 @@ function AutocompleteDropdown({
 				<input
 					ref={inputRef}
 					type="text"
+					readOnly
+					inputMode="none"
 					className={`autocomplete-input ${!showSearchIcon ? 'no-search-icon' : ''} ${!query && selectedDisplay ? 'has-selected' : ''} ${inputClassName}`.trim()}
 					placeholder={resolvedPlaceholder}
-					value={query || (selectedDisplay || '')}
-					onChange={(event) => {
-						setQuery(event.target.value);
-						setDropdownFilter('');
-						setOpen(true);
-						setHighlightIndex(-1);
-					}}
+					value={selectedDisplay || ''}
 					onFocus={handleFocus}
 					onBlur={handleBlur}
 					onKeyDown={handleKeyDown}
@@ -272,7 +265,13 @@ function AutocompleteDropdown({
 		{open && createPortal(
 			<>
 				{filtered.length > 0 && (
-					<div className="autocomplete-dropdown" style={dropdownStyle} onMouseDown={(e) => e.preventDefault()}>
+					<div className="autocomplete-dropdown" style={dropdownStyle} onMouseDown={(e) => {
+						// Don't preventDefault on the filter input so it can receive focus
+						// and bring up the virtual keyboard on iOS.
+						if (e.target !== dropdownFilterRef.current) {
+							e.preventDefault();
+						}
+					}}>
 						<div className="autocomplete-dropdown-filter">
 							<svg className="autocomplete-dropdown-filter-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
 								<circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" strokeWidth="2" />

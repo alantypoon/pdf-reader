@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import AutocompleteDropdown from './components/AutocompleteDropdown';
 
-function SectionAutocomplete({ sections, onSelect, getSectionName, currentSection, language }) {
+function SectionAutocomplete({ sections, onSelect, getSectionName, currentSection, language, onOpenChange }) {
   const currentSectionName = useMemo(() => {
     if (!currentSection || !language) return '';
     const sectionId = String(currentSection.section || currentSection.page || '').trim();
@@ -53,6 +53,7 @@ function SectionAutocomplete({ sections, onSelect, getSectionName, currentSectio
       placeholder="Search section..."
       emptyText="No matching sections"
       toggleAriaLabel="Toggle section list"
+      onOpenChange={onOpenChange}
     />
   );
 }

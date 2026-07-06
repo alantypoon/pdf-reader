@@ -5,6 +5,7 @@ import BookAutocomplete from './BookAutocomplete';
 import PdfPane from './PdfPane';
 import SectionAutocomplete from './SectionAutocomplete';
 import StepperSelect from './StepperSelect';
+import AutocompleteDropdown from './components/AutocompleteDropdown';
 import { t, uiLang } from './i18n';
 
 const PREFERENCES_KEY = 'pdfReaderPreferences';
@@ -738,6 +739,14 @@ function App() {
       .filter((id) => existing.has(id))
       .map((id) => ({ id, label: getSubjectLabel(id, selectedLanguage) }));
   }, [dataBooks, selectedLanguage]);
+
+  const subjectAutocompleteItems = useMemo(() => (
+    subjectToggleOptions.map((item) => ({
+      id: item.id,
+      primary: item.label,
+      searchText: item.label,
+    }))
+  ), [subjectToggleOptions]);
 
   const handleSubjectChange = async (newBook) => {
     if (!newBook || String(newBook) === String(selectedBook)) return;
@@ -1642,9 +1651,36 @@ function App() {
     setSelectedLanguage(next);
   };
 
+  // Refs for collapsed sidebar buttons – used to position the autocomplete dropdowns
+  const collapsedBtnRefs = useRef({ subject: null, book: null, section: null, page: null });
+  const [collapsedDropdownId, setCollapsedDropdownId] = useState(null);
+  const [collapsedDropdownPos, setCollapsedDropdownPos] = useState({ top: 0, left: 0 });
+
+  const openSidebarAutocomplete = useCallback((autocompleteId) => {
+    const btn = collapsedBtnRefs.current[autocompleteId];
+    if (!btn) return;
+    const rect = btn.getBoundingClientRect();
+    setCollapsedDropdownPos({ top: rect.top, left: rect.right + 8 });
+    setCollapsedDropdownId(autocompleteId);
+    // After render, trigger the toggle button via mousedown
+    requestAnimationFrame(() => {
+      const container = document.querySelector(`[data-collapsed-autocomplete="${autocompleteId}"]`);
+      if (!container) return;
+      const toggleBtn = container.querySelector('.autocomplete-toggle-btn');
+      if (toggleBtn instanceof HTMLElement) {
+        toggleBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      }
+    });
+  }, []);
+
   const openResource = (resource) => {
     // MP3 files always use the audio player modal
     if (/\.mp3(\?|$)/i.test(resource.url)) {
+      setModalInfo({ url: resource.url, name: resource.name });
+      return;
+    }
+    // HTML pages (e.g. OUP e-learning interactives) open in the modal iframe
+    if (/\.html?(\?|$|#)/i.test(resource.url)) {
       setModalInfo({ url: resource.url, name: resource.name });
       return;
     }
@@ -4013,7 +4049,7 @@ function App() {
             </svg>
             {_('book')}
           </span>
-          <div className="selector-stepper-row">
+          <div className="selector-stepper-row" data-autocomplete-id="book">
             <button type="button" className="selector-stepper-btn" onClick={() => stepBook(-1)} disabled={currentBookIndex <= 0}>-</button>
             <BookAutocomplete
               books={bookAutocompleteOptions}
@@ -4060,7 +4096,7 @@ function App() {
               </svg>
               {_('section')}
             </span>
-            <div className="selector-stepper-row">
+            <div className="selector-stepper-row" data-autocomplete-id="section">
               <button type="button" className="selector-stepper-btn" onClick={() => { if (currentSectionIndex > 0) { setSelectedFile(Number(sectionSelectOptions[currentSectionIndex - 1].id)); setSelectedPage(1); } }} disabled={currentSectionIndex <= 0}>-</button>
               <SectionAutocomplete
                 sections={currentChapter?.contents || []}
@@ -4088,6 +4124,7 @@ function App() {
               </svg>
               {_('pageN')}
             </span>
+            <div data-autocomplete-id="page">
             <StepperSelect
               items={pageSelectOptions}
               value={selectedPage}
@@ -4098,6 +4135,7 @@ function App() {
               disableNext={currentPageIndex < 0 || currentPageIndex >= pageOptions.length - 1}
               placeholder={String(selectedPage || 1)}
             />
+            </div>
           </label>
         )}
 
@@ -4215,24 +4253,38 @@ function App() {
               </svg>
             </button>
             )}
+            {/* Subject selector – collapsed */}
+            <button
+              className="sidebar-icon-btn"
+              ref={(el) => { collapsedBtnRefs.current.subject = el; }}
+              onClick={() => openSidebarAutocomplete('subject')}
+              data-tooltip={_('selectSubject')}
+              aria-label={_('selectSubject')}
+            ><span className="sidebar-icon-btn-text">{getSubjectLabel(selectedBook, selectedLanguage).split(' ')[0]}</span></button>
+            {/* Book selector – collapsed */}
             <button
               className="sidebar-icon-btn book-stepper"
-              onClick={cycleBook}
-              data-tooltip={_('switchBook')}
-              aria-label={_('switchBook')}
-            ><span className="sidebar-icon-btn-text">{getSubjectLabel(selectedBook, selectedLanguage).split(' ')[0]}</span></button>
+              ref={(el) => { collapsedBtnRefs.current.book = el; }}
+              onClick={() => openSidebarAutocomplete('book')}
+              data-tooltip={_('selectBook')}
+              aria-label={_('selectBook')}
+            ><span className="sidebar-icon-btn-text">{currentChapter?.id?.toUpperCase() || '···'}</span></button>
+            {/* Section selector – collapsed */}
             <button
               className="sidebar-icon-btn section-stepper"
-              onClick={() => moveSection(1)}
-              data-tooltip={_('nextSection')}
-              aria-label={_('nextSection')}
+              ref={(el) => { collapsedBtnRefs.current.section = el; }}
+              onClick={() => openSidebarAutocomplete('section')}
+              data-tooltip={_('selectSection')}
+              aria-label={_('selectSection')}
             ><span className="sidebar-icon-btn-text">{currentSectionHeaderName.split(' ')[0] || selectedFile}</span></button>
+            {/* Page selector – collapsed */}
             {maxNavigablePage > 1 && (
               <button
                 className="sidebar-icon-btn page-stepper"
-                onClick={() => jumpPage(1)}
-                data-tooltip={_('nextPage')}
-                aria-label={_('nextPage')}
+                ref={(el) => { collapsedBtnRefs.current.page = el; }}
+                onClick={() => openSidebarAutocomplete('page')}
+                data-tooltip={_('selectPage')}
+                aria-label={_('selectPage')}
               ><span className="sidebar-icon-btn-text">{selectedPage}</span></button>
             )}
             <button
@@ -4967,6 +5019,84 @@ function App() {
             )}
           </div>
         </div>
+      )}
+
+      {/* ── Collapsed Sidebar Autocomplete Portals ──────────── */}
+      {collapsedDropdownId && createPortal(
+        <div
+          className="collapsed-autocomplete-container"
+          style={{
+            position: 'fixed',
+            top: collapsedDropdownPos.top,
+            left: collapsedDropdownPos.left,
+            zIndex: 10000,
+          }}
+        >
+          {collapsedDropdownId === 'subject' && (
+            <div data-collapsed-autocomplete="subject">
+              <AutocompleteDropdown
+                items={subjectAutocompleteItems}
+                value={selectedBook}
+                onSelect={(id) => { handleSubjectChange(id); setCollapsedDropdownId(null); }}
+                onOpenChange={(open) => { if (!open) setCollapsedDropdownId(null); }}
+                selectedDisplay={getSubjectLabel(selectedBook, selectedLanguage)}
+                placeholder={_('subject')}
+                emptyText={_('noMatchingBooks')}
+                toggleAriaLabel="Select subject"
+              />
+            </div>
+          )}
+          {collapsedDropdownId === 'book' && (
+            <div data-collapsed-autocomplete="book">
+              <BookAutocomplete
+                books={bookAutocompleteOptions}
+                currentBook={currentChapter}
+                language={selectedLanguage}
+                subjectId={selectedBook}
+                onSelect={(book) => { handleBookSelect(book); setCollapsedDropdownId(null); }}
+                onOpenChange={(open) => { if (!open) setCollapsedDropdownId(null); }}
+                placeholder={_('searchBookTopic')}
+                emptyText={_('noMatchingBooks')}
+              />
+            </div>
+          )}
+          {collapsedDropdownId === 'section' && (
+            <div data-collapsed-autocomplete="section">
+              <SectionAutocomplete
+                sections={currentChapter?.contents || []}
+                currentSection={currentSection}
+                language={selectedLanguage}
+                getSectionName={getSectionName}
+                onSelect={(sectionId) => {
+                  setSelectedFile(Number(sectionId));
+                  setSelectedPage(1);
+                  setCollapsedDropdownId(null);
+                }}
+                onOpenChange={(open) => { if (!open) setCollapsedDropdownId(null); }}
+              />
+            </div>
+          )}
+          {collapsedDropdownId === 'page' && maxNavigablePage > 1 && (
+            <div data-collapsed-autocomplete="page">
+              <AutocompleteDropdown
+                items={pageSelectOptions.map((item) => ({
+                  id: item.id,
+                  primary: item.label,
+                  secondary: item.secondary || '',
+                  searchText: [item.id, item.label, item.secondary].filter(Boolean).join('\n'),
+                }))}
+                value={selectedPage}
+                onSelect={(id) => { setSelectedPage(Number(id)); setCollapsedDropdownId(null); }}
+                onOpenChange={(open) => { if (!open) setCollapsedDropdownId(null); }}
+                selectedDisplay={String(selectedPage)}
+                placeholder={String(selectedPage || 1)}
+                emptyText="No matching pages"
+                toggleAriaLabel="Toggle page list"
+              />
+            </div>
+          )}
+        </div>,
+        document.body
       )}
 
       {/* ── Color Picker Portal ──────────────────────────── */}

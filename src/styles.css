@@ -133,6 +133,7 @@ button, input, select {
   margin-top: 4px;
 }
 
+
 .sidebar-icon-btn {
   width: 100%;
   min-width: 48px;
@@ -1374,6 +1375,20 @@ button, input, select {
   background: white;
   border-radius: 0;
   box-shadow: none;
+}
+
+/* Page image — subtle placeholder background for loading / broken states */
+.page-img {
+  /* Light tinted background shows through while image loads or on error.
+     A successfully loaded PDF page (white) will cover it seamlessly. */
+  background-color: #f4f7fa;
+  transition: opacity 0.25s ease;
+}
+
+/* Thumbnail images — subtle background for loading / broken states */
+.thumb-item img,
+.thumb-grid-item img {
+  background: #e8edf2;
 }
 
 .pdf-scroll-pages canvas {
