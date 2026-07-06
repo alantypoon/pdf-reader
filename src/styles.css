@@ -107,9 +107,16 @@ button, input, select {
   overflow-y: hidden;
 }
 
+.sidebar.collapsed.scroll-locked {
+  overflow-y: hidden;
+  overflow-x: visible;
+}
+
 .sidebar.collapsed {
   width: 88px;
   padding: 20px 14px calc(20px + var(--bottom-toolbar-offset, 0px));
+  overflow-x: visible;
+  overflow-y: auto;
 }
 
 .sidebar.collapsed h1,
@@ -165,28 +172,52 @@ button, input, select {
 .sidebar-icon-btn::after {
   content: attr(data-tooltip);
   position: absolute;
-  left: calc(100% + 10px);
-  top: 50%;
-  transform: translateY(-50%);
-  padding: 6px 12px;
-  border-radius: 8px;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 5px 10px;
+  border-radius: 7px;
   background: #102033;
   color: #ffffff;
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   font-weight: 500;
   white-space: nowrap;
   pointer-events: none;
   opacity: 0;
   transition: opacity 120ms ease;
-  z-index: 9992;
+  z-index: 99999;
+  max-width: min(280px, 90vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sidebar-icon-btn:hover::after {
   opacity: 1;
 }
 
+/* Arrow pointing down toward the sidebar button */
+.sidebar-icon-btn::before {
+  content: '';
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: #102033;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease;
+  z-index: 99999;
+}
+
+.sidebar-icon-btn:hover::before {
+  opacity: 1;
+}
+
 .sidebar-icon-btn[data-tooltip=""]::after,
-.sidebar-icon-btn:not([data-tooltip])::after {
+.sidebar-icon-btn:not([data-tooltip])::after,
+.sidebar-icon-btn[data-tooltip=""]::before,
+.sidebar-icon-btn:not([data-tooltip])::before {
   display: none;
 }
 
@@ -219,6 +250,10 @@ button, input, select {
 }
 
 .sidebar-icon-btn:disabled:hover::after {
+  opacity: 0;
+}
+
+.sidebar-icon-btn:disabled:hover::before {
   opacity: 0;
 }
 
@@ -1999,6 +2034,57 @@ button, input, select {
   color: #64748b;
 }
 
+/* ── Zoom percent label in split button ───────────────── */
+
+.zoom-percent-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  min-width: 3.2em;
+  text-align: center;
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* ── Zoom slider inside tool-menu-popup ──────────────── */
+
+.tool-menu-zoom-slider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+}
+
+.tool-menu-zoom-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid #d7e0e8;
+  background: #f8fafc;
+  color: #12324a;
+  font-size: 1.1rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.tool-menu-zoom-btn:hover {
+  background: #eef2ff;
+  border-color: #667eea;
+}
+
+.tool-menu-zoom-range {
+  flex: 1 1 auto;
+  min-width: 80px;
+  height: 6px;
+  accent-color: #667eea;
+  cursor: pointer;
+}
+
 /* ── Single-row bottom bar ────────────────────────────── */
 
 .annotation-panel.docked-bottom .panel-row-1 {
@@ -2378,16 +2464,6 @@ button, input, select {
     height: 42px;
   }
 
-  .annotation-panel button {
-    padding: 5px 7px;
-    font-size: 0.75rem;
-  }
-
-  .annotation-panel button svg {
-    width: 13px;
-    height: 13px;
-  }
-
   .annotation-panel button[data-tooltip]::after,
   .annotation-panel input[data-tooltip]::after {
     display: none;
@@ -2420,16 +2496,55 @@ button, input, select {
     gap: 2px;
   }
 
-  .annotation-panel .icon-btn,
-  .annotation-panel .tool-btn {
-    width: 30px;
-    padding: 6px;
-  }
-
   .toolbar-secondary input[type="text"],
   .toolbar-secondary input:not([type]) {
     width: 88px;
   }
+}
+
+/* ── Mobile portrait: hide undo/redo from toolbar, show in tool menu ── */
+@media (max-width: 500px) {
+  .tool-btn.undo-btn,
+  .tool-btn.redo-btn {
+    display: none !important;
+  }
+  .toolbar-sep.undo-redo-sep {
+    display: none !important;
+  }
+  .tool-menu-item.undo-redo-mobile {
+    display: flex !important;
+  }
+}
+
+.tool-menu-item.undo-redo-mobile {
+  display: none;
+}
+
+/* ── Collapsed sidebar: B / S / P icon labels ── */
+.sidebar-icon-btn.book-stepper,
+.sidebar-icon-btn.section-stepper,
+.sidebar-icon-btn.page-stepper {
+  font-weight: 800;
+  font-size: 1.15rem;
+  color: #1f4d6c;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  border: none;
+}
+.sidebar-icon-btn.book-stepper:hover,
+.sidebar-icon-btn.section-stepper:hover,
+.sidebar-icon-btn.page-stepper:hover {
+  background: #d0dde9;
+}
+.sidebar-icon-btn.book-stepper:disabled,
+.sidebar-icon-btn.section-stepper:disabled,
+.sidebar-icon-btn.page-stepper:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 /* ── AI Generation Drawer ──────────────────────────────── */

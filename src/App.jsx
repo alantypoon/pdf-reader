@@ -237,6 +237,7 @@ function App() {
   const [singleRowToolbar, setSingleRowToolbar] = useState(false);
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [studyMenuOpen, setStudyMenuOpen] = useState(false);
+  const [zoomMenuOpen, setZoomMenuOpen] = useState(false);
   const [lastStudyAction, setLastStudyAction] = useState('ai'); // 'ai' | 'resources' | 'search'
   const [thumbCols, setThumbCols] = useState(4);
   const [panelPos, setPanelPos] = useState(() => {
@@ -303,25 +304,13 @@ function App() {
     const next = `${window.location.pathname}${window.location.search}`;
     return `/dse-logout.php?next=${encodeURIComponent(next)}`;
   }, []);
-  const fitButtonMode = fitMode === 'height' ? 'height' : 'width';
-  const fitButtonTitle = fitButtonMode === 'height' ? _('fitHeight') : _('fitWidth');
   const regenerateConfirmMessage = _('confirmRegenerate');
   const fitDisabled = displayMode === 'thumbnails';
   const panelDocked = true;
 
-  const fitScreen = () => {
-    if (fitDisabled) return;
-    setFitMode((current) => (current === 'width' ? 'height' : 'width'));
-    setZoomLevel(1);
-  };
-
   const refreshFitForCurrentMode = useCallback(() => {
-    console.log('[fit-refresh] refreshFitForCurrentMode called — setting zoom=1, bumping fitRefreshToken');
     setZoomLevel(1);
-    setFitRefreshToken((current) => {
-      console.log('[fit-refresh] fitRefreshToken: ' + current + ' → ' + (current + 1));
-      return current + 1;
-    });
+    setFitRefreshToken((current) => current + 1);
   }, []);
 
   // Refresh layout when fullscreen, sidebar, panel, or window size changes
@@ -3061,6 +3050,9 @@ function App() {
       // Escape: close modals & drawers
       if (e.key === 'Escape') {
         if (modalInfo) { setModalInfo(null); return; }
+        if (toolMenuOpen) { setToolMenuOpen(false); return; }
+        if (studyMenuOpen) { setStudyMenuOpen(false); return; }
+        if (zoomMenuOpen) { setZoomMenuOpen(false); return; }
         if (resourcesDrawerOpen) { setResourcesDrawerOpen(false); return; }
         if (searchDrawerOpen) { setSearchDrawerOpen(false); return; }
         if (aiDrawerOpen) { setAiDrawerOpen(false); return; }
@@ -3084,7 +3076,7 @@ function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [modalInfo, resourcesDrawerOpen, searchDrawerOpen, aiDrawerOpen, selectedChapter, structure]);
+  }, [modalInfo, toolMenuOpen, studyMenuOpen, zoomMenuOpen, resourcesDrawerOpen, searchDrawerOpen, aiDrawerOpen, selectedChapter, structure]);
 
   // ── Right-click context menu: Copy to clipboard ────────
   const handleCopyToClipboard = useCallback(async () => {
@@ -3411,6 +3403,23 @@ function App() {
               <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon"><path d="M12 2l3 3h-2v4h4V7l3 3-3 3v-2h-4v4h2l-3 3-3-3h2v-4H7v2l-3-3 3-3v2h4V5H9l3-3z" /></svg>
               {_('moveTool')}
             </button>
+            <span className="tool-menu-sep undo-redo-mobile" />
+            <button
+              className="tool-menu-item undo-redo-mobile"
+              disabled={!undoStack.length && !remarks.filter(r => r.chapter === selectedChapter && Number(r.page) === Number(selectedPage)).length}
+              onClick={() => { undoRemark(); setToolMenuOpen(false); }}
+            >
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon"><path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z" /></svg>
+              {_('undo')}
+            </button>
+            <button
+              className="tool-menu-item undo-redo-mobile"
+              disabled={!redoStack.length}
+              onClick={() => { redoRemark(); setToolMenuOpen(false); }}
+            >
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon"><path d="M18.4 10.6C16.55 8.99 14.15 8 11.5 8c-4.65 0-8.58 3.03-9.96 7.22L3.9 16a8.002 8.002 0 0 1 7.6-5.5c1.95 0 3.73.72 5.12 1.88L13 16h9V7l-3.6 3.6z" /></svg>
+              {_('redo')}
+            </button>
             <span className="tool-menu-sep" />
             <button className="tool-menu-item tool-menu-erase-item" onClick={() => { setToolMenuOpen(false); openEraseDialog(); }}>
               <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM8 9h8v10H8V9zm7.5-5l-1-1h-5l-1 1H5v2h14V4h-3.5z" /></svg>
@@ -3424,7 +3433,10 @@ function App() {
                   key={c}
                   className={`tool-menu-color-dot ${textColor === c ? 'active' : ''}`}
                   style={{ background: c }}
-                  onClick={() => { setTextColor(c); }}
+                  onClick={() => {
+                    setTextColor(c);
+                    setToolMenuOpen(false);
+                  }}
                   aria-label={c}
                 />
               ))}
@@ -3455,7 +3467,7 @@ function App() {
         tabIndex={-1}
       />
       <button
-        className="tool-btn"
+        className="tool-btn undo-btn"
         disabled={isRightDrawerOpen || (!undoStack.length && !remarks.filter(r => r.chapter === selectedChapter && Number(r.page) === Number(selectedPage)).length)}
         onClick={undoRemark}
         data-tooltip={_('undo')}
@@ -3466,7 +3478,7 @@ function App() {
         </svg>
       </button>
       <button
-        className="tool-btn"
+        className="tool-btn redo-btn"
         disabled={isRightDrawerOpen || !redoStack.length}
         onClick={redoRemark}
         data-tooltip={_('redo')}
@@ -3476,7 +3488,7 @@ function App() {
           <path d="M18.4 10.6C16.55 8.99 14.15 8 11.5 8c-4.65 0-8.58 3.03-9.96 7.22L3.9 16a8.002 8.002 0 0 1 7.6-5.5c1.95 0 3.73.72 5.12 1.88L13 16h9V7l-3.6 3.6z" />
         </svg>
       </button>
-      <span className="toolbar-sep" />
+      <span className="toolbar-sep undo-redo-sep" />
       {/* Study dropdown: Resources, AI Generation, Search */}
       <div className="tool-menu-wrapper">
         <div className="tool-split-btn">
@@ -3541,33 +3553,19 @@ function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [canRestoreHiddenSidebar, restoreSidebarCollapsed]);
 
-  // Close tool/study menus when clicking outside
+  // Close tool/study/zoom menus when clicking outside
   useEffect(() => {
-    if (!toolMenuOpen && !studyMenuOpen) return undefined;
+    if (!toolMenuOpen && !studyMenuOpen && !zoomMenuOpen) return undefined;
     const onPointer = (e) => {
       if (!e.target.closest('.tool-menu-wrapper')) {
         setToolMenuOpen(false);
         setStudyMenuOpen(false);
+        setZoomMenuOpen(false);
       }
     };
     document.addEventListener('pointerdown', onPointer, true);
     return () => document.removeEventListener('pointerdown', onPointer, true);
-  }, [toolMenuOpen, studyMenuOpen]);
-
-  // DEBUG: track all pointer events on document
-  useEffect(() => {
-    const onDown = (e) => console.log('[debug-doc] pointerdown — target:', e.target?.tagName, e.target?.className?.slice(0, 30));
-    const onMove = (e) => console.count('[debug-doc] pointermove');
-    const onUp = (e) => console.log('[debug-doc] pointerup');
-    document.addEventListener('pointerdown', onDown, true);
-    document.addEventListener('pointermove', onMove, true);
-    document.addEventListener('pointerup', onUp, true);
-    return () => {
-      document.removeEventListener('pointerdown', onDown, true);
-      document.removeEventListener('pointermove', onMove, true);
-      document.removeEventListener('pointerup', onUp, true);
-    };
-  }, []);
+  }, [toolMenuOpen, studyMenuOpen, zoomMenuOpen]);
 
   useEffect(() => {
     if (typeof document === 'undefined') return undefined;
@@ -3946,41 +3944,24 @@ function App() {
             </button>
             )}
             <button
-              className="sidebar-icon-btn"
+              className="sidebar-icon-btn book-stepper"
               onClick={cycleBook}
               data-tooltip={_('switchBook')}
               aria-label={_('switchBook')}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <path d="M4 5a2 2 0 0 1 2-2h13v17H6a2 2 0 0 0-2 2V5zm2 0v13h11V5H6z" fill="#1f4d6c" />
-              </svg>
-            </button>
+            >B</button>
+            <button
+              className="sidebar-icon-btn section-stepper"
+              onClick={() => moveSection(1)}
+              data-tooltip={_('nextSection')}
+              aria-label={_('nextSection')}
+            >S</button>
             {maxNavigablePage > 1 && (
               <button
-                className="sidebar-icon-btn"
+                className="sidebar-icon-btn page-stepper"
                 onClick={() => jumpPage(1)}
                 data-tooltip={_('nextPage')}
                 aria-label={_('nextPage')}
-              >
-                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                  <rect x="4" y="3" width="16" height="18" rx="2" fill="#1f4d6c" />
-                  <line x1="8" y1="8" x2="16" y2="8" stroke="#f4f9fc" strokeWidth="1.5" />
-                  <line x1="8" y1="12" x2="16" y2="12" stroke="#f4f9fc" strokeWidth="1.5" />
-                  <line x1="8" y1="16" x2="13" y2="16" stroke="#f4f9fc" strokeWidth="1.5" />
-                </svg>
-              </button>
-            )}
-            {sectionOptionsCount > 1 && (
-              <button
-                className="sidebar-icon-btn"
-                onClick={() => moveSection(1)}
-                data-tooltip={_('nextSection')}
-                aria-label={_('nextSection')}
-              >
-                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                  <path d="M3 4h18v2H3V4zm0 7h18v2H3v-2zm0 7h18v2H3v-2z" fill="#1f4d6c" />
-                </svg>
-              </button>
+              >P</button>
             )}
             <button
               className="sidebar-icon-btn"
@@ -4224,15 +4205,76 @@ function App() {
             <button className="icon-btn" onClick={() => jumpPage(-1)} data-tooltip={displayMode === 'scrolling' ? _('jumpPrevPage') : _('prevPage')} aria-label={displayMode === 'scrolling' ? _('jumpPrevPage') : _('prevPage')}>&lt;</button>
             <button className="icon-btn" onClick={() => jumpPage(1)} data-tooltip={displayMode === 'scrolling' ? _('jumpNextPage') : _('nextPage')} aria-label={displayMode === 'scrolling' ? _('jumpNextPage') : _('nextPage')}>&gt;</button>
             {!fitDisabled && (
-            <button className="icon-btn active" onClick={fitScreen} data-tooltip={fitButtonTitle} aria-label={fitButtonTitle} disabled={fitDisabled}>
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                {fitButtonMode === 'height' ? (
-                  <path d="M12 3l3.5 3.5-1.4 1.4-1.1-1.1V17.2l1.1-1.1 1.4 1.4L12 21l-3.5-3.5 1.4-1.4 1.1 1.1V6.8L9.9 7.9 8.5 6.5 12 3zM5 5h3v2H7v10h1v2H5V5zm11 0h3v14h-3v-2h1V7h-1V5z" />
-                ) : (
-                  <path d="M3 12l3.5-3.5 1.4 1.4-1.1 1.1h10.4l-1.1-1.1 1.4-1.4L21 12l-3.5 3.5-1.4-1.4 1.1-1.1H6.8l1.1 1.1-1.4 1.4L3 12zM5 5h14v3h-2V7H7v1H5V5zm0 11h2v1h10v-1h2v3H5v-3z" />
-                )}
-              </svg>
-            </button>
+            <div className="tool-menu-wrapper">
+              <div className="tool-split-btn">
+                <button
+                  className="tool-btn tool-split-main"
+                  disabled={fitDisabled}
+                  onClick={() => setZoomLevel(1)}
+                  data-tooltip={_('zoomLevel')}
+                  aria-label={_('zoomLevel')}
+                >
+                  <span className="zoom-percent-label">{displayZoomPercent}%</span>
+                </button>
+                <button
+                  className="tool-btn tool-split-arrow"
+                  disabled={fitDisabled}
+                  onClick={() => setZoomMenuOpen((prev) => !prev)}
+                  data-tooltip={_('zoomLevel')}
+                  aria-label={_('zoomLevel')}
+                >
+                  <svg viewBox="0 0 12 12" className="tool-menu-arrow" role="presentation" focusable="false">
+                    <path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                  </svg>
+                </button>
+              </div>
+              {zoomMenuOpen && (
+                <div className="tool-menu-popup">
+                  <div className="tool-menu-section-label">{_('zoomLevel')}</div>
+                  <div className="tool-menu-zoom-slider">
+                    <button
+                      className="tool-menu-zoom-btn"
+                      onClick={() => changeZoom(-0.1)}
+                      aria-label={_('zoomOut')}
+                    >−</button>
+                    <input
+                      type="range"
+                      className="tool-menu-zoom-range"
+                      min="0.1"
+                      max="5"
+                      step="0.05"
+                      value={zoomLevel}
+                      onChange={(e) => setZoomLevel(Number(e.target.value))}
+                      aria-label={_('zoomLevel')}
+                    />
+                    <button
+                      className="tool-menu-zoom-btn"
+                      onClick={() => changeZoom(0.1)}
+                      aria-label={_('zoomIn')}
+                    >+</button>
+                  </div>
+                  <span className="tool-menu-sep" />
+                  <button
+                    className={`tool-menu-item ${fitMode === 'width' ? 'active' : ''}`}
+                    onClick={() => { setFitMode('width'); setZoomLevel(1); setFitRefreshToken((t) => t + 1); setZoomMenuOpen(false); }}
+                  >
+                    <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon">
+                      <path d="M3 12l3.5-3.5 1.4 1.4-1.1 1.1h10.4l-1.1-1.1 1.4-1.4L21 12l-3.5 3.5-1.4-1.4 1.1-1.1H6.8l1.1 1.1-1.4 1.4L3 12zM5 5h14v3h-2V7H7v1H5V5zm0 11h2v1h10v-1h2v3H5v-3z" />
+                    </svg>
+                    {_('fitWidth')}
+                  </button>
+                  <button
+                    className={`tool-menu-item ${fitMode === 'height' ? 'active' : ''}`}
+                    onClick={() => { setFitMode('height'); setZoomLevel(1); setFitRefreshToken((t) => t + 1); setZoomMenuOpen(false); }}
+                  >
+                    <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon">
+                      <path d="M12 3l3.5 3.5-1.4 1.4-1.1-1.1V17.2l1.1-1.1 1.4 1.4L12 21l-3.5-3.5 1.4-1.4 1.1 1.1V6.8L9.9 7.9 8.5 6.5 12 3zM5 5h3v2H7v10h1v2H5V5zm11 0h3v14h-3v-2h1V7h-1V5z" />
+                    </svg>
+                    {_('fitHeight')}
+                  </button>
+                </div>
+              )}
+            </div>
             )}
             {showThumbnails && (
               <>

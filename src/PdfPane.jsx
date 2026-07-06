@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.js?url';
 import { t, uiLang } from './i18n';
@@ -14,6 +14,32 @@ function safeDevicePixelRatio(viewportWidth, viewportHeight) {
   if (areaAtDpr <= MAX_CANVAS_AREA) return dpr;
   // Scale down DPR so width*height stays within limit
   return Math.sqrt(MAX_CANVAS_AREA / (viewportWidth * viewportHeight));
+}
+
+/**
+ * Compute a scroll position that keeps the viewport center anchored
+ * after content dimensions change (e.g. zoom in/out).
+ *
+ * @param {HTMLElement} container - The scrollable element
+ * @param {number} oldScrollTop  - scrollTop before content changed
+ * @param {number} oldScrollHeight - scrollHeight before content changed
+ * @param {'vertical'|'both'} axis - which axis to anchor
+ * @returns {{ top: number, left?: number }} scrollTo options
+ */
+function centerAnchoredScroll(container, oldScrollTop, oldScrollHeight, axis = 'vertical') {
+  const vpCenter = oldScrollTop + container.clientHeight / 2;
+  const centerRatio = oldScrollHeight > 0 ? vpCenter / oldScrollHeight : 0;
+  const newTop = centerRatio * container.scrollHeight - container.clientHeight / 2;
+  const result = { top: Math.max(0, newTop), behavior: 'instant' };
+  if (axis === 'both') {
+    const oldScrollLeft = container.scrollLeft;
+    const oldScrollWidth = container.scrollWidth;
+    const hpCenter = oldScrollLeft + container.clientWidth / 2;
+    const hCenterRatio = oldScrollWidth > 0 ? hpCenter / oldScrollWidth : 0;
+    const newLeft = hCenterRatio * container.scrollWidth - container.clientWidth / 2;
+    result.left = Math.max(0, newLeft);
+  }
+  return result;
 }
 
 function PdfPane({
@@ -193,23 +219,19 @@ function PdfPane({
 
   // ── Pagination mode (PDF) ──────────────────────────────────
   useEffect(() => {
-    console.log('[fit-refresh] PdfPane draw effect triggered — deps:', {
-      isImageMode, mode, hasPdfDoc: !!pdfDoc,
-      currentPage, numPages, zoom, contentWidth, contentHeight,
-      fitMode, fitRefreshToken,
-    });
-    if (isImageMode) { console.log('[fit-refresh] SKIP: isImageMode=true'); return; }
-    if (mode !== 'pagination') { console.log('[fit-refresh] SKIP: mode=' + mode + ' (not pagination)'); return; }
-    if (!pdfDoc) { console.log('[fit-refresh] SKIP: no pdfDoc loaded'); return; }
-    console.log('[fit-refresh] guards passed — starting draw()');
+    if (isImageMode) return;
+    if (mode !== 'pagination') return;
+    if (!pdfDoc) return;
     const gen = modeGenRef.current;
     const draw = async () => {
       const pageNumber = Math.max(1, Math.min(currentPage, numPages || 1));
-      console.log('[fit-refresh] draw() — getting page ' + pageNumber + ' of ' + numPages);
       const page = await pdfDoc.getPage(pageNumber);
-      if (modeGenRef.current !== gen) { console.log('[fit-refresh] SKIP: mode changed during getPage, gen=' + gen + ' current=' + modeGenRef.current); return; }
+      if (modeGenRef.current !== gen) return;
       const holder = canvasRef.current?.parentElement;
-      if (!holder) { console.log('[fit-refresh] SKIP: no canvas parent element'); return; }
+      if (!holder) return;
+      // Capture scroll position before canvas resize changes scrollHeight
+      const oldScrollTop = holder.scrollTop;
+      const oldScrollHeight = Math.max(1, holder.scrollHeight);
       const sidebarWidth = Math.max(0, document.querySelector('.sidebar')?.getBoundingClientRect().width || 0);
       const toolbarHeight = Math.max(0, document.querySelector('.annotation-panel')?.getBoundingClientRect().height || 0);
       const viewportWidthCap = Math.max(180, window.innerWidth - sidebarWidth);
@@ -225,19 +247,6 @@ function PdfPane({
           ? scaleW
           : Math.min(scaleW, scaleH);
       const scale = Math.max(0.001, fitScale * zoom);
-      console.log('[fit-calc]', {
-        sidebarWidth, toolbarHeight,
-        viewportWidthCap, viewportHeightCap,
-        holderW: holder.clientWidth, holderH: holder.clientHeight,
-        fitWidth, fitHeight,
-        baseW: baseViewport.width, baseH: baseViewport.height,
-        scaleW: scaleW.toFixed(4), scaleH: scaleH.toFixed(4),
-        fitMode, zoom,
-        fitScale: fitScale.toFixed(4),
-        finalScale: scale.toFixed(4),
-        canvasW: Math.floor(baseViewport.width * scale),
-        canvasH: Math.floor(baseViewport.height * scale),
-      });
       if (typeof onRenderScaleChange === 'function') {
         onRenderScaleChange(scale);
       }
@@ -255,9 +264,16 @@ function PdfPane({
       canvas.style.display = 'block';
       canvas.style.flexShrink = '0';
       context.setTransform(ratio, 0, 0, ratio, 0, 0);
+      // Restore center-anchored scroll now that new dimensions are set
+      if (oldScrollHeight !== holder.scrollHeight) {
+        holder.scrollTo(centerAnchoredScroll(holder, oldScrollTop, oldScrollHeight, 'both'));
+      }
       await page.render({ canvasContext: context, viewport }).promise;
-      console.log('[fit-refresh] canvas rendered — size: ' + canvas.style.width + '×' + canvas.style.height);
-      if (modeGenRef.current !== gen) { console.log('[fit-refresh] SKIP: mode changed during render'); return; }
+      if (modeGenRef.current !== gen) return;
+      // Re-apply after render in case paint caused a layout shift
+      if (oldScrollHeight !== holder.scrollHeight) {
+        holder.scrollTo(centerAnchoredScroll(holder, oldScrollTop, oldScrollHeight, 'both'));
+      }
       setRenderedPage(pageNumber);
       if (pageNumber !== currentPage) {
         onPageChange(pageNumber);
@@ -268,21 +284,16 @@ function PdfPane({
   }, [isImageMode, pdfDoc, currentPage, numPages, mode, onPageChange, zoom, contentWidth, contentHeight, fitMode, fitRefreshToken]);
 
   useEffect(() => {
-    console.log('[fit-refresh] image-pagination scale effect triggered — deps:', {
-      isImageMode, mode, currentPage, zoom, fitMode,
-      contentWidth, contentHeight, fitRefreshToken
-    });
-    if (!isImageMode) { console.log('[fit-refresh] SKIP: not image mode'); return; }
-    if (mode !== 'pagination') { console.log('[fit-refresh] SKIP: mode=' + mode + ' (not pagination)'); return; }
+    if (!isImageMode) return;
+    if (mode !== 'pagination') return;
     if (typeof onRenderScaleChange !== 'function') return;
     const img = imgRef.current;
-    if (!img || !img.complete) { console.log('[fit-refresh] SKIP: img not ready'); return; }
+    if (!img || !img.complete) return;
 
     const frame = requestAnimationFrame(() => {
       const rect = img.getBoundingClientRect();
       const baseSize = fitMode === 'height' ? img.naturalHeight : img.naturalWidth;
       const renderedSize = fitMode === 'height' ? rect.height : rect.width;
-      console.log('[fit-refresh] image-pagination — img rect: ' + rect.width + '×' + rect.height + ' natural: ' + img.naturalWidth + '×' + img.naturalHeight + ' zoom=' + zoom + ' fitMode=' + fitMode);
       if (baseSize > 0 && renderedSize > 0) {
         onRenderScaleChange(renderedSize / baseSize);
       }
@@ -290,6 +301,22 @@ function PdfPane({
 
     return () => cancelAnimationFrame(frame);
   }, [isImageMode, mode, currentPage, images, zoom, fitMode, contentWidth, contentHeight, imageLoadVersion, fitRefreshToken]);
+
+  // ── Image pagination: keep viewport center anchored on zoom ─
+  const imgPaginationScrollRef = useRef({ top: 0, height: 0 });
+  useLayoutEffect(() => {
+    if (!isImageMode || mode !== 'pagination') return;
+    const container = imgRef.current?.closest('.pdf-single-page');
+    if (!container) return;
+    const { top, height } = imgPaginationScrollRef.current;
+    if (height > 0 && height !== container.scrollHeight) {
+      container.scrollTo(centerAnchoredScroll(container, top, height, 'both'));
+    }
+    imgPaginationScrollRef.current = {
+      top: container.scrollTop,
+      height: Math.max(1, container.scrollHeight),
+    };
+  }, [isImageMode, mode, zoom, fitMode, fitRefreshToken, imageLoadVersion]);
 
   // ── Scrolling mode (PDF) ───────────────────────────────────
   useEffect(() => {
@@ -304,8 +331,6 @@ function PdfPane({
     mount.style.justifyItems = 'center';
 
     const drawAll = async () => {
-      const prevPage = currentPageRef.current;
-      console.log(`[fit-debug] stored prevPage=${prevPage} before fit redraw`);
       let lastScale = zoom;
       const mountRect = mount.getBoundingClientRect();
       const containerHeight = Math.max(180, mountRect.height);
@@ -336,12 +361,19 @@ function PdfPane({
       }
 
       if (disposed || modeGenRef.current !== gen) return;
-      const savedRatio = mount.scrollHeight > 0
-        ? mount.scrollTop / mount.scrollHeight
-        : 0;
+      const savedScrollTop = mount.scrollTop;
+      const savedScrollHeight = Math.max(1, mount.scrollHeight);
 
       mount.innerHTML = '';
       mount.appendChild(fragment);
+
+      // Restore center-anchored scroll position after layout settles
+      if (savedScrollHeight !== mount.scrollHeight) {
+        requestAnimationFrame(() => {
+          if (disposed || modeGenRef.current !== gen) return;
+          mount.scrollTo(centerAnchoredScroll(mount, savedScrollTop, savedScrollHeight));
+        });
+      }
 
       if (typeof onRenderScaleChange === 'function') {
         onRenderScaleChange(lastScale);
@@ -362,21 +394,10 @@ function PdfPane({
           if (dist < min) { min = dist; nearest = Number(node.dataset.page); }
         });
         setRenderedPage(nearest);
+        lastScrolledFromSyncRef.current = true;
         onPageChange(nearest);
         return nearest;
       };
-
-      if (pageRefreshTimer) clearTimeout(pageRefreshTimer);
-      pageRefreshTimer = setTimeout(() => {
-        if (disposed || modeGenRef.current !== gen) return;
-        const target = mount.querySelector(`canvas[data-page="${prevPage}"]`);
-        if (target) {
-          mount.scrollTo({ top: target.offsetTop, behavior: 'instant' });
-        }
-        setRenderedPage(prevPage);
-        onPageChange(prevPage);
-        console.log(`[fit-debug] PDF scrolled back to prevPage=${prevPage}`);
-      }, 100);
 
       const nodes = [...mount.querySelectorAll('canvas[data-page]')];
 
@@ -416,10 +437,18 @@ function PdfPane({
   }, [isImageMode, pdfDoc, numPages, mode, zoom, fitMode, fitRefreshToken, contentWidth]);
 
   // ── Scroll to current page in scrolling mode (prev/next buttons) ─
+  // Only jump when the page change came from a button click, not from
+  // natural scrolling (which would create a feedback loop).
+  const lastScrolledFromSyncRef = useRef(false);
   useEffect(() => {
     if (mode !== 'scrolling') return;
     const mount = scrollRef.current;
     if (!mount || !mount.children.length) return;
+    // Skip if the page change was triggered by our own scroll sync
+    if (lastScrolledFromSyncRef.current) {
+      lastScrolledFromSyncRef.current = false;
+      return;
+    }
     const target = mount.querySelector(`[data-page="${currentPage}"]`);
     if (target) {
       mount.scrollTo({ top: target.offsetTop, behavior: 'instant' });
@@ -569,6 +598,7 @@ function PdfPane({
       setRenderedPage(nearest);
       const cp = currentPageRef.current;
       if (nearest !== cp) {
+        lastScrolledFromSyncRef.current = true;
         onPageChange(nearest);
       }
 
@@ -594,59 +624,45 @@ function PdfPane({
     };
   }, [isImageMode, images, mode, syncGroup, syncId]);
 
-  // ── Scroll to current page in image scrolling mode (prev/next buttons) ─
-  useEffect(() => {
-    if (!isImageMode || mode !== 'scrolling') return;
-    const mount = scrollRef.current;
-    if (!mount || !mount.children.length) return;
-    const p = Math.max(1, Math.min(currentPage, mount.children.length || 1));
-    const target = mount.querySelector(`[data-page="${p}"]`);
-    if (target) {
-      mount.scrollTo({ top: target.offsetTop, behavior: 'instant' });
-    }
-  }, [isImageMode, mode, currentPage]);
-
   // ── Apply zoom to image-mode scrolling images ─────────────
   useEffect(() => {
-    console.log('[fit-refresh] image-scroll zoom effect triggered — deps:', {
-      isImageMode, mode, zoom, fitMode, fitRefreshToken, contentWidth
-    });
-    if (!isImageMode) { console.log('[fit-refresh] SKIP: not image mode'); return; }
-    if (mode !== 'scrolling') { console.log('[fit-refresh] SKIP: mode=' + mode + ' (not scrolling)'); return; }
+    if (!isImageMode) return;
+    if (mode !== 'scrolling') return;
     const mount = scrollRef.current;
-    if (!mount) { console.log('[fit-refresh] SKIP: no scroll mount'); return; }
+    if (!mount) return;
     const mountRect = mount.getBoundingClientRect();
     const containerHeight = Math.max(180, mountRect.height);
     const containerWidth = Math.max(180, mountRect.width);
     const imgs = mount.querySelectorAll('img.page-img');
-    console.log('[fit-refresh] image-scroll resizing ' + imgs.length + ' images — container: ' + containerWidth + '×' + containerHeight + ' zoom=' + zoom + ' fitMode=' + fitMode);
+    let reportedScale = zoom;
     imgs.forEach((img) => {
       if (fitMode === 'height') {
         img.style.height = `${containerHeight * zoom}px`;
         img.style.width = 'auto';
+        if (img.naturalHeight > 0 && containerHeight > 0 && reportedScale === zoom) {
+          reportedScale = (containerHeight * zoom) / img.naturalHeight;
+        }
       } else {
         img.style.width = `${containerWidth * zoom}px`;
         img.style.height = 'auto';
+        if (img.naturalWidth > 0 && containerWidth > 0 && reportedScale === zoom) {
+          reportedScale = (containerWidth * zoom) / img.naturalWidth;
+        }
       }
     });
     if (typeof onRenderScaleChange === 'function') {
-      onRenderScaleChange(zoom);
+      onRenderScaleChange(Math.max(0.01, reportedScale));
     }
-    // After fit/zoom changes, page boundaries shift. Wait for layout to settle
-    // then recalculate which page is visible and update the page indicator.
-    // const DELAY_AFTER_FIT_CHANGE = 100;
+    // After fit/zoom changes, page boundaries shift. Restore the same relative
+    // scroll position instead of snapping to the top of the nearest page.
     const DELAY_AFTER_FIT_CHANGE = 0;
-    const prevPage = currentPageRef.current;
-    console.log(`[fit-debug] stored prevPage=${prevPage} before fit zoom`);
+    const savedScrollTop = mount.scrollTop;
+    const savedScrollHeight = Math.max(1, mount.scrollHeight);
     const timer = setTimeout(() => {
       if (!mount) return;
-      const target = mount.querySelector(`img[data-page="${prevPage}"]`);
-      if (target) {
-        mount.scrollTo({ top: target.offsetTop, behavior: 'instant' });
+      if (savedScrollHeight !== mount.scrollHeight) {
+        mount.scrollTo(centerAnchoredScroll(mount, savedScrollTop, savedScrollHeight));
       }
-      setRenderedPage(prevPage);
-      onPageChange(prevPage);
-      console.log(`[fit-debug] scrolled back to prevPage=${prevPage}`);
     }, DELAY_AFTER_FIT_CHANGE);
 
     return () => clearTimeout(timer);
