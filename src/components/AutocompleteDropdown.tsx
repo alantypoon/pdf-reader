@@ -23,6 +23,8 @@ function AutocompleteDropdown({
 	toggleAriaLabel,
 	showSearchIcon = false,
 	showStepper = false,
+	hideFilter = false,
+	alwaysOpen = false,
 	disablePrev,
 	disableNext,
 	onPrev,
@@ -33,7 +35,7 @@ function AutocompleteDropdown({
 	containerClassName = '',
 }) {
 	const [query, setQuery] = useState('');
-	const [open, setOpen] = useState(false);
+	const [open, setOpen] = useState(alwaysOpen);
 	const [highlightIndex, setHighlightIndex] = useState(-1);
 	const [dropdownFilter, setDropdownFilter] = useState('');
 	const [dropdownStyle, setDropdownStyle] = useState({});
@@ -57,13 +59,16 @@ function AutocompleteDropdown({
 	const resolvedPlaceholder = query ? placeholder : (placeholder || '');
 
 	// Notify parent when open state changes (e.g. for cleanup after click-outside dismiss)
+	// When alwaysOpen, never report false — the parent portal controls visibility.
 	const prevOpenRef = useRef(open);
 	useEffect(() => {
 		if (prevOpenRef.current !== open) {
 			prevOpenRef.current = open;
-			onOpenChange?.(open);
+			if (!alwaysOpen || open) {
+				onOpenChange?.(open);
+			}
 		}
-	}, [open, onOpenChange]);
+	}, [open, onOpenChange, alwaysOpen]);
 
 	// Recalculate the dropdown position relative to the viewport
 	const updateDropdownPosition = useCallback(() => {
@@ -237,6 +242,7 @@ function AutocompleteDropdown({
 					aria-expanded={open}
 					role="combobox"
 				/>
+				{!alwaysOpen && (
 				<button
 					type="button"
 					className={`autocomplete-toggle-btn ${open ? 'open' : ''}`}
@@ -248,6 +254,7 @@ function AutocompleteDropdown({
 						<path d="M7 10l5 5 5-5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
 					</svg>
 				</button>
+				)}
 				{showStepper && (
 					<button
 						type="button"
@@ -262,7 +269,7 @@ function AutocompleteDropdown({
 				)}
 			</div>
 
-		{open && createPortal(
+		{(open || alwaysOpen) && createPortal(
 			<>
 				{filtered.length > 0 && (
 					<div className="autocomplete-dropdown" style={dropdownStyle} onMouseDown={(e) => {
@@ -272,6 +279,7 @@ function AutocompleteDropdown({
 							e.preventDefault();
 						}
 					}}>
+						{!hideFilter && (
 						<div className="autocomplete-dropdown-filter">
 							<svg className="autocomplete-dropdown-filter-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
 								<circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" strokeWidth="2" />
@@ -311,6 +319,7 @@ function AutocompleteDropdown({
 								}}
 							/>
 						</div>
+						)}
 						{dropdownFiltered.length > 0 ? (
 							<ul className="autocomplete-list" role="listbox" ref={listRef}>
 								{dropdownFiltered.map((item, index) => {

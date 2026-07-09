@@ -31,13 +31,10 @@ import argparse
 from datetime import datetime, timezone
 from pathlib import Path
 
-from PIL import Image
 
-# Maximum dimension for images sent to the ETT pipeline.
-# InternVL models have a limited context window; large images
-# produce too many tokens and fail with 'prompt longer than
-# maximum model length'.
-ETT_MAX_IMAGE_DIM = 1536
+# Images are sent as-is; the AI Gateway's ett-vllm handler normalises
+# every uploaded image to a model-compatible canvas automatically.
+_MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB sanity cap
 
 # ── Paths ──────────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -46,8 +43,9 @@ DATA_DIR = Path(os.environ.get('DATA_PATH', str(PROJECT_DIR / 'data')))
 ENV_FILE = PROJECT_DIR / '.env'
 
 # ── Load .env (always prefer .env values for our config keys) ──
-_CONFIG_KEYS = {'DATA_PATH', 'MONGODB_URI', 'AIGATEWAY_API_URL',
-                'AIGATEWAY_PROVIDER', 'AIGATEWAY_MODEL', 'AIGATEWAY_APIKEY'}
+_CONFIG_KEYS = {'DATA_PATH', 'MONGODB_URI',
+                'VLLM_API_URL', 'VLLM_PROVIDER', 'VLLM_MODEL', 'VLLM_APIKEY',
+                'OLLAMA_PROVIDER', 'OLLAMA_MODEL', 'OLLAMA_APIKEY'}
 if ENV_FILE.exists():
     with open(ENV_FILE, encoding='utf-8') as fh:
         for line in fh:
@@ -60,16 +58,23 @@ if ENV_FILE.exists():
                     os.environ[key] = value
 
 MONGO_URI = os.environ.get('MONGODB_URI', 'mongodb://localhost:27017/pdf-reader')
-AIGATEWAY_URL = os.environ.get('AIGATEWAY_API_URL', 'https://aigateway.aied.hku.hk/api/generate')
-# Add ?debug_log=1 for diagnostic output from the gateway
-AIGATEWAY_DEBUG_URL = AIGATEWAY_URL + ('&' if '?' in AIGATEWAY_URL else '?') + 'debug_log=1'
-AIGATEWAY_PROVIDER = os.environ.get('AIGATEWAY_PROVIDER', 'ett-vllm')
-AIGATEWAY_MODEL = os.environ.get('AIGATEWAY_MODEL', 'vllm|OpenGVLab/InternVL3_5-38B')
-AIGATEWAY_APIKEY = os.environ.get('AIGATEWAY_APIKEY', '')
 
-# The vllm provider (text-only) needs the model name WITHOUT the 'vllm|' prefix
-_VLLM_MODEL = AIGATEWAY_MODEL.split('|', 1)[1] if '|' in AIGATEWAY_MODEL else AIGATEWAY_MODEL
-_VLLM_PROVIDER = 'vllm'
+# ── VLLM / ett-vllm config (image → text extraction only) ──
+VLLM_URL = os.environ.get('VLLM_API_URL', 'https://aigateway.aied.hku.hk/api/generate')
+VLLM_DEBUG_URL = VLLM_URL + ('&' if '?' in VLLM_URL else '?') + 'debug_log=1'
+VLLM_PROVIDER = os.environ.get('VLLM_PROVIDER', 'ett-vllm')
+VLLM_MODEL = os.environ.get('VLLM_MODEL', 'OpenGVLab/InternVL3_5-38B')
+VLLM_APIKEY = os.environ.get('VLLM_APIKEY', '')
+
+# ── Ollama config (text → study-material generation & translation) ──
+OLLAMA_PROVIDER = os.environ.get('OLLAMA_PROVIDER', 'ollama')
+OLLAMA_MODEL = os.environ.get('OLLAMA_MODEL', 'gpt-oss:120b')
+OLLAMA_APIKEY = os.environ.get('OLLAMA_APIKEY', '')
+
+# max_tokens is intentionally NOT set in text-generation payloads.
+# When omitted (or 0), the AI Gateway / OpenRouter uses the model's
+# native maximum output length — which is far larger than any page's
+# study-materials JSON could be.  This prevents mid-JSON truncation.
 
 DB_NAME = 'pdf-reader'
 COLLECTION_NAME = 'ai-generations'
@@ -77,7 +82,8 @@ ALIGNMENT_VERSION = 1
 DEFAULT_USER = 'alan'
 REQUEST_TIMEOUT = 120
 DELAY_BETWEEN_PAGES = 3   # seconds between pages (be gentle to the gateway)
-DEBUG = False  # set by --debug flag; when True, prints full request payloads
+DEBUG = False    # set by --debug flag; prints request payloads + raw responses
+VERBOSE = False  # set by -v/--verbose; prints request summary + full response
 
 # ── MongoDB ────────────────────────────────────────────────
 import pymongo
@@ -236,14 +242,21 @@ def _normalize_generated_content(content):
                 try:
                     parsed_inner = json.loads(fixed)
                 except json.JSONDecodeError:
-                    normalized['raw'] = inner
+                    # JSON is truly broken (likely truncated mid-stream).
+                    # DO NOT silently wrap it — mark as a parse error so
+                    # the caller can retry or report the failure.
+                    normalized['_parse_error'] = True
+                    normalized['_raw_truncated'] = inner[:200] + ('…' if len(inner) > 200 else '')
                     return normalized
             if isinstance(parsed_inner, dict):
                 for k, v in parsed_inner.items():
                     if k not in normalized or not normalized[k]:
                         normalized[k] = v
         else:
-            normalized['raw'] = inner
+            # Non-JSON raw content — mark as unparseable
+            normalized['_parse_error'] = True
+            normalized['_raw_truncated'] = inner[:200] + ('…' if len(inner) > 200 else '')
+            return normalized
 
     # ── Filter invalid entries ──
     if isinstance(normalized.get('flashcards'), list):
@@ -258,16 +271,140 @@ def _normalize_generated_content(content):
     return normalized
 
 
-def save_content(subject_id, book_id, section_id, page_id, en_content, zh_content, user=DEFAULT_USER):
-    """Upsert bilingual content into MongoDB matching the exact schema."""
+# ── Content structure validation ───────────────────────────
+
+_REQUIRED_FIELDS = {
+    'summary': (list, 'array of strings'),
+    'flashcards': (list, 'array of {question, answer} objects'),
+    'mcq': (list, 'array of {question, options[], correct, explanation} objects'),
+}
+
+_FLASHCARD_REQUIRED = {'question', 'answer'}
+_MCQ_REQUIRED = {'question', 'options', 'correct', 'explanation'}
+
+
+def _validate_content_structure(content, label=''):
+    """Validate that generated content has all required fields with correct types.
+
+    Returns (is_valid, list_of_errors).
+    """
+    errors = []
+
+    if not isinstance(content, dict):
+        errors.append(f'{label}content is not a dictionary (got {type(content).__name__})')
+        return False, errors
+
+    # ── Hard-fail: parse error from _normalize_generated_content ──
+    if content.get('_parse_error'):
+        truncated = content.get('_raw_truncated', '')
+        errors.append(
+            f'{label}JSON is truncated or unparseable. '
+            f'First 200 chars: {truncated}'
+        )
+        return False, errors
+
+    # ── Check for raw-only content (unparsed wrapper) ──
+    if 'raw' in content and not any(k in content for k in _REQUIRED_FIELDS):
+        raw_preview = str(content.get('raw', ''))[:200]
+        errors.append(
+            f'{label}content was never parsed — only "raw" field present. '
+            f'Raw preview: {raw_preview}'
+        )
+        return False, errors
+
+    # ── Check required top-level fields ──
+    for field, (expected_type, description) in _REQUIRED_FIELDS.items():
+        if field not in content:
+            errors.append(f'{label}missing required field "{field}" ({description})')
+        elif not isinstance(content[field], expected_type):
+            errors.append(
+                f'{label}"{field}" must be {description}, got {type(content[field]).__name__}'
+            )
+        elif expected_type is list and len(content[field]) == 0:
+            errors.append(f'{label}"{field}" is empty — expected at least one entry')
+
+    if errors:
+        return False, errors
+
+    # ── Validate flashcards structure ──
+    for i, card in enumerate(content.get('flashcards', [])):
+        if not isinstance(card, dict):
+            errors.append(f'{label}flashcards[{i}] is not an object')
+            continue
+        missing = _FLASHCARD_REQUIRED - set(card.keys())
+        if missing:
+            errors.append(f'{label}flashcards[{i}] missing keys: {missing}')
+        for k in _FLASHCARD_REQUIRED:
+            if k in card and not isinstance(card[k], str):
+                errors.append(f'{label}flashcards[{i}].{k} must be a string')
+
+    # ── Validate MCQ structure ──
+    for i, q in enumerate(content.get('mcq', [])):
+        if not isinstance(q, dict):
+            errors.append(f'{label}mcq[{i}] is not an object')
+            continue
+        missing = _MCQ_REQUIRED - set(q.keys())
+        if missing:
+            errors.append(f'{label}mcq[{i}] missing keys: {missing}')
+        if 'options' in q:
+            if not isinstance(q['options'], list):
+                errors.append(f'{label}mcq[{i}].options must be an array')
+            elif len(q['options']) != 4:
+                errors.append(f'{label}mcq[{i}].options must have exactly 4 entries, got {len(q["options"])}')
+            else:
+                for j, opt in enumerate(q['options']):
+                    if not isinstance(opt, str):
+                        errors.append(f'{label}mcq[{i}].options[{j}] must be a string')
+        if 'correct' in q and isinstance(q['correct'], str) and q['correct'] not in ('A', 'B', 'C', 'D'):
+            errors.append(f'{label}mcq[{i}].correct must be A, B, C, or D, got "{q["correct"]}"')
+        if 'explanation' in q and not isinstance(q['explanation'], str):
+            errors.append(f'{label}mcq[{i}].explanation must be a string')
+
+    return (len(errors) == 0), errors
+
+
+def save_content(subject_id, book_id, section_id, page_id, en_content, zh_content,
+                 en_text='', zh_text='', user=DEFAULT_USER):
+    """Upsert bilingual content into MongoDB matching the exact schema.
+
+    Validates both en and zh content structure before saving.  Raises
+    ValueError if either language's content fails validation.
+
+    ``en_text`` and ``zh_text`` are the raw OCR-extracted page texts —
+    stored alongside the study materials for reference / debugging.
+    """
+    en_normalized = _normalize_generated_content(en_content)
+    zh_normalized = _normalize_generated_content(zh_content)
+
+    # ── Validate both languages before writing to DB ──
+    label = f'{subject_id}/{book_id}/{section_id}/{page_id}'
+    for lang, content in [('en', en_normalized), ('zh', zh_normalized)]:
+        is_valid, errors = _validate_content_structure(content, f'[{label}] {lang}: ')
+        if not is_valid:
+            raise ValueError(
+                f'Content validation FAILED for {label} ({lang}):\n' +
+                '\n'.join(f'  - {e}' for e in errors)
+            )
+
+    # ── Strip internal validation markers before persisting ──
+    for content in (en_normalized, zh_normalized):
+        content.pop('_parse_error', None)
+        content.pop('_raw_truncated', None)
+
+    # ── Attach raw extracted text for reference ──
+    if en_text:
+        en_normalized['extractedText'] = en_text
+    if zh_text:
+        zh_normalized['extractedText'] = zh_text
+
     coll = _get_collection()
     now = datetime.now(timezone.utc).isoformat()
     identity = _build_ai_identity(subject_id, book_id, section_id, page_id)
     coll.delete_many({'$or': [identity, _build_legacy_ai_identity(book_id, section_id, page_id)]})
     coll.insert_one({
         **identity,
-        'en': _normalize_generated_content(en_content),
-        'zh': _normalize_generated_content(zh_content),
+        'en': en_normalized,
+        'zh': zh_normalized,
         'enUpdatedAt': now,
         'zhUpdatedAt': now,
         'updatedAt': now,
@@ -282,13 +419,16 @@ import requests
 
 
 def _call_ett_vllm(payload, files=None, timeout=REQUEST_TIMEOUT):
-    """Call the ett-vllm provider.
+    """Call the AI Gateway (multipart/form-data).
 
-    Always uses multipart/form-data — the ett-vllm provider does not accept
-    JSON.  When ``files`` is provided, image files are attached for extraction;
-    otherwise only form fields are sent for text-only generation/translation.
+    Used for both image → text extraction (ett-vllm provider) and text-only
+    generation (ollama provider).  Only appends ``debug_log=1`` when the
+    ``--debug`` flag is active — the gateway's debug mode may return
+    metadata without the actual response content.
     """
-    url = AIGATEWAY_DEBUG_URL
+    # Only use debug_log=1 when --debug is explicitly set.
+    # The debug URL may cause the gateway to omit the actual response text.
+    url = VLLM_DEBUG_URL if DEBUG else VLLM_URL
     headers = {'Accept': 'text/event-stream'}
     form = []
     for key, value in payload.items():
@@ -296,32 +436,43 @@ def _call_ett_vllm(payload, files=None, timeout=REQUEST_TIMEOUT):
     if files:
         form.extend(files)
 
-    if DEBUG:
-        _log_request(url, payload, files)
+    if DEBUG or VERBOSE:
+        tag = 'DEBUG' if DEBUG else 'VERBOSE'
+        _log_request(url, payload, files, tag)
 
     resp = requests.post(url, files=form, headers=headers, timeout=timeout)
     resp.raise_for_status()
     raw = resp.text
 
-    if DEBUG:
-        _log_response(resp.status_code, raw)
+    if DEBUG or VERBOSE:
+        tag = 'DEBUG' if DEBUG else 'VERBOSE'
+        _log_response(resp.status_code, raw, tag)
 
     return raw
 
 
-def _log_request(url, payload, files):
+def _log_request(url, payload, files, tag='DEBUG'):
+    """Print the API request in a readable format.
+
+    In verbose mode (-v), shows a compact summary.  In debug mode (--debug),
+    shows the full pretty-printed request payload.
+    """
     print(f'\n{"─"*50}')
-    print(f'[DEBUG] POST {url}')
-    print(f'[DEBUG] Form fields:')
+    print(f'[{tag}] POST {url}')
+    print(f'[{tag}] Form fields:')
+    # Build a display-safe copy of the payload
+    display = {}
     for k, v in payload.items():
         if k == 'apiKey':
-            print(f'  {k}: <redacted>')
+            display[k] = '<redacted>'
         elif isinstance(v, str) and len(v) > 200:
-            print(f'  {k}: {v[:200]}... ({len(v)} chars)')
+            display[k] = v[:200] + f'… ({len(v)} chars)'
         else:
-            print(f'  {k}: {v}')
+            display[k] = v
+    # Pretty-print the payload as JSON for readability
+    print(json.dumps(display, indent=2, ensure_ascii=False))
     if files:
-        print(f'[DEBUG] Files ({len(files)}):')
+        print(f'[{tag}] Files ({len(files)}):')
         for field_name, (filename, fh, mime) in files:
             try:
                 pos = fh.tell()
@@ -332,46 +483,151 @@ def _log_request(url, payload, files):
                 size = '?'
             print(f'  {field_name}: {filename} ({mime}, {size} bytes)')
     else:
-        print(f'[DEBUG] Files: (none — text-only request)')
+        print(f'[{tag}] Files: (none — text-only request)')
     print(f'{"─"*50}')
 
 
-def _log_response(status, text):
-    print(f'[DEBUG] HTTP {status}  ({len(text)} bytes)')
-    print(f'[DEBUG] Response body:\n{text}')
+def _log_response(status, text, tag='DEBUG'):
+    """Print the API response in a readable format.
+
+    Attempts to pretty-print the response as JSON.  Falls back to raw text
+    if the response is not valid JSON.
+    """
+    print(f'[{tag}] HTTP {status}  ({len(text)} bytes)')
+    try:
+        parsed = json.loads(text)
+        # Remove verbose detail fields for cleaner output unless in debug mode
+        if tag != 'DEBUG':
+            summary_keys = {'success', 'model', 'provider', 'error', 'response',
+                           'text', 'output', 'content', 'generation'}
+            filtered = {k: v for k, v in parsed.items() if k in summary_keys}
+            # If we filtered out everything useful, fall back to full
+            if not filtered or (len(filtered) == 1 and 'success' in filtered):
+                filtered = parsed
+            print(f'[{tag}] Response (pretty-printed):')
+            print(json.dumps(filtered, indent=2, ensure_ascii=False))
+        else:
+            print(f'[{tag}] Response (pretty-printed):')
+            print(json.dumps(parsed, indent=2, ensure_ascii=False))
+        # Warn if gateway reports success but response is empty
+        if isinstance(parsed, dict) and parsed.get('success') and not parsed.get('response') and not parsed.get('text') and not parsed.get('output'):
+            gen = parsed.get('generation', {})
+            out_size = gen.get('output_size') if isinstance(gen, dict) else None
+            if out_size and out_size > 0:
+                print(f'[{tag}] ⚠  WARNING: Gateway reports success (output_size={out_size}) but response field is empty!')
+                print(f'[{tag}] ⚠  The debug_log=1 parameter may be stripping the response content.')
+                print(f'[{tag}] ⚠  Try running without --debug to get actual model output.')
+    except (json.JSONDecodeError, TypeError):
+        print(f'[{tag}] Response body (raw):\n{text}')
     print(f'{"─"*50}\n')
 
 
 def _build_text_payload(prompt):
-    """Return form-field dict for text-only generation/translation via the vllm provider."""
+    """Return form-field dict for text-only generation/translation via the ollama provider.
+
+    ``max_tokens`` is deliberately omitted — the AI Gateway / OpenRouter
+    will use the model's native maximum output length.
+    """
     return {
-        'provider': _VLLM_PROVIDER,
-        'model': _VLLM_MODEL,
-        'apiKey': AIGATEWAY_APIKEY,
+        'provider': OLLAMA_PROVIDER,
+        'model': OLLAMA_MODEL,
+        'apiKey': OLLAMA_APIKEY,
         'prompt': prompt,
-        'max_tokens': '1000',
     }
 
 
 def _extract_text(raw_text):
-    """Pull plain text content from the gateway's JSON / SSE response."""
+    """Pull plain text content from the gateway's JSON / SSE response.
+
+    Handles all known gateway response shapes (ett-vllm, vllm, OpenAI-compatible,
+    etc.).  Kept in sync with all-in-one.py's extract_text_from_ett_result.
+
+    Returns (text, warning_message).  warning_message is None when everything is ok.
+    """
     try:
         parsed = json.loads(raw_text)
-        parts = []
-        if isinstance(parsed.get('files'), list):
-            for f in parsed['files']:
-                if isinstance(f, dict) and f.get('text'):
-                    parts.append(f['text'])
-        for key in ('text', 'content', 'response', 'masterSummary'):
-            val = parsed.get(key)
-            if isinstance(val, str) and val.strip():
-                parts.append(val)
-        combined = '\n\n'.join(p.strip() for p in parts if p.strip())
-        if combined:
-            return combined
     except (json.JSONDecodeError, TypeError):
-        pass
-    return raw_text.strip()
+        return raw_text.strip(), None
+
+    if not isinstance(parsed, dict):
+        return raw_text.strip(), None
+
+    # ── Gateway-level error — surface the error message ──
+    gateway_error = parsed.get('error')
+    if gateway_error and not parsed.get('response') and not parsed.get('files'):
+        err_msg = str(gateway_error)
+        # Also check for output_size: 0 which indicates model produced nothing
+        gen = parsed.get('generation', {})
+        if isinstance(gen, dict) and gen.get('output_size') == 0:
+            err_msg += ' (model produced zero output tokens — the model may not be loaded or is not responding)'
+        return '', err_msg
+
+    # ── Detect zero-output success responses ──
+    generation = parsed.get('generation', {})
+    if isinstance(generation, dict):
+        output_size = generation.get('output_size', None)
+        if output_size == 0 and parsed.get('success'):
+            # Model returned success but generated zero tokens
+            model = parsed.get('model', 'unknown')
+            provider = parsed.get('provider', 'unknown')
+            return '', (
+                f'Gateway returned success but model produced zero output tokens '
+                f'(provider={provider}, model={model}). '
+                f'The model may not be loaded or may not support the requested task.'
+            )
+        # ── Detect success with output_size > 0 but empty response field ──
+        # This happens when debug_log=1 is used — the gateway returns metadata
+        # but omits the actual response text.
+        if output_size and output_size > 0 and parsed.get('success') and not parsed.get('response') and not parsed.get('text'):
+            model = parsed.get('model', 'unknown')
+            provider = parsed.get('provider', 'unknown')
+            return '', (
+                f'Gateway returned success (output_size={output_size}) but the '
+                f'response field is empty. This is likely caused by the '
+                f'debug_log=1 query parameter. Rerun without --debug.'
+            )
+
+    # ── Collect text from every possible field ──
+    text = parsed.get('response', '') or parsed.get('text', '') or parsed.get('output', '') or ''
+
+    # masterSummary may be a string or a dict
+    master = parsed.get('masterSummary', '')
+    if isinstance(master, str) and master.strip():
+        text = master
+    elif isinstance(master, dict):
+        text = master.get('text', '') or master.get('summary', '') or text
+
+    # Per-file text (multipart image extraction responses)
+    parts = []
+    for file_info in (parsed.get('files') or []):
+        if isinstance(file_info, dict):
+            file_text = (
+                file_info.get('text', '')
+                or file_info.get('response', '')
+                or file_info.get('output', '')
+                or ''
+            )
+            if file_text.strip():
+                parts.append(file_text.strip())
+    if parts:
+        if not text.strip():
+            text = '\n\n'.join(parts)
+        else:
+            text = text + '\n\n' + '\n\n'.join(parts)
+
+    # generation field (used by some gateway versions)
+    if not text.strip() and isinstance(generation, str) and generation.strip():
+        text = generation
+    elif not text.strip() and isinstance(generation, dict):
+        text = generation.get('text', '') or generation.get('response', '') or ''
+
+    # content field (older wrappers)
+    if not text.strip():
+        content = parsed.get('content', '')
+        if isinstance(content, str) and content.strip():
+            text = content
+
+    return text.strip(), None
 
 
 def _parse_generated_json(raw_text):
@@ -490,26 +746,23 @@ def _parse_generated_json(raw_text):
 
 
 
-def _resize_for_ett(image_path):
-    """Resize image to fit within ETT_MAX_IMAGE_DIM on the longest side.
-    Returns (bytes, content_type)."""
-    img = Image.open(image_path).convert('RGB')
-    w, h = img.size
-    longest = max(w, h)
-    if longest <= ETT_MAX_IMAGE_DIM:
-        buf = io.BytesIO()
-        img.save(buf, format='JPEG', quality=85)
-        return buf.getvalue(), 'image/jpeg'
+def _read_image_for_ett(image_path):
+    """Return (bytes, mime_type) for an image file.
 
-    ratio = ETT_MAX_IMAGE_DIM / longest
-    new_size = (int(w * ratio), int(h * ratio))
-    img = img.resize(new_size, Image.LANCZOS)
-    buf = io.BytesIO()
-    img.save(buf, format='JPEG', quality=85)
-    orig_kb = (w * h * 3) / 1024
-    new_kb = buf.tell() / 1024
-    print(f'  [resize] {Path(image_path).name}: {w}x{h} → {new_size[0]}x{new_size[1]} ({orig_kb:.0f}KB → {new_kb:.0f}KB)')
-    return buf.getvalue(), 'image/jpeg'
+    The AI Gateway's ett-vllm handler normalises every uploaded image
+    to a consistent canvas, so no client-side resize is needed.
+    """
+    img_bytes = image_path.read_bytes()
+    if len(img_bytes) > _MAX_IMAGE_BYTES:
+        raise ValueError(
+            f'Image too large: {image_path.name} ({len(img_bytes)} bytes > '
+            f'{_MAX_IMAGE_BYTES} bytes max)'
+        )
+    suffix = image_path.suffix.lower()
+    mime_map = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+                '.webp': 'image/webp'}
+    mime_type = mime_map.get(suffix, 'application/octet-stream')
+    return img_bytes, mime_type
 
 
 def _find_page_images(subject, book, section_num, page_num, language):
@@ -555,26 +808,29 @@ def extract_page_text(subject, book, section_num, page_num, language='en'):
     selected = _find_page_images(subject, book, section_num, page_num, language)
 
     prompt = (
-        '從這些教科書頁面圖像中提取並轉錄所有文字內容。包括所有標題、正文和圖片說明。必須用繁體中文（Traditional Chinese）輸出，不要使用簡體中文（Simplified Chinese）。'
+        '從這些頁面圖像中提取並轉錄所有文字內容。包括所有標題、正文和圖片說明。必須用繁體中文（Traditional Chinese）輸出，不要使用簡體中文（Simplified Chinese）。'
         if language == 'tc' else
-        'Extract and transcribe all text content from these textbook page images. '
+        'Extract and transcribe all text content from these page images. '
         'Include all headings, body text, and captions.'
     )
 
     payload = {
-        'provider': AIGATEWAY_PROVIDER,
-        'model': AIGATEWAY_MODEL,
-        'apiKey': AIGATEWAY_APIKEY,
+        'provider': VLLM_PROVIDER,
+        'model': VLLM_MODEL,
+        'apiKey': VLLM_APIKEY,
         'prompt': prompt,
+        'stream': 'false',
         'wordCount': '3000',
     }
     files_list = []
     for img_path in selected:
-        img_bytes, mime_type = _resize_for_ett(img_path)
+        img_bytes, mime_type = _read_image_for_ett(img_path)
         files_list.append(('files', (img_path.name, io.BytesIO(img_bytes), mime_type)))
     raw = _call_ett_vllm(payload, files=files_list)
 
-    text = _extract_text(raw)
+    text, gateway_warning = _extract_text(raw)
+    if gateway_warning:
+        print(f'  [{language}] ⚠  Gateway warning: {gateway_warning}')
 
     # Detect when _extract_text fell back to returning raw JSON wrapper
     looks_like_json_wrapper = text.strip().startswith('{') and (
@@ -585,6 +841,8 @@ def extract_page_text(subject, book, section_num, page_num, language='en'):
         safe_payload = {k: ('<redacted>' if k == 'apiKey' else v) for k, v in payload.items()}
         safe_payload['files'] = [str(s) for s in selected]
         print(f'  [{language}] ERROR: Gateway returned no usable text')
+        if gateway_warning:
+            print(f'  [{language}] Reason: {gateway_warning}')
         print(f'  [{language}] Request payload:')
         print(f'  [{language}] {json.dumps(safe_payload, indent=2, ensure_ascii=False)}')
         print(f'  [{language}] Raw response ({len(raw)} bytes):')
@@ -592,6 +850,7 @@ def extract_page_text(subject, book, section_num, page_num, language='en'):
         raise RuntimeError(
             f'Gateway returned no usable text for subject={subject} book={book} '
             f'section={section_num} page={page_num} language={language}'
+            + (f' — {gateway_warning}' if gateway_warning else '')
         )
     return text
 
@@ -608,15 +867,16 @@ def _subpage_sort_key(filename, prefix):
 
 # ── Prompt builders ────────────────────────────────────────
 
-def _build_gen_prompt(chapter, section_name, page_num, language, text):
+def _build_gen_prompt(chapter, section_name, page_num, language, text, subject=''):
     """Match server's buildGenerationPrompt exactly."""
     lang_instruction = (
         '所有內容必須使用繁體中文（Traditional Chinese, NOT Simplified Chinese）。問題和答案都要用繁體中文書寫。'
         if language == 'tc' else
         'All content must be in English.'
     )
+    subject_label = f'{subject} ' if subject else ''
     return (
-        f'You are an expert biology educator. Using ONLY the textbook content '
+        f'You are an expert {subject_label}educator. Using ONLY the content '
         f'provided below (do NOT use any outside knowledge), generate learning '
         f'materials to help a student study this specific page.\n\n'
         f'The content is from:\n'
@@ -624,18 +884,24 @@ def _build_gen_prompt(chapter, section_name, page_num, language, text):
         f'- Section: {section_name}\n'
         f'- Page: {page_num}\n\n'
         f'{lang_instruction}\n\n'
-        f'--- TEXTBOOK CONTENT (use ONLY this) ---\n'
+        f'--- CONTENT (use ONLY this) ---\n'
         f'{text[:3000]}\n'
         f'--- END CONTENT ---\n\n'
         f'IMPORTANT: Base every question and answer STRICTLY on the provided '
         f'content. Do not introduce concepts, facts, or terminology not found '
         f'in the content above.\n\n'
-        f'Generate in JSON:\n'
-        f'1. A bullet-point summary of the key concepts on this page (3-6 bullet points as an array of strings)\n'
-        f'2. 4-6 flashcards (each with "question" and "answer")\n'
-        f'3. 3-5 MCQ questions (each with "question", 4 "options" labeled A-D, '
-        f'"correct" letter, and "explanation")\n\n'
-        f'Output ONLY the JSON object, no markdown:\n'
+        f'Generate a COMPLETE, VALID JSON object with these three keys:\n'
+        f'1. "summary": 3-6 bullet-point strings summarizing key concepts\n'
+        f'2. "flashcards": 4-6 objects, each with "question" (string) and "answer" (string)\n'
+        f'3. "mcq": 3-5 objects, each with "question" (string), "options" '
+        f'(array of exactly 4 strings labeled A-D), "correct" (one letter: A/B/C/D), '
+        f'and "explanation" (string)\n\n'
+        f'CRITICAL — OUTPUT REQUIREMENTS:\n'
+        f'- Output ONLY valid, parseable JSON. Do NOT truncate — produce the COMPLETE object.\n'
+        f'- Close ALL brackets and braces: ensure the final }} closes the root object.\n'
+        f'- Every string must be properly quoted and closed.\n'
+        f'- Do NOT use markdown code fences. Output raw JSON only.\n\n'
+        f'Example output format:\n'
         f'{{\n  "summary": ["bullet point 1", "bullet point 2", "bullet point 3"],\n'
         f'  "flashcards": [{{"question":"...","answer":"..."}}],\n'
         f'  "mcq": [{{"question":"...","options":["A. ...","B. ...","C. ...","D. ..."],'
@@ -643,15 +909,16 @@ def _build_gen_prompt(chapter, section_name, page_num, language, text):
     )
 
 
-def _build_translation_prompt(chapter, section_name, page_num, target_lang, source, ref_text):
+def _build_translation_prompt(chapter, section_name, page_num, target_lang, source, ref_text, subject=''):
     """Match server's buildTranslationPrompt exactly."""
     lang_instruction = (
         'Translate everything into Traditional Chinese (繁體中文, NOT Simplified Chinese 简体中文).'
         if target_lang == 'tc' else
         'Translate everything into English.'
     )
+    subject_label = f'{subject} ' if subject else ''
     return (
-        f'You are an expert bilingual biology educator. Translate the study '
+        f'You are an expert bilingual {subject_label}educator. Translate the study '
         f'materials below while preserving the meaning EXACTLY.\n\n'
         f'The content is from:\n'
         f'- Chapter: {chapter}\n'
@@ -667,11 +934,13 @@ def _build_translation_prompt(chapter, section_name, page_num, target_lang, sour
         f'- mcq[i] in the output must match mcq[i] in the source by meaning.\n'
         f'- Keep exactly 4 options for each MCQ, labeled A-D.\n'
         f'- Keep the SAME correct answer letter as the source.\n'
-        f'- Use textbook terminology from the reference text when available.\n'
-        f'- Output ONLY valid JSON, no markdown.\n\n'
-        f'--- REFERENCE TEXTBOOK TEXT ---\n'
+        f'- Use terminology from the reference text when available.\n'
+        f'- Output a COMPLETE, VALID JSON object — do NOT truncate mid-output.\n'
+        f'- Close ALL brackets and braces. Every string must be properly quoted and terminated.\n'
+        f'- Do NOT use markdown code fences. Output raw JSON only.\n\n'
+        f'--- REFERENCE TEXT ---\n'
         f'{(ref_text or '')[:3000]}\n'
-        f'--- END REFERENCE TEXTBOOK TEXT ---\n\n'
+        f'--- END REFERENCE TEXT ---\n\n'
         f'--- SOURCE STUDY MATERIALS JSON ---\n'
         f'{json.dumps(source)}\n'
         f'--- END SOURCE STUDY MATERIALS JSON ---\n\n'
@@ -686,10 +955,16 @@ def _build_translation_prompt(chapter, section_name, page_num, target_lang, sour
 # ── Core generation ────────────────────────────────────────
 
 def _run_vllm(prompt):
-    """Send a text-generation prompt to the ett-vllm provider (multipart, no images)."""
+    """Send a text-generation prompt to the vllm provider (multipart, no images).
+
+    Returns the normalized content dict.  If the JSON was truncated/unparseable,
+    ``_parse_error`` will be present in the result — callers should validate
+    with ``_validate_content_structure`` before saving.
+    """
     payload = _build_text_payload(prompt)
     raw = _call_ett_vllm(payload)
-    return _normalize_generated_content(_parse_generated_json(raw))
+    parsed = _parse_generated_json(raw)
+    return _normalize_generated_content(parsed)
 
 
 def generate_for_page(subject, book, section_num, page_num, section_name, force=False):
@@ -697,8 +972,13 @@ def generate_for_page(subject, book, section_num, page_num, section_name, force=
     Generate English + Chinese study materials for one page.
     Steps: extract EN text → generate EN → extract ZH text → translate to ZH → save.
     If EN already exists but ZH is missing/broken, translates directly from EN → ZH.
+
+    Validates every generated/translated output against the required JSON schema.
+    Retries once if the first attempt produces invalid or truncated JSON.
     """
     label = f'{subject}/{book}/{section_num}/{page_num}'
+    # Extract readable subject name from folder: "physics-oup" → "Physics"
+    _subject_name = subject.split('-')[0].capitalize() if '-' in subject else subject.capitalize()
 
     if not force and content_exists(subject, book, section_num, page_num):
         return 'skipped'
@@ -708,26 +988,32 @@ def generate_for_page(subject, book, section_num, page_num, section_name, force=
         existing_en, has_en = en_exists_zh_missing(subject, book, section_num, page_num)
         if has_en:
             print(f'  [{label}] English content exists, zh missing — translating directly from en')
-            zh_prompt = _build_translation_prompt(book, section_name, page_num, 'tc', existing_en, '')
-            zh_result = _run_vllm(zh_prompt)
-            if 'raw' in zh_result:
-                print(f'  [{label}]   ⚠  Chinese translation returned unparsed raw content')
-            # Only save zh, preserve existing en from DB
+            zh_result = _generate_with_retry(
+                lambda: _run_vllm(
+                    _build_translation_prompt(book, section_name, page_num, 'tc', existing_en, '', _subject_name),
+                ),
+                label, 'zh-translation',
+            )
+            # Save zh only, preserving existing en from DB
             save_content(subject, book, section_num, page_num, existing_en, zh_result)
             print(f'  [{label}] ✓  Saved zh translation to MongoDB')
             return 'translated'
 
+    # ── Step 1: Extract English text ──
     print(f'  [{label}] Extracting English text …')
     en_text = extract_page_text(subject, book, section_num, page_num, 'en')
     print(f'  [{label}]   got {len(en_text)} chars')
 
+    # ── Step 2: Generate English study materials (with retry) ──
     print(f'  [{label}] Generating English study materials …')
-    en_prompt = _build_gen_prompt(book, section_name, page_num, 'en', en_text)
-    en_result = _run_vllm(en_prompt)
-    if 'raw' in en_result:
-        print(f'  [{label}]   ⚠  English generation returned unparsed raw content')
+    en_result = _generate_with_retry(
+        lambda: _run_vllm(
+            _build_gen_prompt(book, section_name, page_num, 'en', en_text, _subject_name),
+        ),
+        label, 'en-generation',
+    )
 
-    # Extract Chinese reference text
+    # ── Step 3: Extract Chinese reference text ──
     zh_text = ''
     try:
         print(f'  [{label}] Extracting Chinese reference text …')
@@ -737,15 +1023,82 @@ def generate_for_page(subject, book, section_num, page_num, section_name, force=
         print(f'  [{label}]   ⚠  Chinese reference extraction failed: {exc}')
         print(f'  [{label}]   continuing with translation without reference text')
 
+    # ── Step 4: Translate to Traditional Chinese (with retry) ──
     print(f'  [{label}] Translating to Traditional Chinese …')
-    zh_prompt = _build_translation_prompt(book, section_name, page_num, 'tc', en_result, zh_text)
-    zh_result = _run_vllm(zh_prompt)
-    if 'raw' in zh_result:
-        print(f'  [{label}]   ⚠  Chinese translation returned unparsed raw content')
+    zh_result = _generate_with_retry(
+        lambda: _run_vllm(
+            _build_translation_prompt(book, section_name, page_num, 'tc', en_result, zh_text, _subject_name),
+        ),
+        label, 'zh-translation',
+    )
 
-    save_content(subject, book, section_num, page_num, en_result, zh_result)
+    # ── Step 5: Final validation before saving ──
+    save_content(subject, book, section_num, page_num, en_result, zh_result,
+                 en_text=en_text, zh_text=zh_text)
     print(f'  [{label}] ✓  Saved to MongoDB')
     return 'generated'
+
+
+def _generate_with_retry(generate_fn, label, step_name):
+    """Call ``generate_fn()``, validate the result, and retry once if the
+    first attempt yields invalid or truncated JSON.
+
+    The AI Gateway uses the model's native maximum output length (max_tokens
+    is omitted from the request), so retries are simple re-attempts rather
+    than token-budget escalations.
+
+    Raises RuntimeError if both attempts fail validation.
+    """
+    max_attempts = 2
+
+    for attempt in range(1, max_attempts + 1):
+        result = generate_fn()
+
+        # ── Check for parse error (truncated / unparseable JSON) ──
+        if result.get('_parse_error'):
+            if attempt < max_attempts:
+                truncated = result.get('_raw_truncated', '')
+                print(f'  [{label}]   ⚠  {step_name} returned truncated/unparseable JSON '
+                      f'(attempt {attempt}/{max_attempts}): {truncated}')
+                print(f'  [{label}]   retrying …')
+                time.sleep(2)
+                continue
+            else:
+                raise RuntimeError(
+                    f'{step_name} for {label} returned unparseable content '
+                    f'after {max_attempts} attempts. '
+                    f'Truncated preview: {result.get("_raw_truncated", "")}'
+                )
+
+        # ── Validate structure ──
+        is_valid, errors = _validate_content_structure(result, f'[{label}] {step_name}: ')
+        if is_valid:
+            if attempt > 1:
+                print(f'  [{label}]   ✓  {step_name} succeeded on retry '
+                      f'(attempt {attempt})')
+            # Strip internal markers before returning clean content
+            result.pop('_parse_error', None)
+            result.pop('_raw_truncated', None)
+            return result
+
+        # Invalid — retry or fail
+        if attempt < max_attempts:
+            print(f'  [{label}]   ⚠  {step_name} validation failed '
+                  f'(attempt {attempt}/{max_attempts}):')
+            for e in errors:
+                print(f'  [{label}]      - {e}')
+            print(f'  [{label}]   retrying …')
+            time.sleep(2)
+            continue
+        else:
+            raise RuntimeError(
+                f'{step_name} for {label} failed validation after '
+                f'{max_attempts} attempts:\n' +
+                '\n'.join(f'  - {e}' for e in errors)
+            )
+
+    # Should never reach here
+    raise RuntimeError(f'{step_name} for {label}: unexpected retry loop exit')
 
 
 # ── Discovery helpers ──────────────────────────────────────
@@ -853,8 +1206,8 @@ def main():
         help='List pages that would be processed without calling the AI gateway',
     )
     parser.add_argument(
-        '--pages-per-section', type=int, default=1,
-        help='Maximum sub-pages to generate per section (default: 1 = overview only)',
+        '--pages-per-section', type=int, default=0,
+        help='Maximum sub-pages to generate per section (default: 0 = all pages)',
     )
     parser.add_argument(
         '--delay', type=float, default=DELAY_BETWEEN_PAGES,
@@ -862,13 +1215,21 @@ def main():
     )
     parser.add_argument(
         '--debug', action='store_true',
-        help='Print full request payloads sent to the AI gateway',
+        help='Print full request payloads and raw responses sent to the AI gateway',
+    )
+    parser.add_argument(
+        '-v', '--verbose', action='store_true',
+        help='Print the gateway request payload (with redacted API key) and full '
+             'response body for every AI call',
     )
     args = parser.parse_args()
 
     # ── Validate configuration ─────────────────────────────
-    if not AIGATEWAY_APIKEY:
-        print('ERROR: AIGATEWAY_APIKEY is not set.  Configure it in your .env file.')
+    if not VLLM_APIKEY:
+        print('ERROR: VLLM_APIKEY is not set.  Configure it in your .env file.')
+        sys.exit(1)
+    if not OLLAMA_APIKEY:
+        print('ERROR: OLLAMA_APIKEY is not set.  Configure it in your .env file.')
         sys.exit(1)
 
     if not DATA_DIR.is_dir():
@@ -887,20 +1248,27 @@ def main():
         print(f'No subjects found under {DATA_DIR}')
         sys.exit(1)
 
+    # Apply debug/verbose flags BEFORE printing the summary so the URL shown
+    # reflects the actual mode that will be used.
+    if args.debug:
+        global DEBUG
+        DEBUG = True
+    if args.verbose:
+        global VERBOSE
+        VERBOSE = True
+
+    active_url = VLLM_DEBUG_URL if DEBUG else VLLM_URL
     print(f'Subjects  : {", ".join(subjects)}')
     print(f'Data dir  : {DATA_DIR}')
-    print(f'Gateway   : {AIGATEWAY_DEBUG_URL}')
-    print(f'Provider  : {AIGATEWAY_PROVIDER}')
-    print(f'Model     : {AIGATEWAY_MODEL}')
+    print(f'VLLM URL  : {active_url}')
+    print(f'VLLM prov : {VLLM_PROVIDER}  |  model: {VLLM_MODEL}')
+    print(f'Ollama    : {OLLAMA_PROVIDER}  |  model: {OLLAMA_MODEL}')
     print(f'Force     : {args.force}')
     print(f'Dry-run   : {args.dry_run}')
     print(f'Pages/sect: {args.pages_per_section}')
     print(f'Debug     : {args.debug}')
+    print(f'Verbose   : {args.verbose}')
     print('=' * 60)
-
-    if args.debug:
-        global DEBUG
-        DEBUG = True
 
     total_pages = 0
     total_generated = 0
@@ -956,16 +1324,15 @@ def main():
                         max_pages = 1
 
                     # Determine page range:
-                    #   4-part target (…/section/page) → start at that page and continue
-                    #                                  through the end of the section
+                    #   4-part target (…/section/page) → ONLY that specific page
                     #   3-part target (…/section)      → ALL pages of that section
                     #   2-part target (…/book)         → limited by --pages-per-section
                     #   1-part target (subject)        → limited by --pages-per-section
                     #   no target                      → ALL pages of every section
                     if page is not None:
-                        # Explicit start page → continue through the section
+                        # Explicit page → only that one page
                         page_start = max(1, int(page))
-                        page_end = max(page_start, max_pages)
+                        page_end = page_start
                     elif section is not None:
                         # Explicit section (3-part target) → all pages
                         page_limit = max_pages
@@ -976,8 +1343,8 @@ def main():
                         page_start = 1
                         page_end = max_pages
                     else:
-                        # Book or subject level → respect --pages-per-section
-                        page_limit = min(max_pages, args.pages_per_section)
+                        # Book or subject level → respect --pages-per-section (0 = all)
+                        page_limit = max_pages if args.pages_per_section == 0 else min(max_pages, args.pages_per_section)
                         page_start = 1
                         page_end = page_limit
 

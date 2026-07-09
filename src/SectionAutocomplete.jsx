@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import AutocompleteDropdown from './components/AutocompleteDropdown';
 
-function SectionAutocomplete({ sections, onSelect, getSectionName, currentSection, language, onOpenChange }) {
+function SectionAutocomplete({ sections, onSelect, getSectionName, currentSection, language, onOpenChange, alwaysOpen, hideFilter }) {
   const currentSectionName = useMemo(() => {
     if (!currentSection || !language) return '';
     const sectionId = String(currentSection.section || currentSection.page || '').trim();
@@ -34,26 +34,37 @@ function SectionAutocomplete({ sections, onSelect, getSectionName, currentSectio
   };
 
   const dropdownItems = useMemo(() => (
-    (sections || []).map((item) => ({
-      id: String(item.section || item.page || ''),
-      badge: String(item.section || item.page || ''),
-      primary: getPrimarySectionName(item),
-      secondary: getSecondarySectionName(item),
-      searchText: [item.section, item.page, getSectionName(item, 'en'), getSectionName(item, 'tc')].filter(Boolean).join('\n'),
-      _page: Number(item.page || item.section),
-    }))
+    (sections || []).map((item) => {
+      const rawPage = item.page || item.section;
+      const num = Number(rawPage);
+      const pageVal = isNaN(num) ? String(rawPage) : num;
+      return {
+        id: String(item.section || item.page || ''),
+        badge: String(item.section || item.page || ''),
+        primary: getPrimarySectionName(item),
+        secondary: getSecondarySectionName(item),
+        searchText: [item.section, item.page, getSectionName(item, 'en'), getSectionName(item, 'tc')].filter(Boolean).join('\n'),
+        _page: pageVal,
+      };
+    })
   ), [sections, getSectionName, language]);
 
   return (
     <AutocompleteDropdown
       items={dropdownItems}
       value={String(currentSection?.section || currentSection?.page || '')}
-      onSelect={(id, item) => onSelect(Number(item?._page || id))}
+      onSelect={(id, item) => {
+        const val = item?._page;
+        // Pass numeric page numbers as numbers, non-numeric (like "end") as strings
+        onSelect(typeof val === 'number' ? val : String(val ?? id));
+      }}
       selectedDisplay={currentSectionName}
       placeholder="Search section..."
       emptyText="No matching sections"
       toggleAriaLabel="Toggle section list"
       onOpenChange={onOpenChange}
+      alwaysOpen={alwaysOpen}
+      hideFilter={hideFilter}
     />
   );
 }

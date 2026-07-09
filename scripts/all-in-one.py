@@ -230,9 +230,21 @@ def _process_scope(scope_dir, scope_label, args, base_dir):
             print("\n" + "=" * 60)
             print("  Step 7 — Downloading HTML resources")
             print("=" * 60)
-            download_htmls(book_dir)
+            download_htmls(book_dir, force=args.force)
         else:
             print("[skip] Step 7 — Download HTMLs")
+
+        # ── Step 8: Capture book title ───────────────────────────
+        if args.capture_title and args.capture_title > 0:
+            print("\n" + "=" * 60)
+            print(f"  Step 8 — Capturing book title from first {args.capture_title} page(s)")
+            print("=" * 60)
+            capture_book_title(book_dir, args.capture_title, base_dir)
+        elif args.capture_title is not None and args.capture_title > 0:
+            pass  # handled above
+        else:
+            # --capture-title not given or 0 — skip
+            pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -624,9 +636,9 @@ def load_env_file(env_path):
 def get_ai_gateway_config(base_dir):
     env_values = load_env_file(os.path.join(base_dir, ".env"))
     return {
-        "url": os.environ.get("AIGATEWAY_API_URL") or env_values.get("AIGATEWAY_API_URL") or "https://aigateway.aied.hku.hk/api/generate",
-        "model": os.environ.get("AIGATEWAY_MODEL") or env_values.get("AIGATEWAY_MODEL") or "vllm|OpenGVLab/InternVL3_5-38B",
-        "api_key": os.environ.get("AIGATEWAY_APIKEY") or env_values.get("AIGATEWAY_APIKEY") or "",
+        "url": os.environ.get("VLLM_API_URL") or env_values.get("VLLM_API_URL") or "https://aigateway.aied.hku.hk/api/generate",
+        "model": os.environ.get("VLLM_MODEL") or env_values.get("VLLM_MODEL") or "OpenGVLab/InternVL3_5-38B",
+        "api_key": os.environ.get("VLLM_APIKEY") or env_values.get("VLLM_APIKEY") or "",
     }
 
 
@@ -733,6 +745,11 @@ def parse_contents_entries(text):
 
         if re.fullmatch(r"appendix", line, re.IGNORECASE):
             entries["appendix"] = "Appendix"
+            continue
+
+        if re.fullmatch(r"end", line, re.IGNORECASE):
+            entries["end"] = "End"
+            continue
 
     return entries
 
@@ -771,7 +788,7 @@ def fill_section_names_from_contents_png(data_dir, base_dir):
             print("  [skip] ETT returned no usable text for contents.png")
             return
     else:
-        print("  [skip] AIGATEWAY_APIKEY not configured; cannot extract section names")
+        print("  [skip] VLLM_APIKEY not configured; cannot extract section names")
         return
 
     entries = parse_contents_entries(extracted_text)
@@ -862,6 +879,165 @@ def add_root_book_name(data_dir):
         print(f"    chapter: {data.get('chapter')}")
         print(f"    nameEn:  {name_en}")
         print(f"    nameZh:  {name_zh}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Step 8 — Capture book title from first N page images
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _collect_first_page_images(pages_dir, count):
+    """Return up to *count* image paths from the pages directory, sorted by
+    (section_number, page_number).  Only PNG/JPG files that match the
+    ``section-page.ext`` naming convention are included."""
+    if not os.path.isdir(pages_dir):
+        return []
+
+    pattern = re.compile(r"^(\d+(?:\.\d+)?)-(\d+)\.(png|jpg|jpeg|webp)$", re.IGNORECASE)
+    candidates = []
+    for fname in os.listdir(pages_dir):
+        m = pattern.match(fname)
+        if not m:
+            continue
+        section = float(m.group(1))
+        page = int(m.group(2))
+        candidates.append((section, page, os.path.join(pages_dir, fname)))
+
+    if not candidates:
+        return []
+
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    return [path for _, _, path in candidates[:count]]
+
+
+def _send_ett_with_images(url, api_key, model, image_paths, prompt):
+    """Send one or more page images to ETT/vLLM and return the parsed JSON
+    response, or {'error': True, ...} on failure."""
+    boundary = "----PdfReaderCaptureTitle"
+
+    def field(name, value):
+        return (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{name}"\r\n'
+            f"\r\n"
+            f"{value}\r\n"
+        ).encode("utf-8")
+
+    parts = [
+        field("provider", "ett"),
+        field("model", model),
+        field("apiKey", api_key),
+        field("stream", "false"),
+        field("prompt", prompt),
+    ]
+
+    for img_path in image_paths:
+        mime_type, _ = mimetypes.guess_type(str(img_path))
+        if mime_type is None:
+            mime_type = "application/octet-stream"
+        with open(img_path, "rb") as fh:
+            file_bytes = fh.read()
+        parts.append(
+            (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="files"; filename="{Path(img_path).name}"\r\n'
+                f"Content-Type: {mime_type}\r\n"
+                f"\r\n"
+            ).encode("utf-8")
+        )
+        parts.append(file_bytes)
+        parts.append(b"\r\n")
+
+    parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+
+    body = b"".join(parts)
+    req = Request(
+        url,
+        data=body,
+        headers={
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urlopen(req, timeout=180) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except HTTPError as err:
+        return {"error": True, "status": err.code, "body": err.read().decode("utf-8", errors="replace")}
+    except URLError as err:
+        return {"error": True, "reason": str(err.reason)}
+
+
+def capture_book_title(data_dir, page_count, base_dir):
+    """Use ETT/vLLM to extract the book title from the first *page_count*
+    page images and write it as ``nameEn`` in contents.json."""
+
+    contents_path = os.path.join(data_dir, "contents.json")
+    pages_dir = os.path.join(data_dir, "en", "contents", "pages")
+
+    images = _collect_first_page_images(pages_dir, page_count)
+    if not images:
+        print(f"  [skip] No page images found in {pages_dir}")
+        return
+
+    print(f"  Using page images:")
+    for img in images:
+        print(f"    {Path(img).name}")
+
+    if os.path.exists(contents_path):
+        with open(contents_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    else:
+        data = _create_skeleton_from_pdfs(data_dir)
+        if not data:
+            print(f"  [skip] No PDFs found to create {contents_path}")
+            return
+
+    existing_name = data.get("nameEn") or data.get("name") or ""
+
+    prompt = (
+        "Look at these textbook page images and tell me the full book title. "
+        "Return ONLY the book title as a plain text string — nothing else. "
+        "Do not include section numbers, chapter names, or page numbers. "
+        "If you cannot determine the title, return 'UNKNOWN'."
+    )
+
+    config = get_ai_gateway_config(base_dir)
+    if not config["api_key"]:
+        print("  [skip] VLLM_APIKEY not configured")
+        return
+
+    result = _send_ett_with_images(config["url"], config["api_key"], config["model"], images, prompt)
+    raw_text = extract_text_from_ett_result(result)
+
+    if not raw_text or raw_text.upper() == "UNKNOWN":
+        print("  [skip] ETT/vLLM could not determine a title")
+        if existing_name:
+            print(f"  Keeping existing nameEn: {existing_name}")
+        return
+
+    # Clean up the response — take the first meaningful line
+    title = raw_text.strip().split("\n")[0].strip()
+    title = re.sub(r'^["\'«‹„]|["\'»›”]$', '', title).strip()
+    # Remove common prefixes like "Title: " or "Book Title: "
+    title = re.sub(r'^(?i)(book\s+)?title\s*[:：]\s*', '', title).strip()
+
+    if not title or len(title) < 2:
+        print("  [skip] Extracted title too short")
+        return
+
+    data["nameEn"] = title
+    # Also set 'name' as fallback if not already set
+    if not data.get("name"):
+        data["name"] = title
+
+    with open(contents_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+
+    print(f"  Captured title → nameEn: {title}")
+    if existing_name and existing_name != title:
+        print(f"    (replaced: {existing_name})")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1035,10 +1211,13 @@ def _download_file(url, dest_path, timeout=30):
         return False
 
 
-def download_htmls(data_dir):
+def download_htmls(data_dir, force=False):
     """Download all HTML resources referenced in contents.json to local htmls/
     folders. Also download all files referenced within each HTML (images, CSS,
-    JS, etc.) and rewrite URLs to local paths."""
+    JS, etc.) and rewrite URLs to local paths.
+
+    If *force* is False, HTML files that already exist on disk are skipped
+    entirely (no download and no sub-resource processing)."""
 
     contents_path = os.path.join(data_dir, "contents.json")
     if not os.path.exists(contents_path):
@@ -1089,10 +1268,15 @@ def download_htmls(data_dir):
                 # Download the HTML
                 html_content = None
                 if os.path.exists(local_html_path) and os.path.getsize(local_html_path) > 0:
+                    if not force:
+                        total_skipped += 1
+                        print(f"    [skip] {html_basename}")
+                        continue  # skip entirely — no sub-resource processing
+                    # force mode: re-read existing HTML and re-process sub-resources
                     with open(local_html_path, "r", encoding="utf-8") as f:
                         html_content = f.read()
                     total_skipped += 1
-                    print(f"    [skip] {html_basename}")
+                    print(f"    [reprocess] {html_basename}")
                 else:
                     print(f"    downloading {html_basename} ...", end=" ", flush=True)
                     try:
@@ -1284,6 +1468,18 @@ def main():
         "--skip-htmls",
         action="store_true",
         help="Skip step 7 (download HTMLs and their sub-resources)",
+    )
+    parser.add_argument(
+        "-f", "--force",
+        action="store_true",
+        help="Force re-download and re-process HTML files even if they already exist",
+    )
+    parser.add_argument(
+        "--capture-title",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Capture book title from first N page images via ETT/vLLM (step 8). 0 = disabled.",
     )
     args = parser.parse_args()
 

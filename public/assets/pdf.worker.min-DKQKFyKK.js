@@ -1,3 +1,4 @@
+if(!URL.parse){URL.parse=(u,b)=>{try{return new URL(u,b)}catch{return null}};}if(!Promise.try){Promise.try=fn=>new Promise(r=>r(fn()));}
 /**
  * @licstart The following is the entire license notice for the
  * JavaScript code in this page

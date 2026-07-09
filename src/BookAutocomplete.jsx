@@ -97,7 +97,7 @@ function getBookSecondaryLabel(item, language) {
   return nameZh || '';
 }
 
-function BookAutocomplete({ books, onSelect, currentBook, language, subjectId, placeholder, emptyText, onOpenChange }) {
+function BookAutocomplete({ books, onSelect, currentBook, language, subjectId, placeholder, emptyText, onOpenChange, alwaysOpen, hideFilter }) {
   const dropdownItems = useMemo(() => {
     const normalizedSubjectId = String(subjectId || '').trim().toLowerCase();
     const sortedBooks = [...(books || [])].sort((a, b) => (
@@ -127,6 +127,8 @@ function BookAutocomplete({ books, onSelect, currentBook, language, subjectId, p
       emptyText={emptyText}
       toggleAriaLabel="Toggle book list"
       onOpenChange={onOpenChange}
+      alwaysOpen={alwaysOpen}
+      hideFilter={hideFilter}
     />
   );
 }

@@ -37,7 +37,8 @@ function centerAnchoredScroll(container, oldScrollTop, oldScrollHeight, axis = '
     const hpCenter = oldScrollLeft + container.clientWidth / 2;
     const hCenterRatio = oldScrollWidth > 0 ? hpCenter / oldScrollWidth : 0;
     const newLeft = hCenterRatio * container.scrollWidth - container.clientWidth / 2;
-    result.left = Math.max(0, newLeft);
+    const maxScrollLeft = Math.max(0, container.scrollWidth - container.clientWidth);
+    result.left = Math.max(0, Math.min(newLeft, maxScrollLeft));
   }
   return result;
 }
@@ -152,12 +153,9 @@ function PdfPane({
 
   const paginationPaneStyle = useMemo(() => {
     return {
-      position: 'relative',
-      display: 'flex',
-      justifyContent: 'center',
-      alignItems: fitMode === 'width' ? 'flex-start' : 'center',
+      position: 'relative'
     };
-  }, [fitMode]);
+  }, []);
 
   useEffect(() => {
     if (typeof onPageCountChange === 'function') {
@@ -287,6 +285,30 @@ function PdfPane({
 
     draw();
   }, [isImageMode, pdfDoc, currentPage, numPages, mode, onPageChange, zoom, contentWidth, contentHeight, fitMode, fitRefreshToken]);
+
+  // ── Clamp horizontal scroll in pagination mode ──────────────
+  // Prevents the page from drifting sideways past its edges
+  // (especially in fit-height mode where maxWidth is "none").
+  useEffect(() => {
+    if (mode !== 'pagination') return;
+    // Find the scroll container — works for both PDF (canvas) and image modes
+    const holder = canvasRef.current?.parentElement
+      || imgRef.current?.closest('.pdf-single-page')
+      || contentRef.current?.querySelector('.pdf-single-page');
+    if (!holder) return;
+
+    const onScroll = () => {
+      const maxScrollLeft = Math.max(0, holder.scrollWidth - holder.clientWidth);
+      if (holder.scrollLeft > maxScrollLeft) {
+        holder.scrollLeft = maxScrollLeft;
+      } else if (holder.scrollLeft < 0) {
+        holder.scrollLeft = 0;
+      }
+    };
+
+    holder.addEventListener('scroll', onScroll, { passive: true });
+    return () => holder.removeEventListener('scroll', onScroll);
+  }, [isImageMode, mode, pdfDoc, images, zoom, fitMode, fitRefreshToken]);
 
   useEffect(() => {
     if (!isImageMode) return;

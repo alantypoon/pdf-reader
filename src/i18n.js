@@ -131,6 +131,7 @@ const T = {
     searching: 'Searching…',
     searchIncludeAnnotations: 'Include text annotations',
     searchAnnotationBadge: 'Note',
+    loadingPage: 'Loading page…',
   },
   tc: {
     appTitle: '書本閱讀器',
@@ -262,6 +263,7 @@ const T = {
     searching: '搜尋中…',
     searchIncludeAnnotations: '包含文字標註',
     searchAnnotationBadge: '筆記',
+    loadingPage: '載入頁面中…',
   },
 };
 

@@ -62,6 +62,14 @@ function getSectionName(section, language) {
   return value.name || '';
 }
 
+/** Convert a section's page/section value to a stable file ID.
+ *  Numeric values (1, "3") → number; non-numeric ("end") → string. */
+function toFileId(raw) {
+  if (raw == null) return '';
+  const num = Number(raw);
+  return isNaN(num) ? String(raw) : num;
+}
+
 function getSectionResources(section, language) {
   const value = section?.[language];
   if (!value || typeof value === 'string') return [];
@@ -80,6 +88,18 @@ function getSubjectLabel(subjectId, selectedLanguage = 'en') {
   if (normalized === 'chemistry-winter') return showChinese ? '化學' : 'Chemistry';
   if (normalized === 'physics-oup') return showChinese ? '物理' : 'Physics';
   return String(subjectId || '').trim();
+}
+
+/** Abbreviated label for the collapsed sidebar subject button. */
+function getSubjectAbbreviation(subjectId, selectedLanguage = 'en') {
+  const normalized = String(subjectId || '').trim().toLowerCase();
+  let result;
+  if (normalized === 'biology-oup') result = selectedLanguage === 'tc' ? '生物' : 'Bio';
+  else if (normalized === 'chemistry-winter') result = selectedLanguage === 'tc' ? '化學' : 'Che';
+  else if (normalized === 'physics-oup') result = selectedLanguage === 'tc' ? '物理' : 'Phy';
+  else result = getSubjectLabel(subjectId, selectedLanguage);
+  console.log('[subjectBtn] getSubjectAbbreviation', { subjectId, selectedLanguage, normalized, result });
+  return result;
 }
 
 async function fetchJson(url, options) {
@@ -248,6 +268,10 @@ function App() {
   const [dataBooks, setDataBooks] = useState([]);
   const [activeBookId, setActiveBookId] = useState('');
   const [physicsChapterCatalog, setPhysicsChapterCatalog] = useState(null);
+  const physicsChapterCatalogRef = useRef(null);
+  useEffect(() => {
+    physicsChapterCatalogRef.current = physicsChapterCatalog;
+  }, [physicsChapterCatalog]);
   const [subjectSelections, setSubjectSelections] = useState({});
   const [lastSubjectId, setLastSubjectId] = useState('');
   const [sessionUserResolved, setSessionUserResolved] = useState(false);
@@ -265,6 +289,7 @@ function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(Boolean(savedPrefs.sidebarCollapsed));
   const [sidebarHidden, setSidebarHidden] = useState(Boolean(savedPrefs.sidebarHidden));
   const [pageSources, setPageSources] = useState({});
+  const [pageLoading, setPageLoading] = useState(false);
   const [remarks, setRemarks] = useState([]);
   const [pageAnnotations, setPageAnnotations] = useState([]);
   const [tool, setTool] = useState(() => {
@@ -503,16 +528,23 @@ function App() {
     const { preferredSectionId, preferredPageId, preferredPhysicsChapterId } = options;
     const nextBook = (chapters || []).find((chapter) => chapter.id === nextBookId) || (chapters || [])[0] || null;
     const firstSection = nextBook?.contents?.[0];
-    const firstSectionId = firstSection ? Number(firstSection.page || firstSection.section) : 1;
-    const hasPreferredSection = nextBook?.contents?.some((item) => Number(item.page || item.section) === Number(preferredSectionId));
-    const nextSectionId = hasPreferredSection ? Number(preferredSectionId) : firstSectionId;
+
+    const rawFirstId = firstSection ? (firstSection.page ?? firstSection.section) : 1;
+    const firstSectionId = toFileId(rawFirstId);
+
+    const hasPreferredSection = nextBook?.contents?.some((item) => {
+      return String(toFileId(item.page ?? item.section)) === String(preferredSectionId ?? '');
+    });
+    const nextSectionId = hasPreferredSection
+      ? toFileId(preferredSectionId)
+      : firstSectionId;
     const nextPageId = Math.max(1, Number(preferredPageId || 1));
 
     setSelectedChapter(nextBook?.id || '');
     setSelectedFile(nextSectionId);
     setSelectedPage(nextPageId);
     setSelectedPhysicsChapterId(preferredPhysicsChapterId ? String(preferredPhysicsChapterId) : '');
-  }, []);
+  }, [selectedBook]);
 
   const applySubjectSelection = useCallback((subjectId, chapters, defaultSubjectId = '') => {
     const normalizedSubjectId = String(subjectId || defaultSubjectId || '').trim();
@@ -703,10 +735,25 @@ function App() {
     applyBookSelection(structure, newBookId);
   };
 
-  const currentSection = useMemo(
-    () => currentChapter?.contents?.find((item) => Number(item.page || item.section) === Number(selectedFile)),
-    [currentChapter, selectedFile]
-  );
+  const physicsBookChapterMeta = useMemo(() => {
+    if (selectedBook !== 'physics-oup' || !physicsChapterCatalog) return null;
+    return physicsChapterCatalog[String(selectedChapter || '').toLowerCase()] || null;
+  }, [selectedBook, selectedChapter, physicsChapterCatalog]);
+
+  const isOnePdfForAllSections = useMemo(() => {
+    if (selectedBook !== 'physics-oup' || !physicsBookChapterMeta) return false;
+    return Boolean(physicsBookChapterMeta['one-pdf-for-all-section']);
+  }, [selectedBook, physicsBookChapterMeta]);
+
+  const currentSection = useMemo(() => {
+    if (!currentChapter?.contents?.length) return undefined;
+    return currentChapter.contents.find((item) => {
+      const itemId = toFileId(item.page ?? item.section);
+      const fileId = toFileId(selectedFile);
+      // Compare consistently: both as strings (handles numeric + "end" uniformly)
+      return String(itemId) === String(fileId);
+    });
+  }, [currentChapter, selectedFile, isOnePdfForAllSections]);
 
   const currentBookHeaderName = useMemo(() => {
     if (!currentChapter) return selectedChapter;
@@ -735,10 +782,13 @@ function App() {
     }));
   }, [selectedBook, structure]);
 
-  const physicsBookChapterMeta = useMemo(() => {
-    if (selectedBook !== 'physics-oup' || !physicsChapterCatalog) return null;
-    return physicsChapterCatalog[String(selectedChapter || '').toLowerCase()] || null;
-  }, [selectedBook, selectedChapter, physicsChapterCatalog]);
+  /** Normalize a section/page identifier based on the book's PDF mode.
+   *  In "one PDF for all sections" mode the identifier is the book ID (string),
+   *  otherwise it's a numeric section number. */
+  const normalizeSectionId = useCallback((value) => {
+    if (isOnePdfForAllSections) return String(value ?? '');
+    return Number(value);
+  }, [isOnePdfForAllSections]);
 
   const physicsChapterOptions = useMemo(() => {
     return (physicsBookChapterMeta?.chapters || []).map((item) => ({
@@ -770,23 +820,10 @@ function App() {
   }, [physicsChapterOptions, selectedPage, selectedPhysicsChapterId]);
 
   const currentSectionHeaderId = useMemo(() => {
-    if (selectedBook === 'physics-oup' && currentPhysicsChapter) {
-      return currentPhysicsChapter.id;
-    }
     return selectedFile;
-  }, [selectedBook, currentPhysicsChapter, selectedFile]);
+  }, [selectedFile]);
 
   const currentSectionHeaderName = useMemo(() => {
-    if (selectedBook === 'physics-oup' && currentPhysicsChapter) {
-      if (selectedLanguage === 'tc') {
-        return currentPhysicsChapter.nameZh || currentPhysicsChapter.nameEn || currentPhysicsChapter.id;
-      }
-      if (selectedLanguage === 'bilingual') {
-        return currentPhysicsChapter.nameEn || currentPhysicsChapter.nameZh || currentPhysicsChapter.id;
-      }
-      return currentPhysicsChapter.nameEn || currentPhysicsChapter.nameZh || currentPhysicsChapter.id;
-    }
-
     if (!currentSection) {
       return String(selectedFile || '');
     }
@@ -800,21 +837,51 @@ function App() {
       return enName || zhName || String(selectedFile || '');
     }
     return enName || zhName || String(selectedFile || '');
-  }, [selectedBook, currentPhysicsChapter, currentSection, selectedFile, selectedLanguage]);
+  }, [currentSection, selectedFile, selectedLanguage]);
+
+  /** Compact display for the collapsed sidebar section button, using section
+   *  names from contents.json (same source as SectionAutocomplete dropdown).
+   *  Computed inline (not memoized) so it NEVER gets stale. */
+  const collapsedSectionDisplay = (() => {
+    if (!currentSection) return String(selectedFile || '') || '···';
+    const sectionId = String(currentSection.section || currentSection.page || '').trim();
+    let sectionLabel = '';
+    if (selectedLanguage === 'bilingual') {
+      const en = getSectionName(currentSection, 'en');
+      const tc = getSectionName(currentSection, 'tc');
+      sectionLabel = [en, tc].filter(Boolean).join(' / ') || '';
+    } else {
+      sectionLabel = getSectionName(currentSection, selectedLanguage) || '';
+    }
+    if (!sectionId || !sectionLabel) return sectionLabel || sectionId || '···';
+    // Compact format: "2 Motion" — but avoid "2 2" when label starts with the section id
+    const firstWord = sectionLabel.split(' ')[0];
+    const bareFirst = firstWord.replace(/[.:-]$/, '');
+    if (bareFirst === sectionId || bareFirst === String(Number(sectionId))) {
+      return sectionLabel; // label already contains the section number, use as-is
+    }
+    return `${sectionId} ${firstWord}`;
+  })();
+
+  /** Compact display for the collapsed sidebar book button: "2 Force" (ID + first name word). */
+  const collapsedBookDisplay = useMemo(() => {
+    if (!currentChapter) return '···';
+    const id = String(currentChapter.id || '').toUpperCase();
+    const name = currentBookHeaderName;
+    if (!name) return id;
+    const firstWord = name.split(' ')[0];
+    // Avoid "1A 1A" when the name is just the ID (e.g. Biology core books)
+    if (firstWord.toUpperCase() === id) return id;
+    return `${id} ${firstWord}`;
+  }, [currentChapter, currentBookHeaderName]);
 
   const getSectionHeaderNameForLang = useCallback((lang) => {
-    if (selectedBook === 'physics-oup' && currentPhysicsChapter) {
-      if (lang === 'tc') {
-        return currentPhysicsChapter.nameZh || currentPhysicsChapter.nameEn || currentPhysicsChapter.id;
-      }
-      return currentPhysicsChapter.nameEn || currentPhysicsChapter.nameZh || currentPhysicsChapter.id;
-    }
     if (!currentSection) return String(selectedFile || '');
     if (lang === 'tc') {
       return getSectionName(currentSection, 'tc') || getSectionName(currentSection, 'en') || String(selectedFile || '');
     }
     return getSectionName(currentSection, 'en') || getSectionName(currentSection, 'tc') || String(selectedFile || '');
-  }, [selectedBook, currentPhysicsChapter, currentSection, selectedFile]);
+  }, [currentSection, selectedFile]);
 
   const handlePhysicsChapterSelect = (chapterId) => {
     const next = physicsChapterOptions.find((item) => String(item.id) === String(chapterId));
@@ -894,7 +961,7 @@ function App() {
 
   const sectionSelectOptions = useMemo(() => (
     (currentChapter?.contents || []).map((item) => {
-      const id = Number(item.page || item.section);
+      const id = toFileId(item.page ?? item.section);
       const en = getSectionName(item, 'en');
       const tc = getSectionName(item, 'tc');
       const label = selectedLanguage === 'tc'
@@ -903,10 +970,12 @@ function App() {
       const secondary = selectedLanguage === 'tc' ? (en || '') : (tc || '');
       return { id, label, secondary };
     })
-  ), [currentChapter, selectedLanguage]);
+  ), [currentChapter, selectedLanguage, isOnePdfForAllSections]);
 
   const currentSectionIndex = useMemo(
-    () => sectionSelectOptions.findIndex((item) => Number(item.id) === Number(selectedFile)),
+    () => sectionSelectOptions.findIndex((item) => {
+      return String(item.id) === String(selectedFile);
+    }),
     [sectionSelectOptions, selectedFile]
   );
 
@@ -914,16 +983,21 @@ function App() {
 
   useEffect(() => {
     if (!currentChapter?.contents?.length) return;
-    const first = Number(currentChapter.contents[0].page || currentChapter.contents[0].section || 1);
+    const rawFirst = currentChapter.contents[0].page ?? currentChapter.contents[0].section ?? 1;
+    const first = toFileId(rawFirst);
     setSelectedFile((current) => {
-      const hasCurrent = currentChapter.contents.some((item) => Number(item.page || item.section) === Number(current));
+      const hasCurrent = currentChapter.contents.some((item) => {
+        const itemId = toFileId(item.page ?? item.section);
+        return String(itemId) === String(current ?? '');
+      });
       return hasCurrent ? current : first;
     });
     setSelectedPage((current) => Math.max(1, Number(current) || 1));
-  }, [currentChapter]);
+  }, [currentChapter, isOnePdfForAllSections]);
 
   useEffect(() => {
     const loadPages = async () => {
+      setPageLoading(true);
       try {
         const targets = selectedLanguage === 'bilingual'
           ? ['en', 'tc']
@@ -957,6 +1031,8 @@ function App() {
       } catch (err) {
         console.error('[loadPages] failed:', err);
         setPageSources({});
+      } finally {
+        setPageLoading(false);
       }
     };
 
@@ -993,7 +1069,7 @@ function App() {
       const previous = current[selectedBook] || {};
       if (
         previous.bookId === nextEntry.bookId
-        && Number(previous.sectionId) === Number(nextEntry.sectionId)
+        && String(previous.sectionId ?? '') === String(nextEntry.sectionId ?? '')
         && Number(previous.pageId) === Number(nextEntry.pageId)
         && String(previous.physicsChapterId || '') === String(nextEntry.physicsChapterId || '')
       ) {
@@ -1273,60 +1349,37 @@ function App() {
     return stage.querySelector('.pdf-scroll-pages') || stage;
   }, []);
 
-  // Pass through wheel events on annotation canvas to scroll the stage
-  // with momentum/inertia: after the last wheel tick, scroll keeps decelerating.
+  // Pass through wheel events to scroll the PDF content.
+  // Listens on the stage (always mounted) so wheel scrolling works even when the
+  // annotation canvas has not yet rendered on the initial mount.
+  // In hand mode we let the browser handle native scroll; in annotation-tool modes
+  // we intercept wheel events and redirect them to the underlying scroll container.
+  // No momentum/inertia for mouse wheel — only touch gets momentum.
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const stage = stageRef.current;
+    if (!stage) return;
+
     const onWheel = (e) => {
+      // In hand mode, let the browser scroll natively — don't intercept.
+      if (tool === 'hand') return;
+
       // Skip wheel events synthesized from touch gestures — touch handler already scrolls.
       if (touchScrollingRef.current) return;
       if (Date.now() - lastTouchScrollAtRef.current < 250) return;
 
-      // Cancel any running momentum so it doesn't fight the user's new input
+      // Cancel any running touch momentum so it doesn't fight the user's new input
       cancelMomentum();
 
       const scrollTarget = getScrollTargetForGesture(e);
       if (!scrollTarget) return;
       e.preventDefault();
       scrollTarget.scrollBy({ left: e.deltaX, top: e.deltaY, behavior: 'auto' });
-
-      // Track wheel velocity for post-gesture momentum
-      const wv = wheelVelocityRef.current;
-      const now = performance.now();
-      const dt = now - wv.lastTime;
-
-      if (dt > 0 && wv.lastTime > 0 && dt < 200) {
-        // Instantaneous velocity from this wheel tick (px/ms)
-        const instantVX = e.deltaX / dt;
-        const instantVY = e.deltaY / dt;
-        // Exponential moving average to smooth out jitter
-        const alpha = 0.4;
-        wv.vx = wv.vx * (1 - alpha) + instantVX * alpha;
-        wv.vy = wv.vy * (1 - alpha) + instantVY * alpha;
-      }
-      wv.lastTime = now;
-
-      // Reset debounce — when wheel events stop, launch momentum
-      if (wv.timeoutId) clearTimeout(wv.timeoutId);
-      wv.timeoutId = setTimeout(() => {
-        const speed = Math.sqrt(wv.vx * wv.vx + wv.vy * wv.vy);
-        if (speed > 0.3 && scrollTarget && scrollTarget.isConnected) {
-          startMomentum(wv.vx, wv.vy, scrollTarget);
-        }
-        wv.vx = 0;
-        wv.vy = 0;
-        wv.lastTime = 0;
-      }, 120); // 120ms after last wheel tick → start coasting
     };
-    canvas.addEventListener('wheel', onWheel, { passive: false });
+    stage.addEventListener('wheel', onWheel, { passive: false });
     return () => {
-      canvas.removeEventListener('wheel', onWheel);
-      if (wheelVelocityRef.current.timeoutId) {
-        clearTimeout(wheelVelocityRef.current.timeoutId);
-      }
+      stage.removeEventListener('wheel', onWheel);
     };
-  }, [getScrollTargetForGesture, cancelMomentum, startMomentum]);
+  }, [getScrollTargetForGesture, cancelMomentum, tool]);
 
   // In scrolling/pagination mode on touch devices: one finger draws, two fingers scroll.
   // Momentum: on finger lift, scroll continues with captured velocity and decelerates.
@@ -1573,8 +1626,12 @@ function App() {
       if (selectedPage >= maxNavigablePage) {
         // At last page of current section → try next section
         if (currentChapter?.contents?.length) {
-          const sections = currentChapter.contents.map((item) => Number(item.page || item.section));
-          const currentIndex = sections.findIndex((page) => page === Number(selectedFile));
+          const sections = currentChapter.contents.map((item) => isOnePdfForAllSections
+            ? String(item.page ?? item.section ?? '')
+            : Number(item.page ?? item.section));
+          const currentIndex = sections.findIndex((page) => isOnePdfForAllSections
+            ? String(page) === String(selectedFile)
+            : page === Number(selectedFile));
           if (currentIndex >= 0 && currentIndex < sections.length - 1) {
             setSelectedFile(sections[currentIndex + 1]);
             setSelectedPage(1);
@@ -1586,7 +1643,9 @@ function App() {
           const bookIndex = structure.findIndex((ch) => ch.id === selectedChapter);
           if (bookIndex >= 0 && bookIndex < structure.length - 1) {
             const nextBook = structure[bookIndex + 1];
-            const nextSections = nextBook?.contents?.map((item) => Number(item.page || item.section)) || [];
+            const nextSections = nextBook?.contents?.map((item) => isOnePdfForAllSections
+              ? String(item.page ?? item.section ?? '')
+              : Number(item.page ?? item.section)) || [];
             if (nextSections.length > 0) {
               setSelectedChapter(nextBook.id);
               setSelectedFile(nextSections[0]);
@@ -1602,8 +1661,12 @@ function App() {
       if (selectedPage <= 1) {
         // At first page of current section → try previous section
         if (currentChapter?.contents?.length) {
-          const sections = currentChapter.contents.map((item) => Number(item.page || item.section));
-          const currentIndex = sections.findIndex((page) => page === Number(selectedFile));
+          const sections = currentChapter.contents.map((item) => isOnePdfForAllSections
+            ? String(item.page ?? item.section ?? '')
+            : Number(item.page ?? item.section));
+          const currentIndex = sections.findIndex((page) => isOnePdfForAllSections
+            ? String(page) === String(selectedFile)
+            : page === Number(selectedFile));
           if (currentIndex > 0) {
             // Navigate to previous section; setSelectedPage to MAX so the
             // clamping effect (see below) will cap it to the actual last page.
@@ -1617,7 +1680,9 @@ function App() {
           const bookIndex = structure.findIndex((ch) => ch.id === selectedChapter);
           if (bookIndex > 0) {
             const prevBook = structure[bookIndex - 1];
-            const prevSections = prevBook?.contents?.map((item) => Number(item.page || item.section)) || [];
+            const prevSections = prevBook?.contents?.map((item) => isOnePdfForAllSections
+              ? String(item.page ?? item.section ?? '')
+              : Number(item.page ?? item.section)) || [];
             if (prevSections.length > 0) {
               setSelectedChapter(prevBook.id);
               setSelectedFile(prevSections[prevSections.length - 1]);
@@ -1643,8 +1708,12 @@ function App() {
 
   const moveSection = (direction) => {
     if (!currentChapter?.contents?.length) return;
-    const sections = currentChapter.contents.map((item) => Number(item.page || item.section));
-    const currentIndex = sections.findIndex((page) => page === Number(selectedFile));
+    const sections = currentChapter.contents.map((item) => isOnePdfForAllSections
+      ? String(item.page ?? item.section ?? '')
+      : Number(item.page ?? item.section));
+    const currentIndex = sections.findIndex((page) => isOnePdfForAllSections
+      ? String(page) === String(selectedFile)
+      : page === Number(selectedFile));
     if (currentIndex < 0) return;
     const nextIndex = Math.max(0, Math.min(sections.length - 1, currentIndex + direction));
     setSelectedFile(sections[nextIndex]);
@@ -1666,16 +1735,24 @@ function App() {
     if (direction < 0 && selectedPage <= 1) {
       // First page → go to last page of previous section
       if (!currentChapter?.contents?.length) return;
-      const sections = currentChapter.contents.map((item) => Number(item.page || item.section));
-      const currentIndex = sections.findIndex((page) => page === Number(selectedFile));
+      const sections = currentChapter.contents.map((item) => isOnePdfForAllSections
+        ? String(item.page ?? item.section ?? '')
+        : Number(item.page ?? item.section));
+      const currentIndex = sections.findIndex((page) => isOnePdfForAllSections
+        ? String(page) === String(selectedFile)
+        : page === Number(selectedFile));
       if (currentIndex <= 0) return;
       setSelectedFile(sections[currentIndex - 1]);
       setSelectedPage(Number.MAX_SAFE_INTEGER); // clamped to actual max by useEffect
     } else if (direction > 0 && selectedPage >= maxNavigablePage) {
       // Last page → go to first page of next section
       if (!currentChapter?.contents?.length) return;
-      const sections = currentChapter.contents.map((item) => Number(item.page || item.section));
-      const currentIndex = sections.findIndex((page) => page === Number(selectedFile));
+      const sections = currentChapter.contents.map((item) => isOnePdfForAllSections
+        ? String(item.page ?? item.section ?? '')
+        : Number(item.page ?? item.section));
+      const currentIndex = sections.findIndex((page) => isOnePdfForAllSections
+        ? String(page) === String(selectedFile)
+        : page === Number(selectedFile));
       if (currentIndex < 0 || currentIndex >= sections.length - 1) return;
       setSelectedFile(sections[currentIndex + 1]);
       setSelectedPage(1);
@@ -1723,7 +1800,16 @@ function App() {
     if (nextBook) {
       setSelectedChapter(nextBook.id);
       const firstSection = nextBook.contents?.[0];
-      const firstPage = firstSection ? Number(firstSection.page || firstSection.section) : 1;
+      const rawFirstPage = firstSection ? (firstSection.page ?? firstSection.section) : 1;
+
+      // Determine if the next book uses "one PDF for all sections" mode.
+      const catalog = physicsChapterCatalogRef.current || {};
+      const nextBookMeta = (selectedBook === 'physics-oup' && nextBook?.id)
+        ? (catalog[String(nextBook.id).toLowerCase()] || null)
+        : null;
+      const nextIsOnePdf = Boolean(nextBookMeta?.['one-pdf-for-all-section']);
+
+      const firstPage = nextIsOnePdf ? String(rawFirstPage ?? '') : Number(rawFirstPage);
       setSelectedFile(firstPage);
       setSelectedPage(1);
     }
@@ -1743,26 +1829,88 @@ function App() {
   };
 
   // Refs for collapsed sidebar buttons – used to position the autocomplete dropdowns
-  const collapsedBtnRefs = useRef({ subject: null, book: null, section: null, page: null });
+  const collapsedBtnRefs = useRef({ subject: null, book: null, section: null, page: null, language: null });
+  const subjectBtnTextRef = useRef(null);
   const [collapsedDropdownId, setCollapsedDropdownId] = useState(null);
   const [collapsedDropdownPos, setCollapsedDropdownPos] = useState({ top: 0, left: 0 });
+  const [pressedAutocompleteBtn, setPressedAutocompleteBtn] = useState(null);
+  const openAutocompleteTimerRef = useRef(null);
+
+  // Debug: log subject button dimensions on change
+  useEffect(() => {
+    const el = subjectBtnTextRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const parentRect = el.parentElement?.getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    console.log('[subjectBtn] rendered', {
+      text: el.textContent,
+      width: rect.width,
+      height: rect.height,
+      parentWidth: parentRect?.width,
+      fontSize: cs.fontSize,
+      maxWidth: cs.maxWidth,
+      overflow: cs.overflow,
+      textOverflow: cs.textOverflow,
+      whiteSpace: cs.whiteSpace,
+    });
+  }, [selectedBook, selectedLanguage]);
 
   const openSidebarAutocomplete = useCallback((autocompleteId) => {
-    const btn = collapsedBtnRefs.current[autocompleteId];
-    if (!btn) return;
-    const rect = btn.getBoundingClientRect();
-    setCollapsedDropdownPos({ top: rect.top, left: rect.right + 8 });
-    setCollapsedDropdownId(autocompleteId);
-    // After render, trigger the toggle button via mousedown
-    requestAnimationFrame(() => {
-      const container = document.querySelector(`[data-collapsed-autocomplete="${autocompleteId}"]`);
-      if (!container) return;
-      const toggleBtn = container.querySelector('.autocomplete-toggle-btn');
-      if (toggleBtn instanceof HTMLElement) {
-        toggleBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    // Toggle: if the same dropdown is already open, close it
+    if (collapsedDropdownId === autocompleteId) {
+      setCollapsedDropdownId(null);
+      return;
+    }
+    // Clear any pending timer
+    if (openAutocompleteTimerRef.current) {
+      clearTimeout(openAutocompleteTimerRef.current);
+    }
+    // Show immediate visual feedback
+    setPressedAutocompleteBtn(autocompleteId);
+    // After a short delay, execute the lengthy operation
+    openAutocompleteTimerRef.current = setTimeout(() => {
+      openAutocompleteTimerRef.current = null;
+      setPressedAutocompleteBtn(null);
+      const btn = collapsedBtnRefs.current[autocompleteId];
+      if (!btn) return;
+      const rect = btn.getBoundingClientRect();
+      setCollapsedDropdownPos({ top: rect.top, left: rect.right + 8 });
+      setCollapsedDropdownId(autocompleteId);
+      // After render, trigger the toggle button via mousedown
+      requestAnimationFrame(() => {
+        const container = document.querySelector(`[data-collapsed-autocomplete="${autocompleteId}"]`);
+        if (!container) return;
+        const toggleBtn = container.querySelector('.autocomplete-toggle-btn');
+        if (toggleBtn instanceof HTMLElement) {
+          toggleBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+        }
+      });
+    }, 100);
+  }, [collapsedDropdownId]);
+
+  // Escape key closes the collapsed autocomplete dropdown
+  useEffect(() => {
+    if (!collapsedDropdownId) return;
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        setCollapsedDropdownId(null);
       }
-    });
-  }, []);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [collapsedDropdownId]);
+
+  // Clear pressed state when dropdown closes
+  useEffect(() => {
+    if (!collapsedDropdownId) {
+      setPressedAutocompleteBtn(null);
+      if (openAutocompleteTimerRef.current) {
+        clearTimeout(openAutocompleteTimerRef.current);
+        openAutocompleteTimerRef.current = null;
+      }
+    }
+  }, [collapsedDropdownId]);
 
   const openResource = (resource) => {
     // MP3 files use a floating draggable player instead of modal
@@ -4188,18 +4336,18 @@ function App() {
               {_('section')}
             </span>
             <div className="selector-stepper-row" data-autocomplete-id="section">
-              <button type="button" className="selector-stepper-btn" onClick={() => { if (currentSectionIndex > 0) { setSelectedFile(Number(sectionSelectOptions[currentSectionIndex - 1].id)); setSelectedPage(1); } }} disabled={currentSectionIndex <= 0}>-</button>
+              <button type="button" className="selector-stepper-btn" onClick={() => { if (currentSectionIndex > 0) { setSelectedFile(sectionSelectOptions[currentSectionIndex - 1].id); setSelectedPage(1); } }} disabled={currentSectionIndex <= 0}>-</button>
               <SectionAutocomplete
                 sections={currentChapter?.contents || []}
                 currentSection={currentSection}
                 language={selectedLanguage}
                 getSectionName={getSectionName}
                 onSelect={(sectionId) => {
-                  setSelectedFile(Number(sectionId));
+                  setSelectedFile(sectionId);
                   setSelectedPage(1);
                 }}
               />
-              <button type="button" className="selector-stepper-btn" onClick={() => { if (currentSectionIndex >= 0 && currentSectionIndex < sectionSelectOptions.length - 1) { setSelectedFile(Number(sectionSelectOptions[currentSectionIndex + 1].id)); setSelectedPage(1); } }} disabled={currentSectionIndex < 0 || currentSectionIndex >= sectionSelectOptions.length - 1}>+</button>
+              <button type="button" className="selector-stepper-btn" onClick={() => { if (currentSectionIndex >= 0 && currentSectionIndex < sectionSelectOptions.length - 1) { setSelectedFile(sectionSelectOptions[currentSectionIndex + 1].id); setSelectedPage(1); } }} disabled={currentSectionIndex < 0 || currentSectionIndex >= sectionSelectOptions.length - 1}>+</button>
             </div>
           </label>
         )}
@@ -4351,27 +4499,27 @@ function App() {
               onClick={() => openSidebarAutocomplete('subject')}
               data-tooltip={_('selectSubject')}
               aria-label={_('selectSubject')}
-            ><span className="sidebar-icon-btn-text">{getSubjectLabel(selectedBook, selectedLanguage).split(' ')[0]}</span></button>
+            ><span className="sidebar-icon-btn-text" ref={subjectBtnTextRef}>{getSubjectAbbreviation(selectedBook, selectedLanguage)}</span></button>
             {/* Book selector – collapsed */}
             <button
-              className="sidebar-icon-btn book-stepper"
+              className={`sidebar-icon-btn book-stepper${pressedAutocompleteBtn === 'book' ? ' pressed' : ''}`}
               ref={(el) => { collapsedBtnRefs.current.book = el; }}
               onClick={() => openSidebarAutocomplete('book')}
               data-tooltip={_('selectBook')}
               aria-label={_('selectBook')}
-            ><span className="sidebar-icon-btn-text">{currentChapter?.id?.toUpperCase() || '···'}</span></button>
+            ><span className="sidebar-icon-btn-text">{collapsedBookDisplay}</span></button>
             {/* Section selector – collapsed */}
             <button
-              className="sidebar-icon-btn section-stepper"
+              className={`sidebar-icon-btn section-stepper${pressedAutocompleteBtn === 'section' ? ' pressed' : ''}`}
               ref={(el) => { collapsedBtnRefs.current.section = el; }}
               onClick={() => openSidebarAutocomplete('section')}
               data-tooltip={_('selectSection')}
               aria-label={_('selectSection')}
-            ><span className="sidebar-icon-btn-text">{selectedFile ? `${selectedFile} ${currentSectionHeaderName.split(' ')[0]}` : (currentSectionHeaderName.split(' ')[0] || '···')}</span></button>
+            ><span className="sidebar-icon-btn-text">{collapsedSectionDisplay}</span></button>
             {/* Page selector – collapsed */}
             {maxNavigablePage > 1 && (
               <button
-                className="sidebar-icon-btn page-stepper"
+                className={`sidebar-icon-btn page-stepper${pressedAutocompleteBtn === 'page' ? ' pressed' : ''}`}
                 ref={(el) => { collapsedBtnRefs.current.page = el; }}
                 onClick={() => openSidebarAutocomplete('page')}
                 data-tooltip={_('selectPage')}
@@ -4406,8 +4554,9 @@ function App() {
               )}
             </button>
             <button
-              className="sidebar-icon-btn"
-              onClick={cycleLanguage}
+              className={`sidebar-icon-btn${pressedAutocompleteBtn === 'language' ? ' pressed' : ''}`}
+              ref={(el) => { collapsedBtnRefs.current.language = el; }}
+              onClick={() => openSidebarAutocomplete('language')}
               data-tooltip={_('switchLanguage')}
               aria-label={_('switchLanguage')}
             ><span className="sidebar-icon-btn-text">{selectedLanguage === 'en' ? 'EN' : selectedLanguage === 'tc' ? '中' : '雙'}</span></button>
@@ -4447,7 +4596,14 @@ function App() {
 
       <main className="reader">
         <div className={`book-stage ${displayMode} ${isBilingualView ? 'bilingual-layout' : ''} tool-${tool}`} ref={stageRef} onClick={tool === 'text' ? handleCanvasClick : undefined} onContextMenu={handleStageContextMenu}>
-          {visibleLanguages.map((language) => {
+          {(pageLoading || (visibleLanguages.length === 0 && selectedChapter)) ? (
+            <div className="page-loading">
+              <div className="page-loading-spinner" />
+              <p>{_('loadingPage') || 'Loading page…'}</p>
+            </div>
+          ) : (
+            <>
+            {visibleLanguages.map((language) => {
             const src = pageSources[language];
             const isImages = Array.isArray(src);
             return (
@@ -4486,21 +4642,6 @@ function App() {
               />
             );
           })}
-          <canvas
-            ref={canvasRef}
-            className="annotation-canvas"
-            style={{
-              pointerEvents: tool === 'hand' ? 'none' : 'auto',
-              touchAction: tool === 'hand' ? 'pan-x pan-y' : 'none',
-              cursor: tool === 'move' ? 'move' : tool === 'eraser' ? 'pointer' : tool === 'text' ? 'text' : tool === 'pen' || tool === 'highlight' ? 'crosshair' : 'default'
-            }}
-            onPointerDown={handlePointerDown}
-            onPointerMove={handlePointerMove}
-            onPointerUp={handlePointerUp}
-            onPointerCancel={handlePointerUp}
-            onPointerLeave={handlePointerUp}
-            onClick={handleCanvasClick}
-          />
           {textInputState && (
             <textarea
               ref={textInputRef}
@@ -4534,6 +4675,25 @@ function App() {
               }}
             />
           )}
+          </>
+          )}
+          <canvas
+            ref={canvasRef}
+            className="annotation-canvas"
+            style={{
+              pointerEvents: tool === 'hand' ? 'none' : 'auto',
+              touchAction: tool === 'hand'
+                ? (displayMode === 'scrolling' ? 'pan-y' : 'pan-x pan-y')
+                : 'none',
+              cursor: tool === 'move' ? 'move' : tool === 'eraser' ? 'pointer' : tool === 'text' ? 'text' : tool === 'pen' || tool === 'highlight' ? 'crosshair' : 'default'
+            }}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
+            onPointerLeave={handlePointerUp}
+            onClick={handleCanvasClick}
+          />
         </div>
 
         {displayMode === 'scrolling' && jumpNotice && (
@@ -5143,6 +5303,7 @@ function App() {
                 placeholder={_('subject')}
                 emptyText={_('noMatchingBooks')}
                 toggleAriaLabel="Select subject"
+                alwaysOpen
               />
             </div>
           )}
@@ -5157,6 +5318,7 @@ function App() {
                 onOpenChange={(open) => { if (!open) setCollapsedDropdownId(null); }}
                 placeholder={_('searchBookTopic')}
                 emptyText={_('noMatchingBooks')}
+                alwaysOpen
               />
             </div>
           )}
@@ -5168,11 +5330,12 @@ function App() {
                 language={selectedLanguage}
                 getSectionName={getSectionName}
                 onSelect={(sectionId) => {
-                  setSelectedFile(Number(sectionId));
+                  setSelectedFile(sectionId);
                   setSelectedPage(1);
                   setCollapsedDropdownId(null);
                 }}
                 onOpenChange={(open) => { if (!open) setCollapsedDropdownId(null); }}
+                alwaysOpen
               />
             </div>
           )}
@@ -5192,6 +5355,27 @@ function App() {
                 placeholder={String(selectedPage || 1)}
                 emptyText="No matching pages"
                 toggleAriaLabel="Toggle page list"
+                alwaysOpen
+              />
+            </div>
+          )}
+          {collapsedDropdownId === 'language' && (
+            <div data-collapsed-autocomplete="language">
+              <AutocompleteDropdown
+                items={[
+                  { id: 'bilingual', primary: _('bilingual'), searchText: _('bilingual') },
+                  { id: 'en', primary: _('english'), searchText: _('english') },
+                  { id: 'tc', primary: _('chinese'), searchText: _('chinese') },
+                ]}
+                value={selectedLanguage}
+                onSelect={(id) => { setSelectedLanguage(id); setCollapsedDropdownId(null); }}
+                onOpenChange={(open) => { if (!open) setCollapsedDropdownId(null); }}
+                selectedDisplay={selectedLanguage === 'en' ? _('english') : selectedLanguage === 'tc' ? _('chinese') : _('bilingual')}
+                placeholder={_('language')}
+                emptyText=""
+                toggleAriaLabel={_('switchLanguage')}
+                hideFilter
+                alwaysOpen
               />
             </div>
           )}
