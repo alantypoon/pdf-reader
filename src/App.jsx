@@ -1901,6 +1901,14 @@ function App() {
     return () => document.removeEventListener('keydown', onKey);
   }, [collapsedDropdownId]);
 
+  // Close collapsed autocomplete dropdown when sidebar is expanded,
+  // otherwise the portal dropdown and the full sidebar selector both appear.
+  useEffect(() => {
+    if (!sidebarCollapsed) {
+      setCollapsedDropdownId(null);
+    }
+  }, [sidebarCollapsed]);
+
   // Clear pressed state when dropdown closes
   useEffect(() => {
     if (!collapsedDropdownId) {
@@ -4183,7 +4191,7 @@ function App() {
         </button>
       )}
       {!sidebarHidden && (
-      <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''} ${displayMode === 'scrolling' ? 'scroll-locked' : ''}`}>
+      <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
         <div className="sidebar-title-row">
           <h1>
             <svg className="sidebar-logo" viewBox="0 0 24 24" role="presentation" focusable="false">

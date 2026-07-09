@@ -91,8 +91,7 @@ button, input, select {
 }
 
 .sidebar {
-  position: sticky;
-  top: 0;
+  position: relative;
   width: 320px;
   height: calc(100dvh - var(--bottom-toolbar-offset, 0px));
   padding: 24px 24px calc(24px + var(--bottom-toolbar-offset, 0px));
@@ -101,6 +100,8 @@ button, input, select {
   transition: border-color 160ms ease;
   overflow-y: auto;
   overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
 }
 
 .sidebar.scroll-locked {
@@ -117,6 +118,8 @@ button, input, select {
   padding: 20px 14px calc(20px + var(--bottom-toolbar-offset, 0px));
   overflow-x: visible;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
 }
 
 .sidebar.collapsed h1,
