@@ -245,7 +245,7 @@ function PdfPane({
       const scaleW = fitWidth / baseViewport.width;
       const scaleH = fitHeight / baseViewport.height;
       const fitScale = fitMode === 'height'
-        ? Math.min(scaleH, scaleW)
+        ? scaleH
         : fitMode === 'width'
           ? scaleW
           : Math.min(scaleW, scaleH);
@@ -262,8 +262,12 @@ function PdfPane({
       canvas.height = Math.floor(viewport.height * ratio);
       canvas.style.width = `${viewport.width}px`;
       canvas.style.height = `${viewport.height}px`;
-      canvas.style.maxWidth = fitMode === 'height' ? 'none' : '100%';
-      canvas.style.maxHeight = fitMode === 'width' ? 'none' : '100%';
+      // Fit-height: allow horizontal overflow for wide/landscape pages.
+      // CSS (.pdf-single-page canvas) already applies max-width:100%,
+      // so we only need to relax it for fit-height.  max-height is
+      // intentionally left unconstrained so zoom-in works correctly.
+      canvas.style.maxWidth = fitMode === 'height' ? 'none' : '';
+      canvas.style.maxHeight = '';
       canvas.style.display = 'block';
       canvas.style.flexShrink = '0';
       context.setTransform(ratio, 0, 0, ratio, 0, 0);
@@ -309,6 +313,34 @@ function PdfPane({
     holder.addEventListener('scroll', onScroll, { passive: true });
     return () => holder.removeEventListener('scroll', onScroll);
   }, [isImageMode, mode, pdfDoc, images, zoom, fitMode, fitRefreshToken]);
+
+  // ── Image pagination: apply explicit pixel dimensions for fit-height ──
+  //     Using height:100% (percentage) can fail because of a circular
+  //     dependency in the CSS chain (flex-basis:auto vs percentage heights).
+  //     We measure the container and set explicit px, matching scrolling mode.
+  useLayoutEffect(() => {
+    if (!isImageMode || mode !== 'pagination') return;
+    const img = imgRef.current;
+    const container = img?.closest('.pdf-single-page');
+    if (!img || !container) return;
+    if (fitMode === 'height') {
+      const h = container.clientHeight;
+      if (h > 0) {
+        img.style.height = `${h * zoom}px`;
+        img.style.width = 'auto';
+        img.style.maxWidth = 'none';
+        img.style.maxHeight = 'none';
+      }
+    } else {
+      const w = container.clientWidth;
+      if (w > 0) {
+        img.style.width = `${w * zoom}px`;
+        img.style.height = 'auto';
+        img.style.maxWidth = '';
+        img.style.maxHeight = 'none';
+      }
+    }
+  }, [isImageMode, mode, zoom, fitMode, fitRefreshToken, imageLoadVersion, currentPage]);
 
   useEffect(() => {
     if (!isImageMode) return;
