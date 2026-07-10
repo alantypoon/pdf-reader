@@ -4335,7 +4335,7 @@ function App() {
           </label>
         )}
 
-        {!sidebarCollapsed && sectionOptionsCount > 1 && (
+        {!sidebarCollapsed && sectionOptionsCount > 1 && !(selectedBook === 'physics-oup' && physicsChapterOptions.length > 0) && (
           <label>
             <span className="sidebar-label-icon">
               <svg viewBox="0 0 24 24" role="presentation" focusable="false">
