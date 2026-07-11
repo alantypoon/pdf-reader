@@ -1028,6 +1028,21 @@ function App() {
         });
         console.log(`[loadPages] setting pageSources:`, Object.keys(nextSources));
         setPageSources(nextSources);
+
+        // Seed pageCounts from the server response so cross-book navigation
+        // works immediately, before the PDF renderer reports its own count.
+        setPageCounts((current) => {
+          const updated = { ...current };
+          entries.forEach((entry, index) => {
+            const language = targets[index];
+            if (entry.status !== 'fulfilled') return;
+            const [, source] = entry.value;
+            if (Array.isArray(source) && source.length > 0 && !updated[language]) {
+              updated[language] = source.length;
+            }
+          });
+          return updated;
+        });
       } catch (err) {
         console.error('[loadPages] failed:', err);
         setPageSources({});
@@ -3132,13 +3147,18 @@ function App() {
       const panelStyle = window.getComputedStyle(panel);
       const paddingLeft = parseFloat(panelStyle.paddingLeft || '0');
       const paddingRight = parseFloat(panelStyle.paddingRight || '0');
-      const availableWidth = Math.max(0, panel.clientWidth - paddingLeft - paddingRight);
+      let availableWidth = Math.max(0, panel.clientWidth - paddingLeft - paddingRight);
+
+      // Reserve space for the absolutely-positioned close button
+      const closeBtnWidth = closeButtonRef.current?.offsetWidth || 0;
+      if (closeBtnWidth > 0) {
+        availableWidth = Math.max(0, availableWidth - closeBtnWidth - 12 /* gap */);
+      }
 
       const widths = [
         primaryToolbarRef.current?.scrollWidth || 0,
         annotationToggleRef.current?.offsetWidth || 0,
         searchButtonRef.current?.offsetWidth || 0,
-        closeButtonRef.current?.offsetWidth || 0,
       ];
 
       if (annotationToolsOpen && displayMode !== 'thumbnails') {
@@ -3160,11 +3180,18 @@ function App() {
       const requiredAtMinScale = baseRequiredWidth * minScale;
       let nextTight = requiredAtMinScale > availableWidth;
 
-      const mainRect = mainControlsRef.current?.getBoundingClientRect();
-      const closeRect = closeButtonRef.current?.getBoundingClientRect();
-      if (mainRect && closeRect) {
-        const minGap = 8;
-        if (mainRect.right + minGap > closeRect.left) {
+      // Check if centered content would overlap with the absolutely-positioned close button.
+      // Use baseRequiredWidth (scale-independent) so the check is not affected by the
+      // current tight/loose layout mode.  In tight mode .panel-main-controls stretches via
+      // flex:1-1-auto, so its bounding rect is not a reliable measure of content width.
+      if (closeBtnWidth > 0) {
+        const panelWidth = panel.clientWidth;
+        // When content is centered, its right edge is at panelWidth/2 + baseRequiredWidth/2.
+        // The close button (absolutely positioned right:8px) has its left edge at
+        // panelWidth - 8 - closeBtnWidth.
+        // Overlap when: panelWidth/2 + baseRequiredWidth/2 + 8 > panelWidth - 8 - closeBtnWidth
+        // → baseRequiredWidth + 32 + 2*closeBtnWidth > panelWidth
+        if (baseRequiredWidth + 32 + 2 * closeBtnWidth > panelWidth) {
           nextTight = true;
         }
       }
@@ -3597,6 +3624,15 @@ function App() {
         if (resourcesDrawerOpen) { setResourcesDrawerOpen(false); return; }
         if (searchDrawerOpen) { setSearchDrawerOpen(false); return; }
         if (aiDrawerOpen) { setAiDrawerOpen(false); return; }
+        return;
+      }
+
+      // Backspace: close drawers (common "go back" shortcut)
+      if (e.key === 'Backspace') {
+        if (modalInfo) { e.preventDefault(); setModalInfo(null); return; }
+        if (resourcesDrawerOpen) { e.preventDefault(); setResourcesDrawerOpen(false); return; }
+        if (searchDrawerOpen) { e.preventDefault(); setSearchDrawerOpen(false); return; }
+        if (aiDrawerOpen) { e.preventDefault(); setAiDrawerOpen(false); return; }
         return;
       }
 
@@ -4710,7 +4746,7 @@ function App() {
 
         {resourcesDrawerOpen && currentSection && (
           <div className="resources-drawer-overlay" onClick={() => setResourcesDrawerOpen(false)}>
-            <section className="section-resources resources-drawer" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { const tag = (e.target.tagName || '').toLowerCase(); if (tag !== 'input' && tag !== 'textarea' && !e.target.isContentEditable) { e.preventDefault(); } } }}>
+            <section className="section-resources resources-drawer" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { const tag = (e.target.tagName || '').toLowerCase(); if (tag !== 'input' && tag !== 'textarea' && !e.target.isContentEditable) { e.preventDefault(); } } if (e.key === 'Backspace') { const tag = (e.target.tagName || '').toLowerCase(); if (tag === 'input' || tag === 'textarea' || e.target.isContentEditable) { e.stopPropagation(); } } }}>
             <div className="ai-drawer-header">
               <h2>
                 <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="ai-header-icon">
@@ -4931,6 +4967,13 @@ function App() {
                   e.preventDefault(); // let window handler navigate pages instead
                 }
               }
+              // Don't close drawer on Backspace if user is interacting with answer inputs
+              if (e.key === 'Backspace') {
+                const tag = (e.target.tagName || '').toLowerCase();
+                if (tag === 'input' || tag === 'textarea' || e.target.isContentEditable) {
+                  e.stopPropagation(); // let user type normally, don't trigger drawer close
+                }
+              }
             }}>
               {isTestMode && (
                 <div className="ai-lookup-key">
@@ -5140,7 +5183,7 @@ function App() {
 
       {searchDrawerOpen && (
         <div className="resources-drawer-overlay" onClick={() => setSearchDrawerOpen(false)}>
-          <section className="ai-drawer search-drawer" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { const tag = (e.target.tagName || '').toLowerCase(); if (tag !== 'input' && tag !== 'textarea' && !e.target.isContentEditable) { e.preventDefault(); } } }}>
+          <section className="ai-drawer search-drawer" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { const tag = (e.target.tagName || '').toLowerCase(); if (tag !== 'input' && tag !== 'textarea' && !e.target.isContentEditable) { e.preventDefault(); } } if (e.key === 'Backspace') { const tag = (e.target.tagName || '').toLowerCase(); if (tag === 'input' || tag === 'textarea' || e.target.isContentEditable) { e.stopPropagation(); } } }}>
             <div className="ai-drawer-header">
               <h2>
                 <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="ai-header-icon">

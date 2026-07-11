@@ -45,7 +45,8 @@ ENV_FILE = PROJECT_DIR / '.env'
 # ── Load .env (always prefer .env values for our config keys) ──
 _CONFIG_KEYS = {'DATA_PATH', 'MONGODB_URI',
                 'VLLM_API_URL', 'VLLM_PROVIDER', 'VLLM_MODEL', 'VLLM_APIKEY',
-                'OLLAMA_PROVIDER', 'OLLAMA_MODEL', 'OLLAMA_APIKEY'}
+                'OLLAMA_PROVIDER', 'OLLAMA_MODEL', 'OLLAMA_APIKEY',
+                'OLLAMA_DIRECT_URL', 'AVAILABLE_MODELS_PATH'}
 if ENV_FILE.exists():
     with open(ENV_FILE, encoding='utf-8') as fh:
         for line in fh:
@@ -70,11 +71,79 @@ VLLM_APIKEY = os.environ.get('VLLM_APIKEY', '')
 OLLAMA_PROVIDER = os.environ.get('OLLAMA_PROVIDER', 'ollama')
 OLLAMA_MODEL = os.environ.get('OLLAMA_MODEL', 'gpt-oss:120b')
 OLLAMA_APIKEY = os.environ.get('OLLAMA_APIKEY', '')
+OLLAMA_DIRECT_URL = os.environ.get('OLLAMA_DIRECT_URL', 'http://aiserver3:11434/api/generate')
 
-# max_tokens is intentionally NOT set in text-generation payloads.
-# When omitted (or 0), the AI Gateway / OpenRouter uses the model's
-# native maximum output length — which is far larger than any page's
-# study-materials JSON could be.  This prevents mid-JSON truncation.
+# ── Model catalog (for looking up max_completion_tokens) ──
+AVAILABLE_MODELS_PATH = Path(os.environ.get('AVAILABLE_MODELS_PATH'))
+
+# Default max_tokens fallback — the gateway defaults to only 512 when omitted,
+# which is far too small for a complete study-materials JSON.
+_DEFAULT_MAX_TOKENS = 0
+
+
+def _load_ollama_max_tokens() -> int:
+    """Look up max_completion_tokens for the configured Ollama model from the catalog.
+
+    Returns the model's ``max_completion_tokens`` if found, otherwise falls back
+    to ``_DEFAULT_MAX_TOKENS``.
+    """
+    try:
+        if not AVAILABLE_MODELS_PATH.is_file():
+            return _DEFAULT_MAX_TOKENS
+        with open(AVAILABLE_MODELS_PATH, encoding='utf-8') as fh:
+            catalog = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return _DEFAULT_MAX_TOKENS
+
+    ollama_models = catalog.get('ollama')
+    if not isinstance(ollama_models, list):
+        return _DEFAULT_MAX_TOKENS
+
+    target = OLLAMA_MODEL
+    if '|' in target:
+        target = target.split('|', 1)[-1]
+
+    for entry in ollama_models:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get('id') == target:
+            value = entry.get('max_completion_tokens')
+            if value is not None:
+                value = int(value)
+                # Safety cap: values >32K often come from context_window,
+                # not actual max output. Sending num_predict=131072 to
+                # Ollama causes OOM crashes → "Error reading from remote server".
+                return value if value <= 32768 else _DEFAULT_MAX_TOKENS
+            return _DEFAULT_MAX_TOKENS
+
+    # Model not in catalog — try fuzzy match on the name part
+    target_clean = target.split(':', 1)[0].lower()
+    for entry in ollama_models:
+        if not isinstance(entry, dict):
+            continue
+        eid = str(entry.get('id', '')).lower()
+        if eid.startswith(target_clean):
+            value = entry.get('max_completion_tokens')
+            if value is not None:
+                value = int(value)
+                return value if value <= 32768 else _DEFAULT_MAX_TOKENS
+
+    return _DEFAULT_MAX_TOKENS
+
+
+def _get_max_tokens() -> int:
+    """Return the max_tokens value to use for generation/translation requests.
+
+    Reads from the model catalog once per process; uses a cached value after
+    the first call to avoid repeated file I/O.
+    """
+    global _DEFAULT_MAX_TOKENS
+    cached = getattr(_get_max_tokens, '_cached', None)
+    if cached is not None:
+        return cached
+    value = _load_ollama_max_tokens()
+    _get_max_tokens._cached = value
+    return value
 
 DB_NAME = 'pdf-reader'
 COLLECTION_NAME = 'ai-generations'
@@ -84,6 +153,142 @@ REQUEST_TIMEOUT = 120
 DELAY_BETWEEN_PAGES = 3   # seconds between pages (be gentle to the gateway)
 DEBUG = False    # set by --debug flag; prints request payloads + raw responses
 VERBOSE = False  # set by -v/--verbose; prints request summary + full response
+
+# ── Simplified Chinese Detection ───────────────────────────
+# Characters that exist ONLY in Simplified Chinese — i.e. their traditional
+# counterpart is a DIFFERENT Unicode codepoint.  Characters that are
+# identical in both writing systems (e.g. 了, 人, 大, 合, 建, 除, 快, 最)
+# are deliberately EXCLUDED because they are not reliable indicators.
+#
+# This set is curated from the official Chinese character simplification
+# tables (简化字总表).  Each character here has a visually distinct
+# traditional form and does NOT appear as-is in standard Traditional Chinese.
+_SIMPLIFIED_ONLY_CHARS = frozenset(
+    # ── Very high frequency (almost certain to appear in AI-generated text if
+    #     the model outputs simplified instead of traditional) ──
+    '个们门电话长对东车马鱼鸟风飞'
+    '时过会见觉开关学实写买卖万与义乐头发龙'
+    '专产业厂广严丽么习从'
+    '仪优传伤伦伪伟货质转轮轻轴阵验'
+    '证骑惊齿爱书体国'
+
+    # ── High frequency ──
+    '贝宾参尝虫达带单当党动荡断队吨夺尔'
+    '妇盖刚钢巩沟构购归龟柜'
+    '汉号护华画坏欢还击机积极'
+    '计记纪际济继夹价坚监检简将'
+    '节洁结紧锦尽劲经旧剧据军'
+    '壳垦恳库块宽亏扩兰离历'
+    '励隶帘联练粮两疗辽邻岭'
+    '刘龙楼芦卤陆录驴屡虑仑罗络'
+    '满梦灭亩恼脑闹难拟鸟宁农疟欧盘骗'
+    '苹凄齐岂弃谦枪墙桥亲庆穷区'
+    '权劝确让扰热认荣绒润丧扫杀纱'
+    '赏烧绍设审胜圣湿识势适术树'
+    '帅双肃岁孙损缩态坛叹讨腾题条铁'
+    '厅听图团网为韦卫闻问无'
+    '雾牺袭戏细虾吓显县线乡详响项'
+    '协胁兴须许悬选压盐严颜'
+    '扬阳养样药爷业叶页义艺阴'
+    '隐应营拥优犹邮鱼渔与语'
+    '誉渊园员远愿跃运酝杂赃凿'
+    '责择泽贼赠轧张账这针'
+    '镇郑织职纸钟种众轴猪'
+    '烛贮驻庄壮状资纵总组钻'
+
+    # ── Medium frequency (still useful for detection) ──
+    '肮袄坝罢摆败颁办帮绑宝报鲍备钡狈惫绷笔币毕闭边编贬变标'
+    '别滨饼拨驳补财残蚕灿仓苍舱厕侧测层'
+    '产铲阐颤尝偿厂畅钞彻尘陈衬称惩诚骋痴迟冲'
+    '筹畴础储处触创锤纯绰词赐聪窜错'
+    '胆诞弹档导岛捣祷盗邓敌涤递点电垫调钓'
+    '钉顶订冬栋冻斗独读赌镀锻堕'
+    '恶儿罚阀烦贩饭纺废费纷坟奋'
+    '疯枫冯缝凤肤辐抚辅负妇赋缚'
+    '该赶秆岗鸽阁给贡沟构购顾刮'
+    '观馆贯惯广归龟轨柜贵刽辊'
+    '骇沪华划画怀坏欢环还换唤焕涣黄挥辉汇'
+    '会绘贿秽荤浑伙获祸货'
+    '饥机鸡积极辑级挤剂济继绩'
+    '驾歼坚监艰拣茧检减简见'
+    '剑渐践鉴键舰将浆讲奖蒋酱胶浇骄娇脚缴绞较'
+    '疖'
+    '凯刊抠裤块宽矿亏扩阔'
+    '腊蜡来莱赖兰拦栏蓝览懒烂滥捞劳唠'
+    '类泪厘离礼历厉励丽隶帘联连镰怜练炼恋链'
+    '辆谅疗辽邻临灵龄领'
+    '铝缕绿乱轮论罗逻锣箩骡络'
+    '妈骂吗买卖麦满猫贸么没'
+    '梦弥谜绵缅灭蔑'
+    '酿浓疟'
+    '呕'
+    '庞赔喷骗苹凭扑仆谱'
+    '启气弃牵铅迁签谦钱枪墙抢桥翘亲轻倾'
+    '驱趋权劝确鹊'
+    '纫软锐'
+    '洒伞涩筛晒闪陕赏烧绍设审肾渗声胜圣绳湿诗'
+    '释寿书输属术树数'
+    '谁顺说丝饲耸颂苏虽随'
+    '锁'
+    '颓'
+    '袜万网为韦围卫闻纹稳问无'
+    '牺习袭戏细虾峡吓鲜纤贤显险县现线宪'
+    '谢'
+    '续询训'
+    '鸭盐严颜艳验扬阳养痒样药爷叶页业仪医遗义艺忆议'
+    '银隐应营拥优忧邮犹鱼渔与语誉渊园员圆远愿约阅'
+    '枣'
+    '闸债盏崭战张涨账折这针贞诊阵镇争郑证织职纸帜质'
+    '诸'
+    '砖转赚庄壮状锥赘浊'
+)
+
+
+def _collect_zh_text(doc):
+    """Extract all Chinese text from a document's zh field for simplified detection.
+
+    Walks summary strings, flashcard question/answer, and MCQ question/options/explanation.
+    Returns a single concatenated string of all Chinese text found.
+    """
+    zh = doc.get('zh') or {}
+    if not isinstance(zh, dict):
+        return ''
+
+    parts = []
+
+    # Summary (list of strings)
+    for item in (zh.get('summary') or []):
+        if isinstance(item, str):
+            parts.append(item)
+
+    # Flashcards (list of {question, answer})
+    for card in (zh.get('flashcards') or []):
+        if isinstance(card, dict):
+            for key in ('question', 'answer'):
+                val = card.get(key, '')
+                if isinstance(val, str):
+                    parts.append(val)
+
+    # MCQ (list of {question, options[], correct, explanation})
+    for q in (zh.get('mcq') or []):
+        if isinstance(q, dict):
+            for key in ('question', 'explanation'):
+                val = q.get(key, '')
+                if isinstance(val, str):
+                    parts.append(val)
+            for opt in (q.get('options') or []):
+                if isinstance(opt, str):
+                    parts.append(opt)
+
+    return '\n'.join(parts)
+
+
+def has_simplified_chinese(doc):
+    """Return True if the document's zh content contains any simplified-only characters."""
+    text = _collect_zh_text(doc)
+    if not text:
+        return False
+    return any(ch in _SIMPLIFIED_ONLY_CHARS for ch in text)
 
 # ── MongoDB ────────────────────────────────────────────────
 import pymongo
@@ -522,18 +727,22 @@ def _log_response(status, text, tag='DEBUG'):
     print(f'{"─"*50}\n')
 
 
-def _build_text_payload(prompt):
+def _build_text_payload(prompt, model=None):
     """Return form-field dict for text-only generation/translation via the ollama provider.
 
-    ``max_tokens`` is deliberately omitted — the AI Gateway / OpenRouter
-    will use the model's native maximum output length.
+    max_tokens is read from the model catalog (available-models.json).
+    Omitted when 0 — lets the gateway determine the optimal value.
     """
-    return {
+    fields = {
         'provider': OLLAMA_PROVIDER,
-        'model': OLLAMA_MODEL,
+        'model': model if model is not None else OLLAMA_MODEL,
         'apiKey': OLLAMA_APIKEY,
         'prompt': prompt,
     }
+    mt = _get_max_tokens()
+    if mt > 0:
+        fields['max_tokens'] = str(mt)
+    return fields
 
 
 def _extract_text(raw_text):
@@ -808,9 +1017,9 @@ def extract_page_text(subject, book, section_num, page_num, language='en'):
     selected = _find_page_images(subject, book, section_num, page_num, language)
 
     prompt = (
-        '從這些頁面圖像中提取並轉錄所有文字內容。包括所有標題、正文和圖片說明。必須用繁體中文（Traditional Chinese）輸出，不要使用簡體中文（Simplified Chinese）。'
+        '從這些教科書頁面圖像中提取並轉錄所有文字內容。包括所有標題、正文和圖片說明。必須用繁體中文（Traditional Chinese）輸出，不要使用簡體中文（Simplified Chinese）。'
         if language == 'tc' else
-        'Extract and transcribe all text content from these page images. '
+        'Extract and transcribe all text content from these textbook page images. '
         'Include all headings, body text, and captions.'
     )
 
@@ -874,9 +1083,9 @@ def _build_gen_prompt(chapter, section_name, page_num, language, text, subject='
         if language == 'tc' else
         'All content must be in English.'
     )
-    subject_label = f'{subject} ' if subject else ''
+    subject_word = f'{subject} ' if subject else ''
     return (
-        f'You are an expert {subject_label}educator. Using ONLY the content '
+        f'You are an expert {subject_word}educator. Using ONLY the textbook content '
         f'provided below (do NOT use any outside knowledge), generate learning '
         f'materials to help a student study this specific page.\n\n'
         f'The content is from:\n'
@@ -884,28 +1093,25 @@ def _build_gen_prompt(chapter, section_name, page_num, language, text, subject='
         f'- Section: {section_name}\n'
         f'- Page: {page_num}\n\n'
         f'{lang_instruction}\n\n'
-        f'--- CONTENT (use ONLY this) ---\n'
+        f'--- TEXTBOOK CONTENT (use ONLY this) ---\n'
         f'{text[:3000]}\n'
         f'--- END CONTENT ---\n\n'
         f'IMPORTANT: Base every question and answer STRICTLY on the provided '
         f'content. Do not introduce concepts, facts, or terminology not found '
         f'in the content above.\n\n'
-        f'Generate a COMPLETE, VALID JSON object with these three keys:\n'
-        f'1. "summary": 3-6 bullet-point strings summarizing key concepts\n'
-        f'2. "flashcards": 4-6 objects, each with "question" (string) and "answer" (string)\n'
-        f'3. "mcq": 3-5 objects, each with "question" (string), "options" '
-        f'(array of exactly 4 strings labeled A-D), "correct" (one letter: A/B/C/D), '
-        f'and "explanation" (string)\n\n'
-        f'CRITICAL — OUTPUT REQUIREMENTS:\n'
-        f'- Output ONLY valid, parseable JSON. Do NOT truncate — produce the COMPLETE object.\n'
-        f'- Close ALL brackets and braces: ensure the final }} closes the root object.\n'
-        f'- Every string must be properly quoted and closed.\n'
-        f'- Do NOT use markdown code fences. Output raw JSON only.\n\n'
-        f'Example output format:\n'
-        f'{{\n  "summary": ["bullet point 1", "bullet point 2", "bullet point 3"],\n'
+        f'Generate in JSON:\n'
+        f'1. A bullet-point summary of the key concepts on this page '
+        f'(3-6 bullet points as an array of strings)\n'
+        f'2. 4-6 flashcards (each with "question" and "answer")\n'
+        f'3. 3-5 MCQ questions (each with "question", 4 "options" labeled A-D, '
+        f'"correct" letter, and "explanation")\n\n'
+        f'Output ONLY the JSON object, no markdown:\n'
+        f'{{\n'
+        f'  "summary": ["bullet point 1", "bullet point 2", "bullet point 3"],\n'
         f'  "flashcards": [{{"question":"...","answer":"..."}}],\n'
         f'  "mcq": [{{"question":"...","options":["A. ...","B. ...","C. ...","D. ..."],'
-        f'"correct":"A","explanation":"..."}}]\n}}'
+        f'"correct":"A","explanation":"..."}}]\n'
+        f'}}'
     )
 
 
@@ -916,9 +1122,9 @@ def _build_translation_prompt(chapter, section_name, page_num, target_lang, sour
         if target_lang == 'tc' else
         'Translate everything into English.'
     )
-    subject_label = f'{subject} ' if subject else ''
+    subject_word = f'{subject} ' if subject else ''
     return (
-        f'You are an expert bilingual {subject_label}educator. Translate the study '
+        f'You are an expert bilingual {subject_word}educator. Translate the study '
         f'materials below while preserving the meaning EXACTLY.\n\n'
         f'The content is from:\n'
         f'- Chapter: {chapter}\n'
@@ -928,43 +1134,191 @@ def _build_translation_prompt(chapter, section_name, page_num, target_lang, sour
         f'IMPORTANT REQUIREMENTS:\n'
         f'- The translated English and Chinese versions must match in meaning item-by-item.\n'
         f'- Keep the SAME number of summary bullet points, flashcards, and MCQ questions.\n'
-        f'- Preserve the SAME ordering.\n'
+        f'- Preserve the SAME ordering for all arrays.\n'
         f'- summary[i] in the output must match summary[i] in the source by meaning.\n'
         f'- flashcards[i] in the output must match flashcards[i] in the source by meaning.\n'
         f'- mcq[i] in the output must match mcq[i] in the source by meaning.\n'
         f'- Keep exactly 4 options for each MCQ, labeled A-D.\n'
         f'- Keep the SAME correct answer letter as the source.\n'
-        f'- Use terminology from the reference text when available.\n'
-        f'- Output a COMPLETE, VALID JSON object — do NOT truncate mid-output.\n'
-        f'- Close ALL brackets and braces. Every string must be properly quoted and terminated.\n'
-        f'- Do NOT use markdown code fences. Output raw JSON only.\n\n'
-        f'--- REFERENCE TEXT ---\n'
+        f'- Use textbook terminology from the reference text when available.\n'
+        f'- Output ONLY valid JSON, no markdown.\n\n'
+        f'--- REFERENCE TEXTBOOK TEXT ---\n'
         f'{(ref_text or '')[:3000]}\n'
-        f'--- END REFERENCE TEXT ---\n\n'
+        f'--- END REFERENCE TEXTBOOK TEXT ---\n\n'
         f'--- SOURCE STUDY MATERIALS JSON ---\n'
         f'{json.dumps(source)}\n'
         f'--- END SOURCE STUDY MATERIALS JSON ---\n\n'
         f'Output ONLY the translated JSON object in this schema:\n'
-        f'{{\n  "summary": ["translated bullet point 1", "translated bullet point 2"],\n'
+        f'{{\n'
+        f'  "summary": ["translated bullet point 1", "translated bullet point 2"],\n'
         f'  "flashcards": [{{"question":"...","answer":"..."}}],\n'
         f'  "mcq": [{{"question":"...","options":["A. ...","B. ...","C. ...","D. ..."],'
-        f'"correct":"A","explanation":"..."}}]\n}}'
+        f'"correct":"A","explanation":"..."}}]\n'
+        f'}}'
     )
 
 
 # ── Core generation ────────────────────────────────────────
 
+# Strip provider prefix from model name if present (e.g. "ollama|gpt-oss:120b" → "gpt-oss:120b")
+def _strip_provider_prefix(model_name):
+    return model_name.split('|', 1)[-1] if '|' in model_name else model_name
+
+
+def _call_generation_via_gateway(prompt, retries=3):
+    """Send a text-generation prompt to the AI Gateway with retry on 502/503/504.
+
+    Matches the server's ``runPromptViaGateway`` logic: exponential backoff
+    on transient upstream errors, with debug dumps on first failure.
+
+    Unlike ``_call_ett_vllm`` (used for image extraction), this function
+    always uses the production URL — the debug_log query parameter can
+    strip response content, and generation calls should never use it.
+    """
+    gen_model = _strip_provider_prefix(OLLAMA_MODEL)
+    inner_payload = _build_text_payload(prompt, model=gen_model)
+    headers = {'Accept': 'text/event-stream'}
+    form = [(k, (None, str(v) if not isinstance(v, str) else v)) for k, v in inner_payload.items()]
+
+    last_error = None
+    for attempt in range(retries + 1):
+        try:
+            if DEBUG or VERBOSE:
+                tag = 'DEBUG' if DEBUG else 'VERBOSE'
+                _log_request(VLLM_URL, inner_payload, None, tag)
+            else:
+                # Always show a compact summary for generation calls
+                prompt_len = len(inner_payload.get('prompt', ''))
+                print(f'  [gateway] POST {VLLM_URL}  model={gen_model}  prompt={prompt_len} chars')
+            resp = requests.post(VLLM_URL, files=form, headers=headers, timeout=180)
+            resp.raise_for_status()
+            raw = resp.text
+            if DEBUG or VERBOSE:
+                tag = 'DEBUG' if DEBUG else 'VERBOSE'
+                _log_response(resp.status_code, raw, tag)
+            else:
+                print(f'  [gateway] HTTP {resp.status_code}  ({len(raw)} bytes)')
+            return raw
+        except requests.HTTPError as error:
+            status = error.response.status_code if hasattr(error, 'response') and error.response is not None else None
+            # Log error response body in verbose/debug modes
+            if (DEBUG or VERBOSE) and hasattr(error, 'response') and error.response is not None:
+                try:
+                    err_body = error.response.text
+                except Exception:
+                    err_body = '[unable to read response body]'
+                tag = 'DEBUG' if DEBUG else 'VERBOSE'
+                _log_response(status, err_body, tag)
+            last_error = error
+            if status in (502, 503, 504):
+                if attempt < retries:
+                    delay = min(1000 * (2 ** attempt), 10000) / 1000.0  # seconds
+                    print(f'  [gateway] gen attempt {attempt + 1} failed ({status}), retrying in {delay:.0f}s …')
+                    time.sleep(delay)
+                    continue
+            else:
+                break  # non-retryable error (4xx, etc.) — don't retry
+        except requests.RequestException as error:
+            last_error = error
+            if attempt < retries:
+                delay = min(1000 * (2 ** attempt), 10000) / 1000.0
+                print(f'  [gateway] gen attempt {attempt + 1} failed ({error}), retrying in {delay:.0f}s …')
+                time.sleep(delay)
+                continue
+    raise last_error
+
+
+def _call_ollama_direct(prompt, retries=2):
+    """Send a text-generation prompt directly to the Ollama server (JSON API).
+
+    Matches the server's ``runPromptDirect`` — used as fallback when the
+    AI Gateway returns persistent 502/503/504 errors.
+    """
+    # Strip provider prefix for direct Ollama call
+    gen_model = _strip_provider_prefix(OLLAMA_MODEL)
+    ollama_options = {'temperature': 0.3}
+    num_predict = _get_max_tokens()
+    if num_predict > 0:
+        ollama_options['num_predict'] = num_predict  # omit when 0 — let Ollama decide
+    payload = {
+        'model': gen_model,
+        'prompt': prompt,
+        'stream': False,
+        'options': ollama_options,
+    }
+    last_error = None
+    for attempt in range(retries + 1):
+        try:
+            if DEBUG or VERBOSE:
+                tag = 'DEBUG' if DEBUG else 'VERBOSE'
+                _log_request(OLLAMA_DIRECT_URL, payload, None, tag)
+            else:
+                prompt_len = len(payload.get('prompt', ''))
+                print(f'  [ollama-direct] POST {OLLAMA_DIRECT_URL}  model={gen_model}  prompt={prompt_len} chars')
+            resp = requests.post(
+                OLLAMA_DIRECT_URL,
+                json=payload,
+                headers={'Content-Type': 'application/json'},
+                timeout=300,  # 5 min for direct
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            resp_text = (data.get('response') or '').strip()
+            if resp_text:
+                if DEBUG or VERBOSE:
+                    tag = 'DEBUG' if DEBUG else 'VERBOSE'
+                    _log_response(resp.status_code, json.dumps(data), tag)
+                print(f'  [ollama-direct] success ({len(resp_text)} chars)')
+                return resp_text
+            last_error = RuntimeError('Direct Ollama returned empty response')
+            if DEBUG or VERBOSE:
+                tag = 'DEBUG' if DEBUG else 'VERBOSE'
+                _log_response(resp.status_code, json.dumps(data), tag)
+        except requests.RequestException as error:
+            last_error = error
+            if (DEBUG or VERBOSE) and hasattr(error, 'response') and error.response is not None:
+                try:
+                    err_body = error.response.text
+                except Exception:
+                    err_body = '[unable to read response body]'
+                tag = 'DEBUG' if DEBUG else 'VERBOSE'
+                _log_response(
+                    error.response.status_code if hasattr(error, 'response') else None,
+                    err_body, tag,
+                )
+
+        if attempt < retries:
+            delay = min(2000 * (2 ** attempt), 15000) / 1000.0
+            print(f'  [ollama-direct] attempt {attempt + 1} failed, retrying in {delay:.0f}s …')
+            time.sleep(delay)
+    raise last_error
+
+
+def _run_generation(prompt):
+    """Send a text-generation prompt, trying gateway first then falling back to direct Ollama.
+
+    Matches the server's ``runGenerationPrompt`` exactly.
+    """
+    try:
+        raw = _call_generation_via_gateway(prompt)
+    except Exception as gateway_err:
+        if OLLAMA_DIRECT_URL:
+            print(f'  [gateway] failed ({gateway_err}), trying direct Ollama …')
+            raw = _call_ollama_direct(prompt)
+        else:
+            raise
+    parsed = _parse_generated_json(raw)
+    return _normalize_generated_content(parsed)
+
+
 def _run_vllm(prompt):
-    """Send a text-generation prompt to the vllm provider (multipart, no images).
+    """Send a text-generation prompt (gateway-first, Ollama-fallback).
 
     Returns the normalized content dict.  If the JSON was truncated/unparseable,
     ``_parse_error`` will be present in the result — callers should validate
     with ``_validate_content_structure`` before saving.
     """
-    payload = _build_text_payload(prompt)
-    raw = _call_ett_vllm(payload)
-    parsed = _parse_generated_json(raw)
-    return _normalize_generated_content(parsed)
+    return _run_generation(prompt)
 
 
 def generate_for_page(subject, book, section_num, page_num, section_name, force=False):
@@ -1184,6 +1538,124 @@ def _parse_target(target):
     )
 
 
+def _run_simplified_chinese_detection(args):
+    """Scan all documents in ai-generations for simplified Chinese in zh content.
+
+    For each document containing simplified-only characters, regenerate it.
+    Respects --dry-run (list only) and --delay (pause between regenerations).
+    """
+    coll = _get_collection()
+    all_docs = list(coll.find({}))
+
+    if not all_docs:
+        print('No documents found in the ai-generations collection.')
+        return
+
+    # ── Filter: documents that HAVE zh content with simplified Chinese ──
+    tainted = []
+    clean = 0
+    no_zh = 0
+    for doc in all_docs:
+        zh = doc.get('zh')
+        if not zh or not isinstance(zh, dict):
+            no_zh += 1
+            continue
+        if has_simplified_chinese(doc):
+            tainted.append(doc)
+        else:
+            clean += 1
+
+    print(f'Collection scan complete:')
+    print(f'  Total documents  : {len(all_docs)}')
+    print(f'  Clean (zh ok)    : {clean}')
+    print(f'  No zh content    : {no_zh}')
+    print(f'  Tainted (simpl.) : {len(tainted)}')
+    print('=' * 60)
+
+    if not tainted:
+        print('✓  No documents contain simplified Chinese. Nothing to do.')
+        return
+
+    if args.dry_run:
+        print('\nDocuments with simplified Chinese (dry-run — no regeneration):')
+        for doc in tainted:
+            subject = doc.get('subjectId', '?')
+            book = doc.get('bookId', '?')
+            section = doc.get('sectionId', '?')
+            page = doc.get('pageId', '?')
+            # Show which simplified chars were found
+            text = _collect_zh_text(doc)
+            found = sorted(set(ch for ch in text if ch in _SIMPLIFIED_ONLY_CHARS))
+            print(f'  {subject}/{book}/{section}/{page}  —  chars: {" ".join(found[:20])}{" …" if len(found) > 20 else ""}')
+        print(f'\n{len(tainted)} document(s) would be regenerated.')
+        return
+
+    # ── Regenerate tainted documents ──
+    print(f'\nRegenerating {len(tainted)} document(s) with simplified Chinese…\n')
+    regenerated = 0
+    errors = 0
+
+    for i, doc in enumerate(tainted, 1):
+        subject = doc.get('subjectId', '')
+        book = doc.get('bookId', '')
+        section_num = doc.get('sectionId', 1)
+        page_num = doc.get('pageId', 1)
+        label = f'{subject}/{book}/{section_num}/{page_num}'
+
+        # Show which simplified chars triggered the detection
+        text = _collect_zh_text(doc)
+        found = sorted(set(ch for ch in text if ch in _SIMPLIFIED_ONLY_CHARS))
+        print(f'\n[{i}/{len(tainted)}] {label}')
+        print(f'  Simplified chars detected: {" ".join(found[:20])}{" …" if len(found) > 20 else ""}')
+
+        # Resolve section name from contents.json
+        section_name = _resolve_section_name(subject, book, str(section_num))
+
+        try:
+            result = generate_for_page(
+                subject, book,
+                _to_section_id(str(section_num)),
+                int(page_num),
+                section_name,
+                force=True,
+            )
+            if result in ('generated', 'translated'):
+                regenerated += 1
+        except Exception as exc:
+            print(f'  ❌ ERROR: {exc}')
+            errors += 1
+            time.sleep(2)
+
+        time.sleep(args.delay)
+
+    print('\n' + '=' * 60)
+    print(
+        f'Simplified Chinese detection done.  '
+        f'{len(tainted)} tainted  |  '
+        f'{regenerated} regenerated  |  '
+        f'{errors} error(s)'
+    )
+
+
+def _resolve_section_name(subject, book, section_num):
+    """Look up the English section name from contents.json. Falls back to a generic label."""
+    try:
+        contents_file = DATA_DIR / subject / book / 'contents.json'
+        if contents_file.is_file():
+            with open(contents_file, encoding='utf-8') as fh:
+                data = json.load(fh)
+            for item in data.get('contents', []):
+                if str(item.get('section', '')) == section_num:
+                    name = _extract_name(item, 'en') or _extract_name(item, 'tc')
+                    if name:
+                        return name
+        # Also check for contents-*.json files in _out directory (for physics-oup-xxx style)
+        out_dir = DATA_DIR.parent / '_out' if (DATA_DIR.parent / '_out').is_dir() else None
+    except Exception:
+        pass
+    return f'Section {section_num}'
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Batch-generate AI study materials for Book reader pages'
@@ -1210,12 +1682,24 @@ def main():
         help='Maximum sub-pages to generate per section (default: 0 = all pages)',
     )
     parser.add_argument(
+        '--limit', type=int, default=0,
+        help='Maximum total pages to process across all sections (default: 0 = unlimited). '
+             'Useful for testing: --limit=1 processes only the first page.',
+    )
+    parser.add_argument(
         '--delay', type=float, default=DELAY_BETWEEN_PAGES,
         help=f'Seconds to wait between pages (default: {DELAY_BETWEEN_PAGES})',
     )
     parser.add_argument(
         '--debug', action='store_true',
         help='Print full request payloads and raw responses sent to the AI gateway',
+    )
+    parser.add_argument(
+        '--simplified-chinese-detection', action='store_true',
+        help='Scan ALL documents in the collection for simplified Chinese characters '
+             'in the zh (Chinese) content. Any document containing simplified-only '
+             'characters (e.g. 爱, 国) will be regenerated to produce proper '
+             'Traditional Chinese output.',
     )
     parser.add_argument(
         '-v', '--verbose', action='store_true',
@@ -1236,6 +1720,19 @@ def main():
         print(f'ERROR: DATA_DIR does not exist: {DATA_DIR}')
         sys.exit(1)
 
+    # Apply debug/verbose flags BEFORE anything else so all code paths see them.
+    if args.debug:
+        global DEBUG
+        DEBUG = True
+    if args.verbose:
+        global VERBOSE
+        VERBOSE = True
+
+    # ── Simplified Chinese Detection Mode ──────────────────
+    if args.simplified_chinese_detection:
+        _run_simplified_chinese_detection(args)
+        return
+
     # ── Resolve scope ──────────────────────────────────────
     if args.target:
         subject, book, section, page = _parse_target(args.target)
@@ -1248,15 +1745,6 @@ def main():
         print(f'No subjects found under {DATA_DIR}')
         sys.exit(1)
 
-    # Apply debug/verbose flags BEFORE printing the summary so the URL shown
-    # reflects the actual mode that will be used.
-    if args.debug:
-        global DEBUG
-        DEBUG = True
-    if args.verbose:
-        global VERBOSE
-        VERBOSE = True
-
     active_url = VLLM_DEBUG_URL if DEBUG else VLLM_URL
     print(f'Subjects  : {", ".join(subjects)}')
     print(f'Data dir  : {DATA_DIR}')
@@ -1266,6 +1754,7 @@ def main():
     print(f'Force     : {args.force}')
     print(f'Dry-run   : {args.dry_run}')
     print(f'Pages/sect: {args.pages_per_section}')
+    print(f'Limit     : {args.limit if args.limit else "unlimited"}')
     print(f'Debug     : {args.debug}')
     print(f'Verbose   : {args.verbose}')
     print('=' * 60)
@@ -1274,9 +1763,14 @@ def main():
     total_generated = 0
     total_skipped = 0
     total_errors = 0
+    limit_reached = False
 
     try:
         for subj in subjects:
+            # Check global limit before processing next subject
+            if args.limit > 0 and total_generated + total_skipped >= args.limit:
+                print(f'\n⏹  Limit of {args.limit} page(s) reached — stopping.')
+                break
             books = [book] if book else discover_books(subj)
             if not books:
                 print(f'\n⚠  Subject {subj}: no books found, skipping')
@@ -1355,10 +1849,17 @@ def main():
                         if content_exists(subj, bk, sec_num, pg) and not args.force:
                             total_skipped += 1
                             print(f'    [skip] {label}  — {sec_name[:50]} (already in DB)')
+                            if args.limit > 0 and total_skipped >= args.limit:
+                                limit_reached = True
+                                break
                             continue
 
                         if args.dry_run:
                             print(f'    [GEN]  {label}  — {sec_name[:50]}')
+                            total_generated += 1  # count dry-run pages toward limit
+                            if args.limit > 0 and total_generated >= args.limit:
+                                limit_reached = True
+                                break
                             continue
 
                         print(f'\n  📄 {label}  — {sec_name[:60]}')
@@ -1373,7 +1874,20 @@ def main():
                             total_errors += 1
                             time.sleep(2)
 
+                        # Check global limit after each page
+                        if args.limit > 0 and total_generated + total_skipped >= args.limit:
+                            print(f'⏹  Limit of {args.limit} page(s) reached — stopping.')
+                            limit_reached = True
+                            break
+
                         time.sleep(args.delay)
+
+                    if limit_reached:
+                        break
+                if limit_reached:
+                    break
+            if limit_reached:
+                break
 
     except KeyboardInterrupt:
         print('\n\nInterrupted by user.')

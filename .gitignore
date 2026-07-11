@@ -10,3 +10,4 @@ logs/*
 logs/server.log
 logs/server.pid
 
+**/*.pyc

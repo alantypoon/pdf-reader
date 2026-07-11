@@ -2194,7 +2194,7 @@ button, input, select {
   align-items: center;
   justify-content: center;
   gap: calc(8px * var(--toolbar-scale));
-  position: relative;
+  /* position: relative; */
 }
 
 .annotation-panel.docked-bottom .panel-main-controls {
@@ -2220,6 +2220,27 @@ button, input, select {
   transform: translateY(-50%);
   flex: 0 0 auto;
   margin-left: 0;
+}
+
+/* On narrow screens, scale down all toolbar buttons so they fit in one row
+   without overlapping the close button. */
+@media (max-width: 960px) {
+  .annotation-panel.docked-bottom {
+    --toolbar-scale: 0.78;
+  }
+  .annotation-panel.docked-bottom .toolbar-group {
+    gap: calc(3px * var(--toolbar-scale));
+  }
+  .annotation-panel.docked-bottom .toolbar-sep {
+    margin: 0 2px;
+  }
+  .annotation-panel .icon-btn,
+  .annotation-panel .tool-btn {
+    width: calc(42px * var(--toolbar-scale));
+    height: calc(42px * var(--toolbar-scale));
+    padding: calc(8px * var(--toolbar-scale));
+    font-size: calc(17px * var(--toolbar-scale));
+  }
 }
 
 .toolbar-label {

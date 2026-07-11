@@ -829,11 +829,82 @@ app.use('/data', express.static(path.resolve(__dirname, '../data')));
 app.use('/pdf-reader/data', express.static(path.resolve(__dirname, '../data')));
 
 // ── AI Generation ─────────────────────────────────────────
+//
+// Two-stage pipeline:
+//   1. Text extraction  (image → text)      via AI Gateway ett-vllm + InternVL
+//   2. Content generation (text → study materials)  via Ollama gpt-oss:120b
 
-const AIGATEWAY_URL = process.env.AIGATEWAY_API_URL || 'https://aigateway.aied.hku.hk/api/generate';
-const AIGATEWAY_PROVIDER = process.env.AIGATEWAY_PROVIDER || 'ett';
-const AIGATEWAY_MODEL = process.env.AIGATEWAY_MODEL || 'vllm|OpenGVLab/InternVL3_5-38B';
-const AIGATEWAY_APIKEY = process.env.AIGATEWAY_APIKEY || '';
+// ── Stage 1: Text extraction (image → text) ──
+const VLLM_URL = process.env.VLLM_API_URL || 'https://aigateway.aied.hku.hk/api/generate';
+const VLLM_PROVIDER = process.env.VLLM_PROVIDER || 'ett-vllm';
+const VLLM_MODEL = process.env.VLLM_MODEL || 'OpenGVLab/InternVL3_5-38B';
+const VLLM_APIKEY = process.env.VLLM_APIKEY || '';
+
+// ── Stage 2: Content generation (text → study materials) ──
+const GEN_PROVIDER = process.env.OLLAMA_PROVIDER || 'ollama';
+const GEN_MODEL = process.env.OLLAMA_MODEL || 'gpt-oss:120b';
+const GEN_APIKEY = process.env.OLLAMA_APIKEY || '';
+
+// Direct Ollama endpoint as fallback when gateway 502s persistently
+const OLLAMA_DIRECT_URL = process.env.OLLAMA_DIRECT_URL || 'http://aiserver3:11434/api/generate';
+
+// ── Model catalog for looking up max output tokens ────────
+// const AVAILABLE_MODELS_PATH = process.env.AVAILABLE_MODELS_PATH
+//   || path.resolve(__dirname, '../../../aigateway/available-models.json');
+const AVAILABLE_MODELS_PATH = process.env.AVAILABLE_MODELS_PATH;
+
+const DEFAULT_MAX_TOKENS = 0; // never set this
+
+
+let _cachedGenMaxTokens = null;
+
+/** Return the max_tokens / num_predict value for GEN_MODEL from the catalog. */
+function getGenMaxTokens() {
+  if (_cachedGenMaxTokens !== null) return _cachedGenMaxTokens;
+
+  try {
+    if (!existsSync(AVAILABLE_MODELS_PATH)) {
+      _cachedGenMaxTokens = DEFAULT_MAX_TOKENS;
+      return _cachedGenMaxTokens;
+    }
+    const raw = readFileSync(AVAILABLE_MODELS_PATH, 'utf-8');
+    const catalog = JSON.parse(raw);
+    const ollamaModels = catalog?.ollama;
+    if (!Array.isArray(ollamaModels)) {
+      _cachedGenMaxTokens = DEFAULT_MAX_TOKENS;
+      return _cachedGenMaxTokens;
+    }
+
+    // Strip provider prefix if present (e.g. "ollama|gpt-oss:120b" → "gpt-oss:120b")
+    const target = GEN_MODEL.includes('|') ? GEN_MODEL.split('|').slice(1).join('|') : GEN_MODEL;
+
+    for (const entry of ollamaModels) {
+      if (entry?.id === target && entry.max_completion_tokens != null) {
+        _cachedGenMaxTokens = Number(entry.max_completion_tokens);
+        console.log(`[ai-generate] max_tokens for ${target}: ${_cachedGenMaxTokens} (from catalog)`);
+        return _cachedGenMaxTokens;
+      }
+    }
+
+    // Fuzzy fallback: match on model family name before the colon
+    const targetFamily = target.split(':')[0].toLowerCase();
+    for (const entry of ollamaModels) {
+      const eid = String(entry?.id || '').toLowerCase();
+      if (eid.startsWith(targetFamily) && entry.max_completion_tokens != null) {
+        _cachedGenMaxTokens = Number(entry.max_completion_tokens);
+        console.log(`[ai-generate] max_tokens for ${target}: ${_cachedGenMaxTokens} (fuzzy match ${entry.id})`);
+        return _cachedGenMaxTokens;
+      }
+    }
+  } catch (err) {
+    console.warn(`[ai-generate] failed to load model catalog: ${err.message}`);
+  }
+
+  _cachedGenMaxTokens = DEFAULT_MAX_TOKENS;
+  console.log(`[ai-generate] max_tokens for ${GEN_MODEL}: ${DEFAULT_MAX_TOKENS} (default — model not in catalog)`);
+  return _cachedGenMaxTokens;
+}
+
 const BILINGUAL_ALIGNMENT_VERSION = 1;
 
 /** Resize an image to fit within ETT_MAX_IMAGE_DIM on the longest side.
@@ -892,9 +963,6 @@ async function findPageImages(dataRoot, chapter, language, section) {
   }
 
   console.log(`[ai-generate] findPageImages: chapter=${chapter} lang=${language} section=${section} → ${results.length} image(s)`);
-  if (results.length > 0) {
-    console.log(`[ai-generate]   ${results.join(', ')}`);
-  }
   return results;
 }
 
@@ -1090,37 +1158,132 @@ function parseGeneratedContent(genText) {
   }
 }
 
-async function runGenerationPrompt(prompt) {
-  const genModel = AIGATEWAY_MODEL.includes('|') ? AIGATEWAY_MODEL.split('|').slice(1).join('|') : AIGATEWAY_MODEL;
+async function runGenerationPrompt(prompt, retries = 3) {
+  // Strip provider prefix from GEN_MODEL if present (e.g. "ollama|gpt-oss:120b" → "gpt-oss:120b")
+  const genModel = GEN_MODEL.includes('|') ? GEN_MODEL.split('|').slice(1).join('|') : GEN_MODEL;
+
+  // Try gateway first, fall back to direct Ollama on persistent 502/503/504
+  return await runPromptViaGateway(prompt, genModel, retries).catch(async (gatewayErr) => {
+    if (OLLAMA_DIRECT_URL) {
+      console.log(`[ai-generate] gateway failed (${gatewayErr.message.slice(0, 100)}), trying direct Ollama...`);
+      return await runPromptDirect(prompt, genModel, 2);
+    }
+    throw gatewayErr;
+  });
+}
+
+async function runPromptViaGateway(prompt, genModel, retries) {
   const genFormData = new FormData();
-  genFormData.append('provider', 'vllm');
-  genFormData.append('apiKey', AIGATEWAY_APIKEY);
+  genFormData.append('provider', GEN_PROVIDER);
+  genFormData.append('apiKey', GEN_APIKEY);
   genFormData.append('model', genModel);
   genFormData.append('prompt', prompt);
-  genFormData.append('max_tokens', '500');
+  const mt = getGenMaxTokens();
+  if (mt > 0) genFormData.append('max_tokens', String(mt));  // omit when 0 — let gateway decide
 
-  const genController = new AbortController();
-  const genTimeoutId = setTimeout(() => genController.abort(), 120000);
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const genController = new AbortController();
+    const genTimeoutId = setTimeout(() => genController.abort(), 180000); // 3 min per attempt
 
-  let genResponse;
-  try {
-    genResponse = await fetch(AIGATEWAY_URL, {
-      method: 'POST',
-      headers: { Accept: 'text/event-stream' },
-      body: genFormData,
-      signal: genController.signal,
-    });
-  } finally {
-    clearTimeout(genTimeoutId);
-  }
+    let genResponse;
+    try {
+      genResponse = await fetch(VLLM_URL, {
+        method: 'POST',
+        headers: { Accept: 'text/event-stream' },
+        body: genFormData,
+        signal: genController.signal,
+      });
+    } finally {
+      clearTimeout(genTimeoutId);
+    }
 
-  if (!genResponse.ok) {
+    if (genResponse.ok) {
+      const genText = await genResponse.text();
+      return { content: parseGeneratedContent(genText), raw: genText };
+    }
+
+    // 502/503/504 are transient upstream errors — retry
+    const status = genResponse.status;
     const errText = await genResponse.text();
-    throw new Error(`AI Gateway generation error: ${genResponse.status} — ${errText.slice(0, 300)}`);
-  }
+    lastError = new Error(`AI Gateway generation error: ${status} — ${errText.slice(0, 300)}`);
 
-  const genText = await genResponse.text();
-  return { content: parseGeneratedContent(genText), raw: genText };
+    // Debug: dump the failing prompt to disk for diagnosis
+    if (attempt === 0) {
+      try {
+        const fs = await import('fs');
+        const debugDir = '/tmp/ai-debug'; await fs.promises.mkdir(debugDir, { recursive: true });
+        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+        await fs.promises.writeFile(`${debugDir}/gen-fail-${ts}.txt`, JSON.stringify({
+          timestamp: ts, attempt, status, model: genModel, provider: GEN_PROVIDER,
+          promptLen: prompt.length, promptPreview: prompt.slice(0, 500),
+          errBody: errText.slice(0, 2000),
+          fullPrompt: prompt,
+        }, null, 2));
+        console.log(`[ai-generate] debug: dumped failing prompt to /tmp/ai-debug/gen-fail-${ts}.txt`);
+      } catch (_) { /* best-effort */ }
+    }
+
+    if (status === 502 || status === 503 || status === 504) {
+      if (attempt < retries) {
+        const delay = Math.min(1000 * Math.pow(2, attempt), 10000); // 1s, 2s, 4s, max 10s
+        console.log(`[ai-generate] gen attempt ${attempt + 1} failed (${status}), retrying in ${delay}ms...`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        continue;
+      }
+    } else {
+      break; // non-retryable error (4xx, etc.) — don't retry
+    }
+  }
+  throw lastError;
+}
+
+async function runPromptDirect(prompt, genModel, retries = 2) {
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 min for direct
+
+    let response;
+    try {
+      const numPredict = getGenMaxTokens();
+      const ollamaOptions = { temperature: 0.3 };
+      if (numPredict > 0) ollamaOptions.num_predict = numPredict;  // omit when 0 — let Ollama decide
+      response = await fetch(OLLAMA_DIRECT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: genModel,
+          prompt: prompt,
+          stream: false,
+          options: ollamaOptions,
+        }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    if (response.ok) {
+      const data = await response.json();
+      const respText = data.response || '';
+      if (respText) {
+        console.log(`[ai-generate] direct ollama success (${respText.length} chars)`);
+        return { content: parseGeneratedContent(respText), raw: respText };
+      }
+      lastError = new Error('Direct Ollama returned empty response');
+    } else {
+      const errText = await response.text().catch(() => '');
+      lastError = new Error(`Direct Ollama error: ${response.status} — ${errText.slice(0, 300)}`);
+    }
+
+    if (attempt < retries) {
+      const delay = Math.min(2000 * Math.pow(2, attempt), 15000);
+      console.log(`[ai-generate] direct ollama attempt ${attempt + 1} failed, retrying in ${delay}ms...`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+  throw lastError;
 }
 
 async function extractPageText(dataRoot, chapter, sectionNum, page, language) {
@@ -1150,9 +1313,9 @@ async function extractPageText(dataRoot, chapter, sectionNum, page, language) {
     : 'Extract and transcribe all text content from these textbook page images. Include all headings, body text, and captions.';
 
   const formData = new FormData();
-  formData.append('provider', AIGATEWAY_PROVIDER);
-  formData.append('apiKey', AIGATEWAY_APIKEY);
-  formData.append('model', AIGATEWAY_MODEL);
+  formData.append('provider', VLLM_PROVIDER);
+  formData.append('apiKey', VLLM_APIKEY);
+  formData.append('model', VLLM_MODEL);
   formData.append('wordCount', '3000');
   formData.append('prompt', extractPrompt);
 
@@ -1168,7 +1331,7 @@ async function extractPageText(dataRoot, chapter, sectionNum, page, language) {
 
   let aiResponse;
   try {
-    aiResponse = await fetch(AIGATEWAY_URL, {
+    aiResponse = await fetch(VLLM_URL, {
       method: 'POST',
       headers: { Accept: 'text/event-stream' },
       body: formData,
@@ -1193,7 +1356,7 @@ async function extractPageText(dataRoot, chapter, sectionNum, page, language) {
   if (!extractedText.trim()) {
     console.log(`[ai-generate] ${language}: ERROR — no text extracted`);
     console.log(`[ai-generate] ${language}: request payload:`);
-    console.log(`[ai-generate] ${language}: ${JSON.stringify({ provider: AIGATEWAY_PROVIDER, model: AIGATEWAY_MODEL, prompt: extractPrompt.slice(0, 200), wordCount: '3000', images: selectedImages }, null, 2)}`);
+    console.log(`[ai-generate] ${language}: ${JSON.stringify({ provider: VLLM_PROVIDER, model: VLLM_MODEL, prompt: extractPrompt.slice(0, 200), wordCount: '3000', images: selectedImages }, null, 2)}`);
     console.log(`[ai-generate] ${language}: raw response (${text.length} bytes):`);
     console.log(`[ai-generate] ${language}: ${text.slice(0, 2000)}`);
     throw new AiGenerationError(`No text could be extracted for language=${language}`, debug);
@@ -1235,6 +1398,10 @@ async function translateGeneratedContent(chapter, sectionName, page, targetLangu
 /** Save generated content for a language into the shared ai-generations document */
 async function saveAiContent(subjectId, bookId, sectionNum, page, language, content, userId) {
   if (!aiGenerations) return;
+  if (!isValidAiContent(content)) {
+    console.error(`[ai-generate] ${language}: REFUSING to save invalid content (raw wrapper or error envelope) for ${subjectId}/${bookId}/${sectionNum}/${page}`);
+    return;
+  }
   const langField = language === 'tc' ? 'zh' : 'en';
   const now = hkNow();
   const identity = buildAiIdentity({ subjectId, bookId, sectionId: sectionNum, pageId: page });
@@ -1256,23 +1423,45 @@ async function saveAiContent(subjectId, bookId, sectionNum, page, language, cont
 
 async function saveAlignedBilingualAiContent(subjectId, bookId, sectionNum, page, enContent, zhContent, userId) {
   if (!aiGenerations) return;
+  if (!isValidAiContent(enContent)) {
+    console.error(`[ai-generate] REFUSING to save invalid en content (raw wrapper or error envelope) for ${subjectId}/${bookId}/${sectionNum}/${page}`);
+    return;
+  }
+  // zhContent may be null/absent when only English generation succeeded
+  if (zhContent && !isValidAiContent(zhContent)) {
+    console.error(`[ai-generate] REFUSING to save invalid zh content (raw wrapper or error envelope) for ${subjectId}/${bookId}/${sectionNum}/${page}`);
+    return;
+  }
   const now = hkNow();
   const identity = buildAiIdentity({ subjectId, bookId, sectionId: sectionNum, pageId: page });
-  await aiGenerations.deleteMany({
-    $or: [identity, buildLegacyAiIdentity(identity)],
-  });
-  await aiGenerations.insertOne({
-    ...identity,
+
+  // Use atomic upsert to prevent race-condition duplicates.
+  // $set overwrites all content fields; $setOnInsert only fires on new docs.
+  const setFields = {
     en: enContent,
-    zh: zhContent,
     enUpdatedAt: now,
-    zhUpdatedAt: now,
     updatedAt: now,
     alignmentVersion: BILINGUAL_ALIGNMENT_VERSION,
     ...(userId ? { user: String(userId) } : {}),
-    createdAt: now,
-  });
-  console.log('[ai-generate] saved aligned bilingual content to ai-generations');
+  };
+  if (zhContent) {
+    setFields.zh = zhContent;
+    setFields.zhUpdatedAt = now;
+  } else {
+    // Unset zh if not provided (e.g. en-only fallback on a doc that previously had zh)
+    setFields.zh = null;
+    setFields.zhUpdatedAt = null;
+  }
+
+  await aiGenerations.updateOne(
+    identity,
+    {
+      $set: setFields,
+      $setOnInsert: { createdAt: now, ...identity },
+    },
+    { upsert: true }
+  );
+  console.log(`[ai-generate] saved aligned ${zhContent ? 'bilingual' : 'en-only'} content to ai-generations`);
 }
 
 async function getAiContentDocument(subjectId, bookId, sectionNum, page) {
@@ -1333,8 +1522,8 @@ app.post('/api/ai-generate', async (request, response) => {
       errors: {},
     };
 
-    if (!AIGATEWAY_APIKEY) {
-      return response.status(500).json({ error: 'AIGATEWAY_APIKEY not configured' });
+    if (!VLLM_APIKEY) {
+      return response.status(500).json({ error: 'VLLM_APIKEY not configured. Set VLLM_APIKEY in .env.' });
     }
 
     const results = {};
@@ -1423,6 +1612,17 @@ app.post('/api/ai-generate', async (request, response) => {
         debugInfo.generationRaw.en = debugInfo.generationRaw.en || err.debug?.generationRaw || '[generation not attempted]';
         debugInfo.errors.en = debugInfo.errors.en || err.message;
         debugInfo.errors.tc = debugInfo.errors.tc || err.message;
+
+        // Save English content even if TC translation failed, so the user
+        // gets partial results instead of losing everything.
+        if (results.en && !results.en.error && aiGenerations) {
+          try {
+            await saveAlignedBilingualAiContent(subjectId, bookId, sectionNum, page, results.en, null, userId);
+            console.log('[ai-generate] saved en-only content (tc translation failed)');
+          } catch (saveErr) {
+            console.error('[ai-generate] failed to save en-only fallback —', saveErr.message);
+          }
+        }
       }
     }
 

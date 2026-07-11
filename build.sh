@@ -1,5 +1,9 @@
 #!/bin/bash
 npm install
+
+rm -rf dist/assets
+rm -rf public/assets
+
 npm run build
 
 # Inject polyfills into the PDF worker (runs in Web Worker context, separate from main thread)
