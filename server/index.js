@@ -3,6 +3,7 @@ dotenv.config({ override: true });  // override any system env vars with .env va
 import express from 'express';
 import fs from 'node:fs/promises';
 import { createReadStream, existsSync, readFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -2109,6 +2110,86 @@ app.delete('/api/ai-content', async (request, response) => {
     response.status(500).json({ error: err.message });
   }
 });
+
+// ── QR decode using zbarimg (industrial-grade, same as dnschecker.org backend) ──
+app.post('/api/qr-decode', asyncRoute(async (request, response) => {
+  const { image } = request.body || {};
+  if (!image || typeof image !== 'string') {
+    return response.status(400).json({ error: 'Missing base64 image' });
+  }
+
+  // Strip data:image prefix if present
+  const b64 = image.replace(/^data:image\/\w+;base64,/, '');
+  const buf = Buffer.from(b64, 'base64');
+
+  // Write to a temp PNG file for zbarimg
+  const tmpDir = path.join(__dirname, '..', 'logs');
+  await fs.mkdir(tmpDir, { recursive: true });
+  const tmpFile = path.join(tmpDir, `qr-tmp-${Date.now()}.png`);
+
+  try {
+    await fs.writeFile(tmpFile, buf);
+
+    // Run zbarimg: industrial-grade QR/barcode scanner
+    const result = await new Promise((resolve, reject) => {
+      execFile('zbarimg', ['--quiet', '--raw', '--oneshot', '-Sdisable', '-Sqrcode.enable', tmpFile], {
+        timeout: 5000,
+      }, (err, stdout, stderr) => {
+        if (err) {
+          // zbarimg exits non-zero if no barcode found
+          if (stderr) console.log('[qr-decode] zbarimg stderr:', stderr.trim());
+          return resolve(null);
+        }
+        const data = stdout.trim();
+        resolve(data || null);
+      });
+    });
+
+    if (result) {
+      console.log('[qr-decode] ✅ zbarimg:', result);
+      response.json({ data: result });
+    } else {
+      // Try with preprocessed version (sharp grayscale + contrast)
+      const sharpened = await sharp(buf)
+        .greyscale()
+        .normalize()
+        .png()
+        .toBuffer();
+      const tmpFile2 = path.join(tmpDir, `qr-tmp-${Date.now()}-sharp.png`);
+      await fs.writeFile(tmpFile2, sharpened);
+
+      const result2 = await new Promise((resolve, reject) => {
+        execFile('zbarimg', ['--quiet', '--raw', '--oneshot', '-Sdisable', '-Sqrcode.enable', tmpFile2], {
+          timeout: 5000,
+        }, (err, stdout, stderr) => {
+          if (err) {
+            if (stderr) console.log('[qr-decode] zbarimg (sharp) stderr:', stderr.trim());
+            return resolve(null);
+          }
+          const data = stdout.trim();
+          resolve(data || null);
+        });
+      });
+
+      // Clean up sharp temp file
+      await fs.unlink(tmpFile2).catch(() => {});
+
+      if (result2) {
+        console.log('[qr-decode] ✅ zbarimg (sharp):', result2);
+        response.json({ data: result2 });
+      } else {
+        console.log('[qr-decode] zbarimg: no QR found');
+        response.status(404).json({ error: 'No QR code found' });
+      }
+    }
+  } catch (err) {
+    console.error('[qr-decode] error:', err.message);
+    response.status(500).json({ error: err.message });
+  } finally {
+    // Clean up temp files
+    await fs.unlink(tmpFile).catch(() => {});
+  }
+}));
 
 // SPA fallback — only for navigation routes (no file extension)
 app.get('*', (request, response) => {

@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QR Code Detection Test</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; background: #f5f5f5; }
+  h1 { font-size: 1.3rem; }
+  .drop-zone {
+    border: 3px dashed #aaa; border-radius: 12px; padding: 3rem 2rem; text-align: center;
+    cursor: pointer; background: #fff; margin: 1rem 0; transition: border-color .2s;
+  }
+  .drop-zone.drag-over { border-color: #2563eb; background: #eff6ff; }
+  .preview-row { display: flex; gap: 1rem; flex-wrap: wrap; margin: 1rem 0; }
+  .preview-box { flex: 1; min-width: 200px; text-align: center; }
+  .preview-box img, .preview-box canvas { max-width: 100%; border: 1px solid #ccc; border-radius: 6px; image-rendering: pixelated; }
+  .preview-box span { display: block; font-size: .8rem; color: #666; margin-top: .3rem; }
+  .results { margin: 1rem 0; }
+  .result-row { display: flex; align-items: center; gap: .5rem; padding: .5rem .8rem; border-radius: 6px; margin: .3rem 0; font-family: monospace; font-size: .85rem; }
+  .result-row.pass { background: #dcfce7; color: #166534; }
+  .result-row.fail { background: #fef2f2; color: #991b1b; }
+  .result-row .badge { padding: 1px 8px; border-radius: 10px; font-size: .75rem; font-weight: 600; }
+  .badge.ok { background: #16a34a; color: #fff; }
+  .badge.no { background: #dc2626; color: #fff; }
+  button { padding: .5rem 1.2rem; border: none; border-radius: 6px; cursor: pointer; font-size: .9rem; }
+  .btn-primary { background: #2563eb; color: #fff; }
+  .btn-primary:hover { background: #1d4ed8; }
+  .value-box { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: .6rem .8rem; word-break: break-all; font-family: monospace; font-size: .85rem; margin: .5rem 0; }
+  label { font-weight: 600; font-size: .85rem; display: block; margin-top: .5rem; }
+  input[type=range] { width: 200px; vertical-align: middle; }
+</style>
+</head>
+<body>
+
+<h1>🔍 QR Code Detection Test</h1>
+<p>Drop or select the <code>qr-debug-*.png</code> crop image saved from the PDF reader.</p>
+
+<div class="drop-zone" id="dropZone">
+  <strong>📁 Drop image here</strong> or click to browse
+  <input type="file" id="fileInput" accept="image/*" style="display:none">
+</div>
+
+<div>
+  <label>Manual threshold override (0 = auto): <strong id="threshVal">0</strong></label>
+  <input type="range" id="thresholdSlider" min="0" max="255" value="0" step="1">
+  <button class="btn-primary" id="retryBtn" style="margin-left:1rem">🔄 Re-detect</button>
+</div>
+
+<div class="preview-row" id="previewRow" style="display:none">
+  <div class="preview-box">
+    <canvas id="originalPreview"></canvas>
+    <span>Original</span>
+  </div>
+  <div class="preview-box">
+    <canvas id="contrastPreview"></canvas>
+    <span>Contrast-enhanced</span>
+  </div>
+</div>
+
+<div class="results" id="results"></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "qr-scanner": "https://cdn.jsdelivr.net/npm/qr-scanner@1.4.2/qr-scanner.min.js"
+  }
+}
+</script>
+<script type="module">
+import QrScanner from 'qr-scanner';
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+const retryBtn = document.getElementById('retryBtn');
+const thresholdSlider = document.getElementById('thresholdSlider');
+const threshVal = document.getElementById('threshVal');
+const results = document.getElementById('results');
+const previewRow = document.getElementById('previewRow');
+const originalPreview = document.getElementById('originalPreview');
+const contrastPreview = document.getElementById('contrastPreview');
+
+let currentImage = null;
+
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  if (e.dataTransfer.files.length) loadImage(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', () => {
+  if (fileInput.files.length) loadImage(fileInput.files[0]);
+});
+retryBtn.addEventListener('click', () => { if (currentImage) runTests(currentImage); });
+thresholdSlider.addEventListener('input', () => {
+  threshVal.textContent = thresholdSlider.value;
+  if (currentImage) runTests(currentImage);
+});
+
+async function loadImage(file) {
+  const img = new Image();
+  img.src = URL.createObjectURL(file);
+  await img.decode();
+  currentImage = img;
+  thresholdSlider.value = 0;
+  threshVal.textContent = '0';
+  runTests(img);
+}
+
+async function detectQr(source) {
+  try {
+    return await QrScanner.scanImage(source);
+  } catch {
+    return null;
+  }
+}
+
+async function runTests(img) {
+  const w = img.naturalWidth;
+  const h = img.naturalHeight;
+
+  // Draw original preview
+  originalPreview.width = w;
+  originalPreview.height = h;
+  originalPreview.getContext('2d').drawImage(img, 0, 0);
+  previewRow.style.display = '';
+
+  // Build contrast canvas
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0);
+
+  const imageData = ctx.getImageData(0, 0, w, h);
+  const data = imageData.data;
+
+  // Compute threshold
+  let sum = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    sum += data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+  }
+  const avg = sum / (data.length / 4);
+  const autoThreshold = Math.max(60, Math.min(200, Math.round(avg * 0.8)));
+
+  const manualVal = parseInt(thresholdSlider.value);
+  const threshold = manualVal > 0 ? manualVal : autoThreshold;
+  threshVal.textContent = manualVal > 0 ? manualVal : autoThreshold + ' (auto)';
+
+  // Apply threshold
+  for (let i = 0; i < data.length; i += 4) {
+    const lum = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+    const v = lum < threshold ? 0 : 255;
+    data[i] = v;
+    data[i + 1] = v;
+    data[i + 2] = v;
+  }
+  ctx.putImageData(imageData, 0, 0);
+
+  // Draw contrast preview
+  contrastPreview.width = w;
+  contrastPreview.height = h;
+  contrastPreview.getContext('2d').drawImage(canvas, 0, 0);
+
+  // ── Run detection ──
+  const rows = [];
+
+  // Test 1: qr-scanner on original image
+  const r1 = await detectQr(img);
+  rows.push({ pass: !!r1, label: 'qr-scanner: original image', detail: r1 || 'no QR found' });
+
+  // Test 2: qr-scanner on contrast-enhanced
+  const r2 = await detectQr(canvas);
+  rows.push({ pass: !!r2, label: `qr-scanner: contrast (threshold=${threshold})`, detail: r2 || 'no QR found' });
+
+  // Test 3: qr-scanner on inverted contrast
+  const invCanvas = document.createElement('canvas');
+  invCanvas.width = w;
+  invCanvas.height = h;
+  const invCtx = invCanvas.getContext('2d');
+  invCtx.drawImage(canvas, 0, 0);
+  const invData = invCtx.getImageData(0, 0, w, h);
+  for (let i = 0; i < invData.data.length; i += 4) {
+    invData.data[i] = 255 - invData.data[i];
+    invData.data[i + 1] = 255 - invData.data[i + 1];
+    invData.data[i + 2] = 255 - invData.data[i + 2];
+  }
+  invCtx.putImageData(invData, 0, 0);
+  const r3 = await detectQr(invCanvas);
+  rows.push({ pass: !!r3, label: 'qr-scanner: inverted contrast', detail: r3 || 'no QR found' });
+
+  // Test 4: BarcodeDetector (native) for comparison
+  if ('BarcodeDetector' in window) {
+    try {
+      const detector = new BarcodeDetector({ formats: ['qr_code'] });
+      const br = await detector.detect(canvas);
+      rows.push({ pass: br.length > 0, label: 'BarcodeDetector (native): contrast', detail: br.length ? br[0].rawValue : 'no QR found' });
+    } catch (e) {
+      rows.push({ pass: false, label: 'BarcodeDetector (native)', detail: 'Error: ' + e.message });
+    }
+  } else {
+    rows.push({ pass: false, label: 'BarcodeDetector (native)', detail: 'API not available' });
+  }
+
+  // Test 5: Threshold sweep with qr-scanner
+  const sweepResults = [];
+  for (const t of [40, 60, 80, 100, 120, 140, 160, 180, 200, 220]) {
+    const sweepCanvas = document.createElement('canvas');
+    sweepCanvas.width = w;
+    sweepCanvas.height = h;
+    const sweepCtx = sweepCanvas.getContext('2d');
+    sweepCtx.drawImage(img, 0, 0);
+    const sd = sweepCtx.getImageData(0, 0, w, h);
+    for (let i = 0; i < sd.data.length; i += 4) {
+      const lum = sd.data[i] * 0.299 + sd.data[i + 1] * 0.587 + sd.data[i + 2] * 0.114;
+      const v = lum < t ? 0 : 255;
+      sd.data[i] = v;
+      sd.data[i + 1] = v;
+      sd.data[i + 2] = v;
+    }
+    sweepCtx.putImageData(sd, 0, 0);
+    const r = await detectQr(sweepCanvas);
+    if (r) sweepResults.push(`t=${t} → ${r}`);
+  }
+  if (sweepResults.length) {
+    rows.push({ pass: true, label: 'qr-scanner: threshold sweep HIT', detail: sweepResults.join(' | ') });
+  } else {
+    rows.push({ pass: false, label: 'qr-scanner: threshold sweep (40–220)', detail: 'no QR found at any threshold' });
+  }
+
+  // Render results
+  results.innerHTML = `
+    <div class="value-box">Image: ${w}×${h}px | Avg luminance: ${avg.toFixed(1)} | Auto threshold: ${autoThreshold}</div>
+    ${rows.map(r => `
+      <div class="result-row ${r.pass ? 'pass' : 'fail'}">
+        <span class="badge ${r.pass ? 'ok' : 'no'}">${r.pass ? '✓' : '✗'}</span>
+        <strong>${r.label}</strong>
+        ${r.detail ? `<span style="margin-left:auto">${r.detail}</span>` : ''}
+      </div>
+    `).join('')}
+  `;
+}
+</script>
+</body>
+</html>

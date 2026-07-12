@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import QrScanner from 'qr-scanner';
+import jsQR from 'jsqr';
 import Swal from 'sweetalert2';
 import BookAutocomplete from './BookAutocomplete';
 import PdfPane from './PdfPane';
@@ -324,6 +326,8 @@ function App() {
   const textInputBlurFlagRef = useRef(false);
   const [clearedTimestamps, setClearedTimestamps] = useState([]);
   const [qrUrl, setQrUrl] = useState(null);  // QR code URL modal
+  const [clickMarker, setClickMarker] = useState(null);  // { x, y, imgLeft, imgTop, naturalX, naturalY } debug overlay
+  const clickMarkerTimeoutRef = useRef(null);
   const [undoStack, setUndoStack] = useState([]);
   const [redoStack, setRedoStack] = useState([]);
   const [zoomLevel, setZoomLevel] = useState(Number(savedPrefs.zoomLevel || 1));
@@ -3012,53 +3016,279 @@ function App() {
 
   // ── QR code detection on click ─────────────────────────
   const handleStageClick = async (event) => {
-    // Only scan for QR codes when no annotation tool is active
-    if (tool !== 'hand' && tool !== 'move') return;
+    // Only scan for QR codes when the hand tool is active
+    if (tool !== 'hand') return;
+
     // Don't scan if a text input is active
     if (textInputState) return;
+
     // Don't scan if clicking on a UI element
     if (event.target.closest('button, input, textarea, select, .annotation-textarea')) return;
 
-    try {
-      // Find the canvas element at the click position
-      const canvases = document.elementsFromPoint(event.clientX, event.clientY)
-        .filter(el => el.tagName === 'CANVAS');
-      if (!canvases.length) return;
-      const canvas = canvases[0];
-
-      // Extract a region around the click point (scan 300x300 area centered on click)
-      const canvasRect = canvas.getBoundingClientRect();
-      const clickX = event.clientX - canvasRect.left;
-      const clickY = event.clientY - canvasRect.top;
-      const scanSize = 300;
-      const sx = Math.max(0, clickX - scanSize / 2);
-      const sy = Math.max(0, clickY - scanSize / 2);
-      const sw = Math.min(scanSize, canvas.width - sx);
-      const sh = Math.min(scanSize, canvas.height - sy);
-      if (sw <= 0 || sh <= 0) return;
-
-      const offscreen = document.createElement('canvas');
-      offscreen.width = sw;
-      offscreen.height = sh;
-      const ctx = offscreen.getContext('2d');
-      ctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
-
-      // Use browser's native BarcodeDetector (Chrome 83+)
-      if (!('BarcodeDetector' in window)) return;
-      const detector = new BarcodeDetector({ formats: ['qr_code'] });
-      const barcodes = await detector.detect(offscreen);
-      if (!barcodes.length) return;
-
-      const value = barcodes[0].rawValue;
-      // Check if it's a URL
-      let url;
-      try { url = new URL(value); } catch { return; }
-      if (!url.protocol.startsWith('http')) return;
-
-      setQrUrl(url.href);
-    } catch (err) {
-      // BarcodeDetector not supported or detection failed — silently ignore
+    // Find the page image at the click position
+    const pageImg = document.elementsFromPoint(event.clientX, event.clientY)
+      .find(el => el.tagName === 'IMG' && el.classList.contains('page-img'));
+    if (!pageImg) {
+      console.log('[QR] No page-img found at click position');
+      return;
     }
+
+    // Check that the image is fully loaded
+    if (!pageImg.complete || pageImg.naturalWidth === 0) {
+      console.log('[QR] Page image not yet loaded');
+      return;
+    }
+
+    // Compute click position in natural image coordinates
+    const rect = pageImg.getBoundingClientRect();
+    const cssX = event.clientX - rect.left;
+    const cssY = event.clientY - rect.top;
+    const naturalW = pageImg.naturalWidth;
+    const naturalH = pageImg.naturalHeight;
+    const clickNX = (cssX / rect.width) * naturalW;
+    const clickNY = (cssY / rect.height) * naturalH;
+
+    // Show a visual marker at the click position (auto-hides after 3s)
+    setClickMarker({ x: cssX, y: cssY, imgLeft: rect.left, imgTop: rect.top, naturalX: clickNX, naturalY: clickNY });
+    clearTimeout(clickMarkerTimeoutRef.current);
+    clickMarkerTimeoutRef.current = setTimeout(() => setClickMarker(null), 3000);
+
+    // ── Proportional crop: 30% of smaller image dimension, centered on click ──
+    const fracX = clickNX / naturalW;
+    const fracY = clickNY / naturalH;
+    const cropDim = Math.round(Math.min(naturalW, naturalH) * 0.30);
+    const halfCrop = Math.floor(cropDim / 2);
+    const csx = Math.max(0, Math.floor(clickNX - halfCrop));
+    const csy = Math.max(0, Math.floor(clickNY - halfCrop));
+    const csw = Math.min(cropDim, naturalW - csx);
+    const csh = Math.min(cropDim, naturalH - csy);
+
+    console.log('[QR] Click:', clickNX.toFixed(1) + ',' + clickNY.toFixed(1),
+      '| proportional:', (fracX * 100).toFixed(1) + '%,' + (fracY * 100).toFixed(1) + '%',
+      '| crop:', csw + 'x' + csh, 'at', csx + ',' + csy,
+      '| image:', naturalW + 'x' + naturalH);
+
+    // Draw proportional crop
+    const cropCanvas = document.createElement('canvas');
+    cropCanvas.width = csw;
+    cropCanvas.height = csh;
+    const cropCtx = cropCanvas.getContext('2d');
+    cropCtx.drawImage(pageImg, csx, csy, csw, csh, 0, 0, csw, csh);
+
+    // ── Save original proportional crop (only in debug mode: ?test=2) ──
+    const isDebugMode = new URLSearchParams(window.location.search).get('test') === '2';
+    if (isDebugMode) {
+      const origUrl = cropCanvas.toDataURL('image/png');
+      const a1 = document.createElement('a');
+      a1.href = origUrl;
+      a1.download = `qr-debug-${Math.round(clickNX)}x${Math.round(clickNY)}.png`;
+      document.body.appendChild(a1);
+      a1.click();
+      document.body.removeChild(a1);
+      console.log('[QR] Saved original crop:', a1.download);
+    }
+
+    // ── Contrast enhancement ─────────────────────────────
+    const imageData = cropCtx.getImageData(0, 0, csw, csh);
+    const pixels = imageData.data;
+    let sum = 0;
+    for (let i = 0; i < pixels.length; i += 4) {
+      sum += pixels[i] * 0.299 + pixels[i + 1] * 0.587 + pixels[i + 2] * 0.114;
+    }
+    const avg = sum / (pixels.length / 4);
+    const threshold = Math.max(60, Math.min(200, avg * 0.8));
+    for (let i = 0; i < pixels.length; i += 4) {
+      const lum = pixels[i] * 0.299 + pixels[i + 1] * 0.587 + pixels[i + 2] * 0.114;
+      const v = lum < threshold ? 0 : 255;
+      pixels[i] = v;
+      pixels[i + 1] = v;
+      pixels[i + 2] = v;
+    }
+    cropCtx.putImageData(imageData, 0, 0);
+
+    // ── Save contrast-enhanced proportional crop (only in debug mode: ?test=2) ──
+    if (isDebugMode) {
+      const contrastUrl = cropCanvas.toDataURL('image/png');
+      const a2 = document.createElement('a');
+      a2.href = contrastUrl;
+      a2.download = `qr-debug-${Math.round(clickNX)}x${Math.round(clickNY)}-contrast.png`;
+      document.body.appendChild(a2);
+      a2.click();
+      document.body.removeChild(a2);
+      console.log('[QR] Saved contrast crop (threshold:', threshold.toFixed(0) + ')');
+    }
+
+    // ── Decode QR code ──────────────────────────────────
+    let qrResult = null;
+
+    // Helper: try jsQR on raw RGBA pixels
+    const tryJsQR = (pixels, w, h, label) => {
+      try {
+        const res = jsQR(pixels, w, h, { inversionAttempts: 'attemptBoth' });
+        if (res?.data) {
+          console.log('[QR] ✅ jsQR ' + label + ':', res.data);
+          return res.data;
+        }
+        console.log('[QR] jsQR ' + label + ': returned null (no QR detected)');
+      } catch (err) {
+        console.log('[QR] jsQR ' + label + ' error:', err.message || err);
+      }
+      return null;
+    };
+
+    // Helper: create B&W thresholded pixels
+    const thresholdPixels = (srcData, t) => {
+      const out = new Uint8ClampedArray(srcData.length);
+      for (let i = 0; i < srcData.length; i += 4) {
+        const lum = srcData[i] * 0.299 + srcData[i + 1] * 0.587 + srcData[i + 2] * 0.114;
+        const v = lum < t ? 0 : 255;
+        out[i] = v;
+        out[i + 1] = v;
+        out[i + 2] = v;
+        out[i + 3] = 255;
+      }
+      return out;
+    };
+
+    // Get raw (unprocessed) crop pixels
+    const origCropCanvas = document.createElement('canvas');
+    origCropCanvas.width = csw;
+    origCropCanvas.height = csh;
+    const origCtx = origCropCanvas.getContext('2d');
+    origCtx.drawImage(pageImg, csx, csy, csw, csh, 0, 0, csw, csh);
+    const origImageData = origCtx.getImageData(0, 0, csw, csh);
+    const origPixels = new Uint8ClampedArray(origImageData.data);
+
+    // Strategy 1: jsQR on raw crop pixels
+    qrResult = tryJsQR(origPixels, csw, csh, 'raw crop');
+
+    // Strategy 2: jsQR on contrast-enhanced (auto threshold)
+    if (!qrResult) {
+      const contrastPixels = thresholdPixels(origPixels, threshold);
+      qrResult = tryJsQR(contrastPixels, csw, csh, `contrast t=${threshold.toFixed(0)}`);
+    }
+
+    // Strategy 3: jsQR on inverted contrast
+    if (!qrResult) {
+      const invPixels = new Uint8ClampedArray(origPixels.length);
+      for (let i = 0; i < origPixels.length; i += 4) {
+        const lum = origPixels[i] * 0.299 + origPixels[i + 1] * 0.587 + origPixels[i + 2] * 0.114;
+        const v = lum < threshold ? 255 : 0;
+        invPixels[i] = v; invPixels[i + 1] = v; invPixels[i + 2] = v; invPixels[i + 3] = 255;
+      }
+      qrResult = tryJsQR(invPixels, csw, csh, `inverted t=${threshold.toFixed(0)}`);
+    }
+
+    // Strategy 4: threshold sweep
+    if (!qrResult) {
+      for (const t of [40, 60, 80, 100, 120, 140, 160, 180, 200, 220]) {
+        const sweepPixels = thresholdPixels(origPixels, t);
+        qrResult = tryJsQR(sweepPixels, csw, csh, `sweep t=${t}`);
+        if (qrResult) break;
+      }
+    }
+
+    // Strategy 5: qr-scanner on the contrast crop canvas with disallowCanvasResizing
+    if (!qrResult) {
+      try {
+        const res = await QrScanner.scanImage(cropCanvas, { disallowCanvasResizing: true, alsoTryWithoutScanRegion: true });
+        if (res) {
+          qrResult = typeof res === 'string' ? res : res.data;
+          console.log('[QR] ✅ qr-scanner (no-resize) on contrast crop:', qrResult);
+        }
+      } catch (err) {
+        console.log('[QR] qr-scanner (no-resize) failed:', err.message || err);
+      }
+    }
+
+    // Strategy 6: qr-scanner on Blob (mimics file upload like dnschecker.org)
+    if (!qrResult) {
+      try {
+        const blob = await new Promise(resolve => cropCanvas.toBlob(resolve, 'image/png'));
+        if (blob) {
+          const res = await QrScanner.scanImage(blob, { disallowCanvasResizing: true, alsoTryWithoutScanRegion: true });
+          if (res) {
+            qrResult = typeof res === 'string' ? res : res.data;
+            console.log('[QR] ✅ qr-scanner on Blob:', qrResult);
+          }
+        }
+      } catch (err) {
+        console.log('[QR] qr-scanner on Blob failed:', err.message || err);
+      }
+    }
+
+    // Strategy 7: native BarcodeDetector on original crop
+    if (!qrResult && 'BarcodeDetector' in window) {
+      try {
+        const detector = new BarcodeDetector({ formats: ['qr_code'] });
+        const detections = await detector.detect(origCropCanvas);
+        if (detections.length > 0) {
+          qrResult = detections[0].rawValue;
+          console.log('[QR] ✅ BarcodeDetector:', qrResult);
+        }
+      } catch (err) {
+        console.log('[QR] BarcodeDetector failed:', err.message || err);
+      }
+    }
+
+    // Strategy 8: last resort — qr-scanner on full page image (no resize)
+    if (!qrResult) {
+      try {
+        const res = await QrScanner.scanImage(pageImg, { disallowCanvasResizing: true, alsoTryWithoutScanRegion: true });
+        if (res) {
+          qrResult = typeof res === 'string' ? res : res.data;
+          console.log('[QR] ✅ qr-scanner on full image:', qrResult);
+        }
+      } catch (err) {
+        console.log('[QR] qr-scanner on full image failed:', err.message || err);
+      }
+    }
+
+    // Strategy 9: server-side QR decode (sharp + jsQR on server)
+    if (!qrResult) {
+      try {
+        const dataUrl = origCropCanvas.toDataURL('image/png');
+        const resp = await fetch('/api/qr-decode', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: dataUrl }),
+        });
+        if (resp.ok) {
+          const json = await resp.json();
+          if (json.data) {
+            qrResult = json.data;
+            console.log('[QR] ✅ server-side decode:', qrResult);
+          }
+        } else {
+          console.log('[QR] server-side decode: no QR found');
+        }
+      } catch (err) {
+        console.log('[QR] server-side decode failed:', err.message || err);
+      }
+    }
+
+    if (qrResult) {
+      processQrValue(qrResult);
+    } else {
+      console.log('[QR] All strategies failed: no QR found');
+    }
+  };
+
+  /** Validate QR value as http(s) URL and open modal */
+  const processQrValue = (value) => {
+    let url;
+    try {
+      url = new URL(value);
+    } catch {
+      console.log('[QR] QR value is not a valid URL:', value);
+      return;
+    }
+    if (!url.protocol.startsWith('http')) {
+      console.log('[QR] URL protocol is not http(s):', url.protocol);
+      return;
+    }
+    console.log('[QR] ✅ Setting QR URL:', url.href);
+    setQrUrl(url.href);
   };
 
   const handleCanvasClick = async (event) => {
@@ -4788,6 +5018,20 @@ function App() {
 
       <main className="reader">
         <div className={`book-stage ${displayMode} ${isBilingualView ? 'bilingual-layout' : ''} tool-${tool}`} ref={stageRef} onClick={(e) => { handleStageClick(e); if (tool === 'text') handleCanvasClick(e); }} onContextMenu={handleStageContextMenu}>
+          {/* ── Click coordinate debug marker ──────────────── */}
+          {clickMarker && (
+            <div
+              className="click-marker"
+              style={{ left: clickMarker.imgLeft + clickMarker.x, top: clickMarker.imgTop + clickMarker.y }}
+            >
+              <div className="click-marker-dot" />
+              <span className="click-marker-label">
+                CSS: ({Math.round(clickMarker.x)}, {Math.round(clickMarker.y)})
+                {' · '}
+                Img: ({Math.round(clickMarker.naturalX)}, {Math.round(clickMarker.naturalY)})
+              </span>
+            </div>
+          )}
           {(pageLoading || (visibleLanguages.length === 0 && selectedChapter)) ? (
             <div className="page-loading">
               <div className="page-loading-spinner" />

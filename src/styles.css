@@ -1588,6 +1588,44 @@ button, input, select {
   background: #d7e0e8;
 }
 
+/* ── Click Coordinate Debug Marker ─────────────────────── */
+
+.click-marker {
+  position: fixed;
+  z-index: 11000;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+
+.click-marker-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: rgba(255, 50, 50, 0.7);
+  border: 2px solid #fff;
+  box-shadow: 0 0 6px rgba(0,0,0,0.4);
+  margin: 0 auto 4px;
+  animation: click-marker-pulse 0.6s ease-out;
+}
+
+@keyframes click-marker-pulse {
+  0% { transform: scale(0.3); opacity: 1; }
+  100% { transform: scale(1.4); opacity: 0.4; }
+}
+
+.click-marker-label {
+  display: block;
+  white-space: nowrap;
+  font-size: 11px;
+  font-family: monospace;
+  background: rgba(0, 0, 0, 0.78);
+  color: #fff;
+  padding: 3px 8px;
+  border-radius: 4px;
+  text-align: center;
+  line-height: 1.4;
+}
+
 /* ── QR Code URL Modal ──────────────────────────────────── */
 
 .qr-modal-overlay {
