@@ -1286,7 +1286,7 @@ async function runPromptDirect(prompt, genModel, retries = 2) {
   throw lastError;
 }
 
-async function extractPageText(dataRoot, chapter, sectionNum, page, language) {
+async function extractPageText(dataRoot, chapter, sectionNum, page, language, visionProvider = null) {
   const sectionImages = await findPageImages(dataRoot, chapter, language, sectionNum);
   console.log(`[ai-generate] ${language}: found ${sectionImages.length} section images`);
 
@@ -1312,8 +1312,9 @@ async function extractPageText(dataRoot, chapter, sectionNum, page, language) {
     ? '從這些教科書頁面圖像中提取並轉錄所有文字內容。包括所有標題、正文和圖片說明。必須用繁體中文（Traditional Chinese）輸出，不要使用簡體中文（Simplified Chinese）。'
     : 'Extract and transcribe all text content from these textbook page images. Include all headings, body text, and captions.';
 
+  const provider = visionProvider || VLLM_PROVIDER;
   const formData = new FormData();
-  formData.append('provider', VLLM_PROVIDER);
+  formData.append('provider', provider);
   formData.append('apiKey', VLLM_APIKEY);
   formData.append('model', VLLM_MODEL);
   formData.append('wordCount', '3000');
@@ -1366,8 +1367,8 @@ async function extractPageText(dataRoot, chapter, sectionNum, page, language) {
 }
 
 /** Generate flashcards & MCQs for a single language. Returns the parsed content object. */
-async function generateForLanguage(dataRoot, chapter, sectionNum, page, language, sectionName) {
-  const extraction = await extractPageText(dataRoot, chapter, sectionNum, page, language);
+async function generateForLanguage(dataRoot, chapter, sectionNum, page, language, sectionName, visionProvider = null) {
+  const extraction = await extractPageText(dataRoot, chapter, sectionNum, page, language, visionProvider);
   const genPrompt = buildGenerationPrompt(chapter, sectionName || '', page || 1, language, extraction.extractedText);
   console.log(`[ai-generate] ${language}: calling generation...`);
   const generated = await runGenerationPrompt(genPrompt);
@@ -1495,6 +1496,28 @@ async function getCachedAiContent(subjectId, bookId, sectionNum, page, language)
   return doc[langField] || null;
 }
 
+// ── Available Vision Providers ────────────────────────────
+// Returns all provider keys from the model catalog EXCEPT
+// ett-vllm and ett-others (which are internal/special-purpose).
+
+app.get('/api/vision-providers', async (_request, response) => {
+  try {
+    if (!AVAILABLE_MODELS_PATH || !existsSync(AVAILABLE_MODELS_PATH)) {
+      // Fallback: return a sensible default list when catalog is unavailable
+      response.json({ providers: ['openrouter', 'amazon', 'vllm', 'ollama'] });
+      return;
+    }
+    const raw = readFileSync(AVAILABLE_MODELS_PATH, 'utf-8');
+    const catalog = JSON.parse(raw);
+    const excluded = new Set(['ett-vllm', 'ett-others']);
+    const providers = Object.keys(catalog).filter((key) => !excluded.has(key));
+    response.json({ providers });
+  } catch (err) {
+    console.error('[vision-providers] error:', err.message);
+    response.status(500).json({ error: 'Failed to load vision providers' });
+  }
+});
+
 app.post('/api/ai-generate', async (request, response) => {
   try {
     const identity = parseAiRequestIdentity(request.body);
@@ -1504,7 +1527,8 @@ app.post('/api/ai-generate', async (request, response) => {
     const dataRoot = getDataRoot(subjectId);
     const isTestMode = request.body.test === true || request.body.test === '1';
     const forceRegenerate = request.body.force === true || request.body.force === '1';
-    console.log(`[ai-generate] subject=${subjectId} book=${bookId} section=${sectionNum} page=${page} (both en + tc)`);
+    const visionProvider = request.body.visionProvider || null;
+    console.log(`[ai-generate] subject=${subjectId} book=${bookId} section=${sectionNum} page=${page} visionProvider=${visionProvider || VLLM_PROVIDER} (both en + tc)`);
     const debugInfo = {
       request: {
         subjectId,
@@ -1568,7 +1592,7 @@ app.post('/api/ai-generate', async (request, response) => {
     // ── Case 3: Nothing cached or force-regenerate → full generation ──
     else {
       try {
-        const english = await generateForLanguage(dataRoot, bookId, sectionNum, page, 'en', sectionName);
+        const english = await generateForLanguage(dataRoot, bookId, sectionNum, page, 'en', sectionName, visionProvider);
         results.en = english.content;
         debugInfo.extractionRaw.en = english.debug?.extractionRaw || '';
         debugInfo.generationRaw.en = english.debug?.generationRaw || '';
@@ -1576,7 +1600,7 @@ app.post('/api/ai-generate', async (request, response) => {
 
         let chineseReference = { extractedText: '', debug: { extractionRaw: '[no chinese reference text]', extractionMethod: 'not-used' } };
         try {
-          chineseReference = await extractPageText(dataRoot, bookId, sectionNum, page, 'tc');
+          chineseReference = await extractPageText(dataRoot, bookId, sectionNum, page, 'tc', visionProvider);
         } catch (err) {
           console.warn('[ai-generate] tc: reference extraction failed, continuing with translation only');
           chineseReference = {

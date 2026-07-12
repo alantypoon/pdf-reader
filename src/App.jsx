@@ -321,6 +321,8 @@ function App() {
   const [aiContent, setAiContent] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState(null);
+  const [visionProviders, setVisionProviders] = useState([]);
+  const [visionProvider, setVisionProvider] = useState('');
   const [flippedCards, setFlippedCards] = useState({});
   const [mcqAnswers, setMcqAnswers] = useState({});
   const [aiDebug, setAiDebug] = useState(null);
@@ -3421,6 +3423,27 @@ function App() {
     }
   }, [aiDrawerOpen]);
 
+  // ── Fetch available vision providers on first drawer open ──
+  const fetchVisionProviders = useCallback(async () => {
+    if (visionProviders.length > 0) return; // already loaded
+    try {
+      const data = await fetchJson('api/vision-providers');
+      const providers = data.providers || [];
+      setVisionProviders(providers);
+      if (!visionProvider && providers.length > 0) {
+        setVisionProvider(providers[0]);
+      }
+    } catch (err) {
+      console.warn('[vision-providers] failed to load:', err.message);
+    }
+  }, [visionProviders.length, visionProvider]);
+
+  useEffect(() => {
+    if (aiDrawerOpen) {
+      fetchVisionProviders();
+    }
+  }, [aiDrawerOpen, fetchVisionProviders]);
+
   const handleAiGenerate = async (forceRegenerate = false, requireConfirmation = false) => {
     if (aiLoading) {
       setAiDrawerLanguage(preferredAiDrawerLanguage);
@@ -3490,6 +3513,7 @@ function App() {
         userId,
         force: forceRegenerate ? '1' : undefined,
         test: isTestMode ? '1' : undefined,
+        ...(visionProvider ? { visionProvider } : {}),
       };
 
       if (isTestMode) {
@@ -4939,6 +4963,20 @@ function App() {
                 </svg>
                 {_('aiStudyMaterials')}
               </h2>
+              {visionProviders.length > 1 && (
+                <div className="ai-vision-provider">
+                  <label className="ai-vision-provider-label">Vision Provider</label>
+                  <select
+                    className="ai-vision-provider-select"
+                    value={visionProvider}
+                    onChange={(e) => setVisionProvider(e.target.value)}
+                  >
+                    {visionProviders.map((provider) => (
+                      <option key={provider} value={provider}>{provider}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div className="ai-drawer-header-actions">
                 {aiContent && !aiLoading && isTestMode && (
                   <button className="ai-regenerate-btn" onClick={() => handleAiGenerate(true, true)} title={_('regenerate')}>

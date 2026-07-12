@@ -77,9 +77,11 @@ function PdfPane({
   const [imageLoadVersion, setImageLoadVersion] = useState(0);
   const [loadError, setLoadError] = useState(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [thumbFocusIndex, setThumbFocusIndex] = useState(-1);
   const canvasRef = useRef(null);
   const scrollRef = useRef(null);
   const contentRef = useRef(null);
+  const thumbGridRef = useRef(null);
   const currentPageRef = useRef(currentPage);
   const renderedPageRef = useRef(1);
   const syncingFromRemoteRef = useRef(false);
@@ -99,11 +101,80 @@ function PdfPane({
     modeGenRef.current += 1;
   }, [mode]);
 
+  // ── Keyboard navigation for thumbnail grid ──────────────
+  const handleThumbKeyDown = (e) => {
+    const total = thumbs.length;
+    if (!total) return;
+    const cols = Math.max(1, thumbCols);
+    const totalRows = Math.ceil(total / cols);
+    const currentRow = thumbFocusIndex < 0 ? 0 : Math.floor(thumbFocusIndex / cols);
+    const currentCol = thumbFocusIndex < 0 ? 0 : thumbFocusIndex % cols;
+
+    let next = thumbFocusIndex;
+    switch (e.key) {
+      case 'ArrowRight':
+        next = thumbFocusIndex < 0 ? 0 : Math.min(thumbFocusIndex + 1, total - 1);
+        break;
+      case 'ArrowLeft':
+        next = thumbFocusIndex < 0 ? 0 : Math.max(thumbFocusIndex - 1, 0);
+        break;
+      case 'ArrowDown': {
+        const newRow = Math.min(currentRow + 1, totalRows - 1);
+        next = newRow * cols + Math.min(currentCol, cols - 1);
+        if (next >= total) next = total - 1;
+        break;
+      }
+      case 'ArrowUp': {
+        const newRow = Math.max(currentRow - 1, 0);
+        next = newRow * cols + Math.min(currentCol, cols - 1);
+        break;
+      }
+      case 'Enter':
+      case ' ': {
+        if (thumbFocusIndex >= 0 && thumbFocusIndex < total) {
+          e.preventDefault();
+          if (onThumbnailClick) {
+            onThumbnailClick(thumbs[thumbFocusIndex].page);
+          } else {
+            onPageChange(thumbs[thumbFocusIndex].page);
+          }
+          return;
+        }
+        break;
+      }
+      default:
+        return;
+    }
+    e.preventDefault();
+    setThumbFocusIndex(next);
+    // Scroll focused thumbnail into view
+    const grid = thumbGridRef.current;
+    if (grid) {
+      const btn = grid.querySelector(`[data-thumb-index="${next}"]`);
+      if (btn) {
+        btn.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      }
+    }
+  };
+
   useEffect(() => {
     const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
     document.addEventListener('fullscreenchange', onFsChange);
     return () => document.removeEventListener('fullscreenchange', onFsChange);
   }, []);
+
+  // ── Auto-focus thumbnail grid for keyboard navigation ──
+  useEffect(() => {
+    if (thumbnailsOpen && thumbGridRef.current) {
+      const timer = setTimeout(() => {
+        thumbGridRef.current?.focus();
+        setThumbFocusIndex(0);
+      }, 150);
+      return () => clearTimeout(timer);
+    } else {
+      setThumbFocusIndex(-1);
+    }
+  }, [thumbnailsOpen]);
 
   // ── Image mode: derive page count & thumbnails from images array ──
   useEffect(() => {
@@ -112,6 +183,7 @@ function PdfPane({
     setLoadError(null);
     setNumPages(images.length);
     setRenderedPage((prev) => Math.max(1, Math.min(prev, images.length)));
+    setThumbFocusIndex(-1);
     const thumbData = images.map((url, i) => ({
       page: i + 1,
       url
@@ -840,17 +912,22 @@ function PdfPane({
         </aside>
         )}
 
-        <div className="pdf-content" ref={contentRef} key={mode}>
+        <div className={`pdf-content${thumbnailsOpen ? ' thumbs-mode' : ''}`} ref={contentRef} key={mode}>
           {thumbnailsOpen ? (
-            <div className="thumbnail-grid" style={{ gridTemplateColumns: `repeat(${Math.max(1, thumbCols)}, 1fr)` }}>
-                {thumbs.map((thumb) => (
+            <div
+              className="thumbnail-grid"
+              ref={thumbGridRef}
+              tabIndex={0}
+              onKeyDown={handleThumbKeyDown}
+              onFocus={() => { if (thumbFocusIndex < 0) setThumbFocusIndex(0); }}
+              style={{ gridTemplateColumns: `repeat(${Math.max(1, thumbCols)}, 1fr)` }}
+            >
+                {thumbs.map((thumb, idx) => (
                   <button
                     key={thumb.page}
-                    className={`thumb-grid-item ${thumb.page === renderedPage ? 'active' : ''}`}
-                    onMouseEnter={() => console.log(`[thumb] hover enter page ${thumb.page}`)}
-                    onMouseLeave={() => console.log(`[thumb] hover leave page ${thumb.page}`)}
+                    data-thumb-index={idx}
+                    className={`thumb-grid-item${thumb.page === renderedPage ? ' active' : ''}${idx === thumbFocusIndex ? ' focused' : ''}`}
                     onClick={() => {
-                      console.log(`[thumb] CLICK page ${thumb.page}`);
                       if (onThumbnailClick) {
                         onThumbnailClick(thumb.page);
                       } else {
