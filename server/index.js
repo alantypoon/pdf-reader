@@ -1,4 +1,5 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
+dotenv.config({ override: true });  // override any system env vars with .env values
 import express from 'express';
 import fs from 'node:fs/promises';
 import { createReadStream, existsSync, readFileSync } from 'node:fs';
@@ -7,6 +8,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MongoClient } from 'mongodb';
 import sharp from 'sharp';
+
+// ── Timestamped logging ───────────────────────────────────
+const _origLog = console.log, _origErr = console.error, _origWarn = console.warn;
+const _ts = () => `[${new Date().toISOString().replace('T', ' ').slice(0, 23)}]`;
+console.log = (...a) => _origLog(_ts(), ...a);
+console.error = (...a) => _origErr(_ts(), ...a);
+console.warn = (...a) => _origWarn(_ts(), ...a);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -845,8 +853,15 @@ const GEN_PROVIDER = process.env.OLLAMA_PROVIDER || 'ollama';
 const GEN_MODEL = process.env.OLLAMA_MODEL || 'gpt-oss:120b';
 const GEN_APIKEY = process.env.OLLAMA_APIKEY || '';
 
-// Direct Ollama endpoint as fallback when gateway 502s persistently
-const OLLAMA_DIRECT_URL = process.env.OLLAMA_DIRECT_URL || 'http://aiserver3:11434/api/generate';
+// ── Log loaded configuration at startup ──
+console.log('[startup] VLLM_API_URL =', VLLM_URL);
+console.log('[startup] VLLM_PROVIDER =', VLLM_PROVIDER, '(env:', process.env.VLLM_PROVIDER || '<unset>', ')');
+console.log('[startup] VLLM_MODEL =', VLLM_MODEL);
+console.log('[startup] VLLM_APIKEY =', VLLM_APIKEY ? `${VLLM_APIKEY.slice(0, 4)}...${VLLM_APIKEY.slice(-4)}` : '<unset>');
+console.log('[startup] GEN_PROVIDER =', GEN_PROVIDER, '(env:', process.env.OLLAMA_PROVIDER || '<unset>', ')');
+console.log('[startup] GEN_MODEL =', GEN_MODEL);
+console.log('[startup] GEN_APIKEY =', GEN_APIKEY ? `${GEN_APIKEY.slice(0, 4)}...${GEN_APIKEY.slice(-4)}` : '<unset>');
+console.log('[startup] CWD =', process.cwd());
 
 // ── Model catalog for looking up max output tokens ────────
 // const AVAILABLE_MODELS_PATH = process.env.AVAILABLE_MODELS_PATH
@@ -966,13 +981,24 @@ async function findPageImages(dataRoot, chapter, language, section) {
   return results;
 }
 
-/** Build the AI prompt for flash card and MCQ generation */
-function buildGenerationPrompt(chapter, sectionName, pageNum, language, extractedText) {
-  const langInstruction = language === 'tc'
-    ? '所有內容必須使用繁體中文（Traditional Chinese, NOT Simplified Chinese）。問題和答案都要用繁體中文書寫。'
-    : 'All content must be in English.';
+/** Derive a human-readable subject name from a book ID.
+ *  "physics-oup" → "Physics", "biology-oup" → "Biology", "chemistry-winter" → "Chemistry" */
+function subjectName(bookId) {
+  const s = String(bookId || '').toLowerCase();
+  if (s.startsWith('physics')) return 'Physics';
+  if (s.startsWith('biology')) return 'Biology';
+  if (s.startsWith('chemistry')) return 'Chemistry';
+  return s.split('-')[0].replace(/^./, (c) => c.toUpperCase());
+}
 
-  return `You are an expert biology educator. Using ONLY the textbook content provided below (do NOT use any outside knowledge), generate learning materials to help a student study this specific page.
+/** Build the AI prompt for flash card and MCQ generation */
+function buildGenerationPrompt(chapter, sectionName, pageNum, language, extractedText, subject = '') {
+  const langInstruction = language === 'tc'
+    ? '所有內容必須使用繁體中文（Traditional Chinese, NOT Simplified Chinese）。問題、答案、MCQ 選項（options）、解釋（explanation）全部都要用繁體中文書寫，絕對不可以出現英文。'
+    : 'All content must be in English.';
+  const subjectWord = subject ? `${subject} ` : '';
+
+  return `You are an expert ${subjectWord}educator. Using ONLY the textbook content provided below (do NOT use any outside knowledge), generate learning materials to help a student study this specific page.
 
 The content is from:
 - Chapter: ${chapter}
@@ -1000,12 +1026,13 @@ Output ONLY the JSON object, no markdown:
 }`;
 }
 
-function buildTranslationPrompt(chapter, sectionName, pageNum, targetLanguage, sourceContent, referenceText) {
+function buildTranslationPrompt(chapter, sectionName, pageNum, targetLanguage, sourceContent, referenceText, subject = '') {
   const langInstruction = targetLanguage === 'tc'
-    ? 'Translate everything into Traditional Chinese (繁體中文, NOT Simplified Chinese 简体中文).'
+    ? 'Translate EVERYTHING into Traditional Chinese (繁體中文, NOT Simplified Chinese 简体中文). This includes all MCQ options — translate every option from English into Traditional Chinese. Do NOT leave any text untranslated.'
     : 'Translate everything into English.';
+  const subjectWord = subject ? `bilingual ${subject} ` : 'bilingual ';
 
-  return `You are an expert bilingual biology educator. Translate the study materials below while preserving the meaning EXACTLY.
+  return `You are an expert ${subjectWord}educator. Translate the study materials below while preserving the meaning EXACTLY.
 
 The content is from:
 - Chapter: ${chapter}
@@ -1021,8 +1048,7 @@ IMPORTANT REQUIREMENTS:
 - summary[i] in the output must match summary[i] in the source by meaning.
 - flashcards[i] in the output must match flashcards[i] in the source by meaning.
 - mcq[i] in the output must match mcq[i] in the source by meaning.
-- Keep exactly 4 options for each MCQ, labeled A-D.
-- Keep the SAME correct answer letter as the source.
+- CRITICAL: Translate ALL MCQ options (choices A, B, C, D) into Traditional Chinese. Keep the same number of options (4), labeled A-D, with the SAME correct answer letter. Do NOT leave any option in English — EVERY option must be in Traditional Chinese.
 - Use textbook terminology from the reference text when available.
 - Output ONLY valid JSON, no markdown.
 
@@ -1053,15 +1079,46 @@ class AiGenerationError extends Error {
 function extractTextFromGatewayResponse(rawText) {
   try {
     const parsed = JSON.parse(rawText);
+    if (!parsed || typeof parsed !== 'object') return rawText.trim();
+
+    // Collect text from every possible field (matching Python's _extract_text)
+    let text = parsed.response || parsed.text || parsed.output || '';
+
+    // masterSummary may be string or dict
+    const master = parsed.masterSummary;
+    if (typeof master === 'string' && master.trim()) {
+      text = master;
+    } else if (master && typeof master === 'object') {
+      text = master.text || master.summary || text;
+    }
+
+    // Per-file text (multipart image extraction responses)
     const parts = [];
     if (Array.isArray(parsed.files)) {
-      parts.push(...parsed.files.map((file) => file?.text || '').filter(Boolean));
+      for (const file of parsed.files) {
+        if (file && typeof file === 'object') {
+          const ft = file.text || file.response || file.output || '';
+          if (ft.trim()) parts.push(ft.trim());
+        }
+      }
     }
-    if (typeof parsed.text === 'string') parts.push(parsed.text);
-    if (typeof parsed.content === 'string') parts.push(parsed.content);
-    if (typeof parsed.response === 'string') parts.push(parsed.response);
-    if (typeof parsed.masterSummary === 'string') parts.push(parsed.masterSummary);
-    return parts.join('\n\n').trim();
+    if (parts.length) {
+      text = text ? text + '\n\n' + parts.join('\n\n') : parts.join('\n\n');
+    }
+
+    // generation field (used by some gateway versions)
+    if (!text.trim()) {
+      const gen = parsed.generation;
+      if (typeof gen === 'string' && gen.trim()) text = gen;
+      else if (gen && typeof gen === 'object') text = gen.text || gen.response || '';
+    }
+
+    // content field (older wrappers)
+    if (!text.trim() && typeof parsed.content === 'string') {
+      text = parsed.content;
+    }
+
+    return text.trim();
   } catch {
     return rawText.trim();
   }
@@ -1088,11 +1145,11 @@ function parseGeneratedContent(genText) {
           try {
             return JSON.parse(fixed);
           } catch {
-            return { raw: cleaned };
+            return { raw: cleaned, _parse_error: true, _raw_truncated: cleaned.slice(0, 200) + '…' };
           }
         }
       }
-      return { raw: cleaned };
+      return { raw: cleaned, _parse_error: true, _raw_truncated: cleaned.slice(0, 200) + '…' };
     }
 
     if (parsed.details) {
@@ -1102,13 +1159,13 @@ function parseGeneratedContent(genText) {
       } catch (e) {
         if (e.message && !e.message.startsWith('AI Gateway')) throw e;
       }
-      return { raw: genText };
+      return { raw: genText, _parse_error: true };
     }
 
     if (parsed.choices?.[0]?.message?.content) {
       const content = parsed.choices[0].message.content;
       const jsonMatch = content.match(/\{[\s\S]*\}/);
-      return jsonMatch ? JSON.parse(jsonMatch[0]) : { raw: content };
+      return jsonMatch ? JSON.parse(jsonMatch[0]) : { raw: content, _parse_error: true };
     }
 
     if (parsed.flashcards || parsed.mcq) {
@@ -1118,20 +1175,20 @@ function parseGeneratedContent(genText) {
     if (parsed.files && Array.isArray(parsed.files)) {
       const genContent = parsed.files.map((f) => f.text || '').join('\n\n');
       const jsonMatch = genContent.match(/\{[\s\S]*\}/);
-      return jsonMatch ? JSON.parse(jsonMatch[0]) : { raw: genContent };
+      return jsonMatch ? JSON.parse(jsonMatch[0]) : { raw: genContent, _parse_error: true };
     }
 
     if (typeof parsed.text === 'string') {
       const jsonMatch = parsed.text.match(/\{[\s\S]*\}/);
-      return jsonMatch ? JSON.parse(jsonMatch[0]) : { raw: parsed.text };
+      return jsonMatch ? JSON.parse(jsonMatch[0]) : { raw: parsed.text, _parse_error: true };
     }
 
     if (typeof parsed.content === 'string') {
       const jsonMatch = parsed.content.match(/\{[\s\S]*\}/);
-      return jsonMatch ? JSON.parse(jsonMatch[0]) : { raw: parsed.content };
+      return jsonMatch ? JSON.parse(jsonMatch[0]) : { raw: parsed.content, _parse_error: true };
     }
 
-    return { raw: genText };
+    return { raw: genText, _parse_error: true };
   } catch {
     let collected = '';
     for (const line of genText.split('\n')) {
@@ -1162,14 +1219,45 @@ async function runGenerationPrompt(prompt, retries = 3) {
   // Strip provider prefix from GEN_MODEL if present (e.g. "ollama|gpt-oss:120b" → "gpt-oss:120b")
   const genModel = GEN_MODEL.includes('|') ? GEN_MODEL.split('|').slice(1).join('|') : GEN_MODEL;
 
-  // Try gateway first, fall back to direct Ollama on persistent 502/503/504
-  return await runPromptViaGateway(prompt, genModel, retries).catch(async (gatewayErr) => {
-    if (OLLAMA_DIRECT_URL) {
-      console.log(`[ai-generate] gateway failed (${gatewayErr.message.slice(0, 100)}), trying direct Ollama...`);
-      return await runPromptDirect(prompt, genModel, 2);
+  // Returns { content, raw, genRequest }.
+  const doGeneration = async () => {
+    return await runPromptViaGateway(prompt, genModel, retries);
+  };
+
+  // ── Retry loop: validate parsed content, retry once if invalid ──
+  const maxAttempts = 2;
+  let lastResult;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    lastResult = await doGeneration();
+    const content = lastResult.content;
+
+    // Check for parse errors (truncated / unparseable JSON wrappers)
+    if (content && content._parse_error) {
+      console.log(`[ai-generate] generation returned truncated/unparseable JSON (attempt ${attempt}/${maxAttempts})`);
+      if (attempt < maxAttempts) {
+        console.log(`[ai-generate] retrying...`);
+        await new Promise(r => setTimeout(r, 2000));
+        continue;
+      }
+      throw new Error(`Generation returned unparseable content after ${maxAttempts} attempts`);
     }
-    throw gatewayErr;
-  });
+
+    // Validate structure — must have at least one meaningful content type
+    if (isValidAiContent(content)) {
+      if (attempt > 1) console.log(`[ai-generate] generation succeeded on retry (attempt ${attempt})`);
+      return lastResult;
+    }
+
+    console.log(`[ai-generate] generation returned invalid content (attempt ${attempt}/${maxAttempts}): got keys=${Object.keys(content || {}).join(',') || 'none'}`);
+    if (attempt < maxAttempts) {
+      console.log(`[ai-generate] retrying...`);
+      await new Promise(r => setTimeout(r, 2000));
+      continue;
+    }
+  }
+
+  // All attempts exhausted
+  throw new Error(`Generation failed to produce valid study materials after ${maxAttempts} attempts. Last response keys: ${Object.keys(lastResult?.content || {}).join(',') || 'none'}`);
 }
 
 async function runPromptViaGateway(prompt, genModel, retries) {
@@ -1200,7 +1288,28 @@ async function runPromptViaGateway(prompt, genModel, retries) {
 
     if (genResponse.ok) {
       const genText = await genResponse.text();
-      return { content: parseGeneratedContent(genText), raw: genText };
+      // Detect gateway-level error envelope (HTTP 200 + success:false)
+      let gatewayError = null;
+      try {
+        const envelope = JSON.parse(genText);
+        if (envelope && envelope.success === false && envelope.error) {
+          gatewayError = new Error(`AI Gateway error (${envelope.provider || 'unknown'}): ${envelope.error} — ${(envelope.details || '').slice(0, 200)}`);
+        }
+      } catch (_) { /* not JSON, not a gateway error */ }
+      if (gatewayError) throw gatewayError;
+
+      return {
+        content: parseGeneratedContent(genText),
+        raw: genText,
+        genRequest: {
+          endpoint: VLLM_URL,
+          provider: GEN_PROVIDER,
+          model: genModel,
+          max_tokens: mt > 0 ? mt : 'default',
+          promptLen: prompt.length,
+          promptPreview: prompt.slice(0, 500),
+        },
+      };
     }
 
     // 502/503/504 are transient upstream errors — retry
@@ -1238,54 +1347,6 @@ async function runPromptViaGateway(prompt, genModel, retries) {
   throw lastError;
 }
 
-async function runPromptDirect(prompt, genModel, retries = 2) {
-  let lastError;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 min for direct
-
-    let response;
-    try {
-      const numPredict = getGenMaxTokens();
-      const ollamaOptions = { temperature: 0.3 };
-      if (numPredict > 0) ollamaOptions.num_predict = numPredict;  // omit when 0 — let Ollama decide
-      response = await fetch(OLLAMA_DIRECT_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: genModel,
-          prompt: prompt,
-          stream: false,
-          options: ollamaOptions,
-        }),
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timeoutId);
-    }
-
-    if (response.ok) {
-      const data = await response.json();
-      const respText = data.response || '';
-      if (respText) {
-        console.log(`[ai-generate] direct ollama success (${respText.length} chars)`);
-        return { content: parseGeneratedContent(respText), raw: respText };
-      }
-      lastError = new Error('Direct Ollama returned empty response');
-    } else {
-      const errText = await response.text().catch(() => '');
-      lastError = new Error(`Direct Ollama error: ${response.status} — ${errText.slice(0, 300)}`);
-    }
-
-    if (attempt < retries) {
-      const delay = Math.min(2000 * Math.pow(2, attempt), 15000);
-      console.log(`[ai-generate] direct ollama attempt ${attempt + 1} failed, retrying in ${delay}ms...`);
-      await new Promise((resolve) => setTimeout(resolve, delay));
-    }
-  }
-  throw lastError;
-}
-
 async function extractPageText(dataRoot, chapter, sectionNum, page, language, visionProvider = null) {
   const sectionImages = await findPageImages(dataRoot, chapter, language, sectionNum);
   console.log(`[ai-generate] ${language}: found ${sectionImages.length} section images`);
@@ -1302,31 +1363,60 @@ async function extractPageText(dataRoot, chapter, sectionNum, page, language, vi
   const selectedImages = sectionImages.length > 1
     ? [sectionImages[Math.min(visiblePageIndex, sectionImages.length - 1)]]
     : sectionImages;
-  const debug = {
-    extractionRaw: '',
-    generationRaw: '[generation not attempted]',
-    extractionMethod: 'gateway',
-  };
 
   const extractPrompt = language === 'tc'
     ? '從這些教科書頁面圖像中提取並轉錄所有文字內容。包括所有標題、正文和圖片說明。必須用繁體中文（Traditional Chinese）輸出，不要使用簡體中文（Simplified Chinese）。'
     : 'Extract and transcribe all text content from these textbook page images. Include all headings, body text, and captions.';
 
   const provider = visionProvider || VLLM_PROVIDER;
-  const formData = new FormData();
-  formData.append('provider', provider);
-  formData.append('apiKey', VLLM_APIKEY);
-  formData.append('model', VLLM_MODEL);
-  formData.append('wordCount', '3000');
-  formData.append('prompt', extractPrompt);
+
+  const debug = {
+    extractionRaw: '',
+    generationRaw: '[generation not attempted]',
+    extractionMethod: 'gateway',
+    extractionRequest: {
+      endpoint: VLLM_URL,
+      provider: provider,
+      model: VLLM_MODEL,
+      apiKey: VLLM_APIKEY ? `${VLLM_APIKEY.slice(0, 4)}...${VLLM_APIKEY.slice(-4)}` : '<unset>',
+      prompt: extractPrompt,
+      wordCount: '3000',
+      imageCount: selectedImages.length,
+    },
+  };
+
+  // Build multipart body manually (same approach as Python test-ett.py).
+  // Node's fetch + FormData auto Content-Type is unreliable across versions;
+  // manual construction guarantees the gateway sees multipart/form-data.
+  const boundary = `----AIGatewayBoundary${Date.now()}`;
+  const crlf = '\r\n';
+  const field = (name, value) =>
+    Buffer.from(`--${boundary}${crlf}Content-Disposition: form-data; name="${name}"${crlf}${crlf}${value}${crlf}`, 'utf-8');
+
+  const parts = [];
+  parts.push(field('provider', provider));
+  parts.push(field('apiKey', VLLM_APIKEY));
+  parts.push(field('model', VLLM_MODEL));
+  parts.push(field('wordCount', '3000'));
+  parts.push(field('prompt', extractPrompt));
+  parts.push(field('stream', 'false'));
 
   for (const imgPath of selectedImages) {
     const { buffer, contentType } = await resizeForEtt(imgPath);
     const filename = path.basename(imgPath).replace(/\.(png|jpg|jpeg|webp)$/i, '.jpg');
-    formData.append('files', new Blob([buffer], { type: contentType }), filename);
+    const fileHeader = Buffer.from(
+      `--${boundary}${crlf}Content-Disposition: form-data; name="files"; filename="${filename}"${crlf}Content-Type: ${contentType}${crlf}${crlf}`,
+      'utf-8'
+    );
+    parts.push(fileHeader);
+    parts.push(buffer);
+    parts.push(Buffer.from(crlf, 'utf-8'));
   }
+  parts.push(Buffer.from(`--${boundary}--${crlf}`, 'utf-8'));
+  const body = Buffer.concat(parts);
 
   console.log(`[ai-generate] ${language}: sending ${selectedImages.length} image(s) for extraction`);
+  console.log(`[ai-generate] ${language}: POST ${VLLM_URL}  Content-Type=multipart/form-data; boundary=${boundary}  bodySize=${body.length}  provider=${provider}  model=${VLLM_MODEL}`);
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 120000);
 
@@ -1334,8 +1424,11 @@ async function extractPageText(dataRoot, chapter, sectionNum, page, language, vi
   try {
     aiResponse = await fetch(VLLM_URL, {
       method: 'POST',
-      headers: { Accept: 'text/event-stream' },
-      body: formData,
+      headers: {
+        Accept: 'text/event-stream',
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      },
+      body,
       signal: controller.signal,
     });
   } finally {
@@ -1349,6 +1442,20 @@ async function extractPageText(dataRoot, chapter, sectionNum, page, language, vi
 
   const text = await aiResponse.text();
   debug.extractionRaw = text;
+
+  // Detect gateway-level error envelope (HTTP 200 + success:false)
+  try {
+    const envelope = JSON.parse(text);
+    if (envelope && envelope.success === false && envelope.error) {
+      throw new AiGenerationError(
+        `AI Gateway extraction error (${language}): ${envelope.provider || 'unknown'} — ${envelope.error}`,
+        debug
+      );
+    }
+  } catch (e) {
+    if (e instanceof AiGenerationError) throw e;
+    // Not JSON or not a gateway error — continue
+  }
   console.log(`[ai-generate] ${language}: extraction response length=${text.length}`);
 
   let extractedText = extractTextFromGatewayResponse(text);
@@ -1367,24 +1474,44 @@ async function extractPageText(dataRoot, chapter, sectionNum, page, language, vi
 }
 
 /** Generate flashcards & MCQs for a single language. Returns the parsed content object. */
-async function generateForLanguage(dataRoot, chapter, sectionNum, page, language, sectionName, visionProvider = null) {
-  const extraction = await extractPageText(dataRoot, chapter, sectionNum, page, language, visionProvider);
-  const genPrompt = buildGenerationPrompt(chapter, sectionName || '', page || 1, language, extraction.extractedText);
+async function generateForLanguage(dataRoot, chapter, sectionNum, page, language, sectionName, visionProvider = null, subjectId = '', cachedText = '') {
+  let extractedText;
+  let extractionDebug;
+  if (cachedText) {
+    // Reuse previously extracted text — skip the gateway call
+    console.log(`[ai-generate] ${language}: reusing cached extracted text (${cachedText.length} chars)`);
+    extractedText = cachedText;
+    extractionDebug = {
+      extractionRaw: '[reused cached extracted text]',
+      generationRaw: '[generation not attempted]',
+      extractionMethod: 'cache',
+      extractionRequest: { endpoint: VLLM_URL, provider: VLLM_PROVIDER, model: VLLM_MODEL, prompt: '(skipped — reused cached text)', wordCount: '0', imageCount: 0 },
+    };
+  } else {
+    const extraction = await extractPageText(dataRoot, chapter, sectionNum, page, language, visionProvider);
+    extractedText = extraction.extractedText;
+    extractionDebug = extraction.debug;
+  }
+  const subj = subjectName(subjectId);
+  const genPrompt = buildGenerationPrompt(chapter, sectionName || '', page || 1, language, extractedText, subj);
   console.log(`[ai-generate] ${language}: calling generation...`);
   const generated = await runGenerationPrompt(genPrompt);
   console.log(`[ai-generate] ${language}: gen response length=${generated.raw.length}`);
   return {
     content: generated.content,
+    extractedText,  // store for reuse
     debug: {
-      ...extraction.debug,
+      ...extractionDebug,
       generationRaw: generated.raw,
+      generationRequest: generated.genRequest || null,
     },
   };
 }
 
-async function translateGeneratedContent(chapter, sectionName, page, targetLanguage, sourceContent, referenceText, debug = {}) {
+async function translateGeneratedContent(chapter, sectionName, page, targetLanguage, sourceContent, referenceText, debug = {}, subjectId = '') {
   console.log(`[ai-generate] ${targetLanguage}: translating generated content to aligned ${targetLanguage} version...`);
-  const prompt = buildTranslationPrompt(chapter, sectionName || '', page || 1, targetLanguage, sourceContent, referenceText || '');
+  const subj = subjectName(subjectId);
+  const prompt = buildTranslationPrompt(chapter, sectionName || '', page || 1, targetLanguage, sourceContent, referenceText || '', subj);
   const generated = await runGenerationPrompt(prompt);
   return {
     content: generated.content,
@@ -1392,6 +1519,7 @@ async function translateGeneratedContent(chapter, sectionName, page, targetLangu
       extractionRaw: debug.extractionRaw || '[no reference text used]',
       extractionMethod: debug.extractionMethod || 'not-used',
       generationRaw: generated.raw,
+      generationRequest: generated.genRequest || null,
     },
   };
 }
@@ -1403,6 +1531,10 @@ async function saveAiContent(subjectId, bookId, sectionNum, page, language, cont
     console.error(`[ai-generate] ${language}: REFUSING to save invalid content (raw wrapper or error envelope) for ${subjectId}/${bookId}/${sectionNum}/${page}`);
     return;
   }
+  // Strip internal markers before persisting
+  const clean = { ...content };
+  delete clean._parse_error;
+  delete clean._raw_truncated;
   const langField = language === 'tc' ? 'zh' : 'en';
   const now = hkNow();
   const identity = buildAiIdentity({ subjectId, bookId, sectionId: sectionNum, pageId: page });
@@ -1410,7 +1542,7 @@ async function saveAiContent(subjectId, bookId, sectionNum, page, language, cont
     identity,
     {
       $set: {
-        [langField]: content,
+        [langField]: clean,
         [`${langField}UpdatedAt`]: now,
         updatedAt: now,
         ...(userId ? { user: String(userId) } : {}),
@@ -1422,7 +1554,7 @@ async function saveAiContent(subjectId, bookId, sectionNum, page, language, cont
   console.log(`[ai-generate] ${language}: saved to ai-generations (field=${langField})`);
 }
 
-async function saveAlignedBilingualAiContent(subjectId, bookId, sectionNum, page, enContent, zhContent, userId) {
+async function saveAlignedBilingualAiContent(subjectId, bookId, sectionNum, page, enContent, zhContent, userId, enText = '', zhText = '') {
   if (!aiGenerations) return;
   if (!isValidAiContent(enContent)) {
     console.error(`[ai-generate] REFUSING to save invalid en content (raw wrapper or error envelope) for ${subjectId}/${bookId}/${sectionNum}/${page}`);
@@ -1433,18 +1565,31 @@ async function saveAlignedBilingualAiContent(subjectId, bookId, sectionNum, page
     console.error(`[ai-generate] REFUSING to save invalid zh content (raw wrapper or error envelope) for ${subjectId}/${bookId}/${sectionNum}/${page}`);
     return;
   }
+
+  // Strip internal markers before persisting
+  const cleanEn = { ...enContent };
+  delete cleanEn._parse_error;
+  delete cleanEn._raw_truncated;
+  const cleanZh = zhContent ? { ...zhContent } : null;
+  if (cleanZh) {
+    delete cleanZh._parse_error;
+    delete cleanZh._raw_truncated;
+  }
+
   const now = hkNow();
   const identity = buildAiIdentity({ subjectId, bookId, sectionId: sectionNum, pageId: page });
 
   // Use atomic upsert to prevent race-condition duplicates.
   // $set overwrites all content fields; $setOnInsert only fires on new docs.
   const setFields = {
-    en: enContent,
+    en: cleanEn,
     enUpdatedAt: now,
     updatedAt: now,
     alignmentVersion: BILINGUAL_ALIGNMENT_VERSION,
     ...(userId ? { user: String(userId) } : {}),
   };
+  if (enText) setFields.enText = enText;
+  if (zhText) setFields.zhText = zhText;
   if (zhContent) {
     setFields.zh = zhContent;
     setFields.zhUpdatedAt = now;
@@ -1476,6 +1621,8 @@ function hasStoredAiContent(doc) {
 /** Check if an AI content value is a valid generated content object (not an error envelope) */
 function isValidAiContent(value) {
   if (!value || typeof value !== 'object') return false;
+  // Reject parse-error wrappers (truncated/unparseable JSON)
+  if (value._parse_error) return false;
   // Error envelopes from the gateway have 'success', 'provider', 'error' keys
   if (value.error && (value.success !== undefined || value.provider)) return false;
   // Must have at least one of the expected content types
@@ -1486,6 +1633,31 @@ function isValidAiContent(value) {
 function hasBrokenZh(doc) {
   if (!doc?.zh) return false;
   return !isValidAiContent(doc.zh);
+}
+
+/** Merge newly generated content with existing cached content, preserving
+ *  parts that the user chose to skip regenerating.
+ *
+ *  @param {object} generated - newly generated content (en or zh)
+ *  @param {object|null} existing - existing cached content for the same language
+ *  @param {object} skipFlags - { summary, flashcards, quiz }
+ *  @returns {object} merged content
+ */
+function mergeSkippedParts(generated, existing, skipFlags) {
+  if (!existing || typeof existing !== 'object') return generated;
+  const merged = { ...generated };
+  if (skipFlags.summary && existing.summary) {
+    merged.summary = existing.summary;
+  }
+  if (skipFlags.flashcards && existing.flashcards) {
+    merged.flashcards = existing.flashcards;
+  }
+  if (skipFlags.quiz && existing.mcq) {
+    merged.mcq = existing.mcq;
+    // Also preserve existing quiz answers/state if stored
+    if (existing._mcqState) merged._mcqState = existing._mcqState;
+  }
+  return merged;
 }
 
 /** Check DB for existing generated content for a language */
@@ -1519,6 +1691,7 @@ app.get('/api/vision-providers', async (_request, response) => {
 });
 
 app.post('/api/ai-generate', async (request, response) => {
+  let keepAlive = null;  // declared here so catch block can clear it
   try {
     const identity = parseAiRequestIdentity(request.body);
     const { subjectId, bookId, sectionId: sectionNum, pageId: page } = identity;
@@ -1528,7 +1701,41 @@ app.post('/api/ai-generate', async (request, response) => {
     const isTestMode = request.body.test === true || request.body.test === '1';
     const forceRegenerate = request.body.force === true || request.body.force === '1';
     const visionProvider = request.body.visionProvider || null;
-    console.log(`[ai-generate] subject=${subjectId} book=${bookId} section=${sectionNum} page=${page} visionProvider=${visionProvider || VLLM_PROVIDER} (both en + tc)`);
+
+    // Partial regeneration flags (only meaningful when forceRegenerate=true)
+    const skipExtraction = request.body.skipExtraction === true || request.body.skipExtraction === '1';
+    const skipSummary = request.body.skipSummary === true || request.body.skipSummary === '1';
+    const skipFlashcards = request.body.skipFlashcards === true || request.body.skipFlashcards === '1';
+    const skipQuiz = request.body.skipQuiz === true || request.body.skipQuiz === '1';
+    const hasSkipFlags = skipExtraction || skipSummary || skipFlashcards || skipQuiz;
+
+    console.log(`[ai-generate] subject=${subjectId} book=${bookId} section=${sectionNum} page=${page} visionProvider=${visionProvider || VLLM_PROVIDER} (both en + tc) force=${forceRegenerate} skipExtraction=${skipExtraction} skipSummary=${skipSummary} skipFlashcards=${skipFlashcards} skipQuiz=${skipQuiz}`);
+
+    // ── Quick validation (before flushing headers) ──
+    if (!VLLM_APIKEY) {
+      response.status(500).json({ error: 'VLLM_APIKEY not configured. Set VLLM_APIKEY in .env.' });
+      return;
+    }
+
+    // ── Flush headers immediately to prevent nginx proxy timeout (504) ──
+    // The generation pipeline can take 2+ minutes. By sending HTTP headers
+    // now, nginx sees the server is alive and won't return 504 Gateway Timeout.
+    response.status(200);
+    response.setHeader('Content-Type', 'application/json');
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    response.flushHeaders();
+    // Disable Node.js HTTP timeouts — generation can take 2+ minutes
+    request.setTimeout(0);
+    response.setTimeout(0);
+
+    // Send a keep-alive byte every 15s to prevent nginx proxy_read_timeout.
+    // nginx sees data flowing and won't return 502/504 even if generation
+    // takes several minutes.  JSON.parse ignores leading whitespace, so the
+    // frontend can still parse the response.
+    keepAlive = setInterval(() => {
+      try { response.write(' '); } catch (_) { /* connection closed */ }
+    }, 15000);
+
     const debugInfo = {
       request: {
         subjectId,
@@ -1545,10 +1752,6 @@ app.post('/api/ai-generate', async (request, response) => {
       extractionMethod: {},
       errors: {},
     };
-
-    if (!VLLM_APIKEY) {
-      return response.status(500).json({ error: 'VLLM_APIKEY not configured. Set VLLM_APIKEY in .env.' });
-    }
 
     const results = {};
 
@@ -1574,10 +1777,14 @@ app.post('/api/ai-generate', async (request, response) => {
           page,
           'tc',
           cachedDoc.en,
-          '' // no reference text needed, we have the en content
+          '', // no reference text needed, we have the en content
+          {},
+          subjectId
         );
         results.tc = chinese.content;
         debugInfo.generationRaw.tc = chinese.debug?.generationRaw || '';
+        debugInfo.generationRequest = debugInfo.generationRequest || {};
+        debugInfo.generationRequest.tc = chinese.debug?.generationRequest || null;
       } catch (err) {
         console.error('[ai-generate] direct en→zh translation failed —', err.message);
         results.tc = { error: err.message };
@@ -1586,31 +1793,54 @@ app.post('/api/ai-generate', async (request, response) => {
 
       // Save the updated document (en preserved, zh added)
       if (results.tc && !results.tc.error) {
+        if (hasSkipFlags && cachedDoc?.zh) {
+          results.tc = mergeSkippedParts(results.tc, cachedDoc.zh, { summary: skipSummary, flashcards: skipFlashcards, quiz: skipQuiz });
+        }
         await saveAiContent(subjectId, bookId, sectionNum, page, 'tc', results.tc, userId);
       }
     }
     // ── Case 3: Nothing cached or force-regenerate → full generation ──
     else {
       try {
-        const english = await generateForLanguage(dataRoot, bookId, sectionNum, page, 'en', sectionName, visionProvider);
+        const enCachedText = (skipExtraction && cachedDoc?.enText) ? cachedDoc.enText : '';
+        const english = await generateForLanguage(dataRoot, bookId, sectionNum, page, 'en', sectionName, visionProvider, subjectId, enCachedText);
         results.en = english.content;
+        const enExtractedText = english.extractedText || '';
         debugInfo.extractionRaw.en = english.debug?.extractionRaw || '';
         debugInfo.generationRaw.en = english.debug?.generationRaw || '';
         debugInfo.extractionMethod.en = english.debug?.extractionMethod || 'gateway';
+        debugInfo.extractionRequest = debugInfo.extractionRequest || {};
+        debugInfo.extractionRequest.en = english.debug?.extractionRequest || null;
+        debugInfo.generationRequest = debugInfo.generationRequest || {};
+        debugInfo.generationRequest.en = english.debug?.generationRequest || null;
 
         let chineseReference = { extractedText: '', debug: { extractionRaw: '[no chinese reference text]', extractionMethod: 'not-used' } };
-        try {
-          chineseReference = await extractPageText(dataRoot, bookId, sectionNum, page, 'tc', visionProvider);
-        } catch (err) {
-          console.warn('[ai-generate] tc: reference extraction failed, continuing with translation only');
+        if (skipExtraction && cachedDoc?.zhText) {
+          // Reuse cached Chinese extracted text
+          console.log(`[ai-generate] tc: reusing cached extracted text (${cachedDoc.zhText.length} chars)`);
           chineseReference = {
-            extractedText: '',
+            extractedText: cachedDoc.zhText,
             debug: {
-              extractionRaw: err.debug?.extractionRaw || `[reference extraction failed] ${err.message}`,
-              extractionMethod: err.debug?.extractionMethod || 'failed',
+              extractionRaw: '[reused cached extracted text]',
+              extractionMethod: 'cache',
+              extractionRequest: { endpoint: VLLM_URL, provider: VLLM_PROVIDER, model: VLLM_MODEL, prompt: '(skipped — reused cached text)', wordCount: '0', imageCount: 0 },
             },
           };
-          debugInfo.errors.tcReference = err.message;
+        } else {
+          try {
+            chineseReference = await extractPageText(dataRoot, bookId, sectionNum, page, 'tc', visionProvider);
+          } catch (err) {
+            console.warn('[ai-generate] tc: reference extraction failed, continuing with translation only');
+            chineseReference = {
+              extractedText: '',
+              debug: {
+                extractionRaw: err.debug?.extractionRaw || `[reference extraction failed] ${err.message}`,
+                extractionMethod: err.debug?.extractionMethod || 'failed',
+                extractionRequest: err.debug?.extractionRequest || null,
+              },
+            };
+            debugInfo.errors.tcReference = err.message;
+          }
         }
 
         const chinese = await translateGeneratedContent(
@@ -1620,20 +1850,36 @@ app.post('/api/ai-generate', async (request, response) => {
           'tc',
           english.content,
           chineseReference.extractedText,
-          chineseReference.debug
+          chineseReference.debug,
+          subjectId
         );
         results.tc = chinese.content;
+        const zhExtractedText = chineseReference.extractedText || '';
         debugInfo.extractionRaw.tc = chinese.debug?.extractionRaw || '';
         debugInfo.generationRaw.tc = chinese.debug?.generationRaw || '';
         debugInfo.extractionMethod.tc = chinese.debug?.extractionMethod || 'not-used';
+        debugInfo.extractionRequest = debugInfo.extractionRequest || {};
+        debugInfo.extractionRequest.tc = chineseReference.debug?.extractionRequest || null;
+        debugInfo.generationRequest = debugInfo.generationRequest || {};
+        debugInfo.generationRequest.tc = chinese.debug?.generationRequest || null;
 
-        await saveAlignedBilingualAiContent(subjectId, bookId, sectionNum, page, english.content, chinese.content, userId);
+        let enToSave = english.content;
+        let zhToSave = chinese.content;
+        if (hasSkipFlags && cachedDoc) {
+          enToSave = mergeSkippedParts(enToSave, cachedDoc.en, { summary: skipSummary, flashcards: skipFlashcards, quiz: skipQuiz });
+          zhToSave = mergeSkippedParts(zhToSave, cachedDoc.zh, { summary: skipSummary, flashcards: skipFlashcards, quiz: skipQuiz });
+        }
+        await saveAlignedBilingualAiContent(subjectId, bookId, sectionNum, page, enToSave, zhToSave, userId, enExtractedText, zhExtractedText);
       } catch (err) {
         console.error('[ai-generate] aligned generation failed —', err.message);
         results.en = results.en || { error: err.message };
         results.tc = results.tc || { error: err.message };
         debugInfo.extractionRaw.en = debugInfo.extractionRaw.en || err.debug?.extractionRaw || '';
         debugInfo.generationRaw.en = debugInfo.generationRaw.en || err.debug?.generationRaw || '[generation not attempted]';
+        debugInfo.extractionRequest = debugInfo.extractionRequest || {};
+        debugInfo.extractionRequest.en = err.debug?.extractionRequest || null;
+        debugInfo.generationRequest = debugInfo.generationRequest || {};
+        debugInfo.generationRequest.en = err.debug?.generationRequest || null;
         debugInfo.errors.en = debugInfo.errors.en || err.message;
         debugInfo.errors.tc = debugInfo.errors.tc || err.message;
 
@@ -1661,6 +1907,8 @@ app.post('/api/ai-generate', async (request, response) => {
         request: debugInfo.request,
         extractionRaw: formatLanguageDebug(debugInfo.extractionRaw),
         generationRaw: formatLanguageDebug(debugInfo.generationRaw),
+        extractionRequest: debugInfo.extractionRequest || {},
+        generationRequest: debugInfo.generationRequest || {},
         extractionMethod: debugInfo.extractionMethod,
         errors: debugInfo.errors,
         subjectId, bookId, sectionId: sectionNum, pageId: page,
@@ -1670,10 +1918,13 @@ app.post('/api/ai-generate', async (request, response) => {
         },
       };
     }
-    response.json(responsePayload);
+    clearInterval(keepAlive);
+    response.end(JSON.stringify(responsePayload));
   } catch (err) {
     console.error('[ai-generate] error:', err);
-    response.status(500).json({ error: err.message });
+    // Headers already flushed — send error as body
+    clearInterval(keepAlive);
+    response.end(JSON.stringify({ error: err.message }));
   }
 });
 

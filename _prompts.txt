@@ -1,3 +1,4 @@
+
 add a button "AI Generation" of generating revision flash cards and MCQ quiz questions that helps the user to learn about page by aigateway for ai inference. use a right-side drawer to display the flash card and mcq quiz. 
 
 - use the following aigateway settings in .env
@@ -137,3 +138,106 @@ in autocompletedropdown list, clicking outside the list will close the list
 ///
 
 biology-oup/2/16/34
+
+///
+
+i have generated study materials in an old collection 'ai-generations-20260712'
+for physics-oup, say physics-oup-a, which has no sections dividied so it has up to 196 pages for book 1.
+
+however, later i have another version of physics-oup, say physics-oup-b, it has dividied each book into sections
+
+book-1 sections
+  cover page -> 1 page (not included in the old one)
+  1.pdf → 18 pages
+  2.pdf → 40 pages
+  3.pdf → 32 pages
+  4.pdf → 46 pages
+  5.pdf → 55 pages
+  end.pdf → 7 pages (not included in the old one)
+
+book-2 sections
+  cover page -> 1 page (not included in the old one)
+  1.pdf → 34 pages
+  2.pdf → 58 pages
+  3.pdf → 60 pages
+  4.pdf → 42 pages
+  5.pdf → 34 pages
+  6.pdf → 48 pages
+  7.pdf → 52 pages
+  8.pdf → 40 pages
+  9.pdf → 44 pages
+  10.pdf → 38 pages
+  end.pdf → 9 pages (not included in the old one)
+
+book-3a sections
+  cover page -> 1 page (not included in the old one)
+  1.pdf → 34 pages
+  2.pdf → 44 pages
+  3.pdf → 54 pages
+  end.pdf → 7 pages (not included in the old one)
+
+book-3b sections
+  cover page -> 1 page (not included in the old one)
+  4.pdf → 36 pages
+  5.pdf → 64 pages
+  6.pdf → 52 pages
+  7.pdf → 46 pages
+  end.pdf → 5 pages (not included in the old one)
+
+book-4
+  cover page -> 1 page (not included in the old one)
+  1.pdf → 54 pages
+  2.pdf → 56 pages
+  3.pdf → 34 pages
+  4.pdf → 40 pages
+  5.pdf → 36 pages
+  6.pdf → 46 pages
+  7.pdf → 54 pages
+  8.pdf → 28 pages
+  end.pdf → 5 pages (not included in the old one)
+
+book-5
+  cover page -> 1 page (not included in the old one)
+  1.pdf → 42 pages
+  2.pdf → 48 pages
+  3.pdf → 30 pages
+  end.pdf → 6 pages (not included in the old one)
+
+book-e1
+  cover page -> 1 page (not included in the old one)
+  1.pdf → 44 pages
+  2.pdf → 50 pages
+  3.pdf → 62 pages
+  end.pdf → 2 pages (not included in the old one)
+
+book-e2
+  cover page -> 1 page (not included in the old one)
+  1.pdf → 40 pages
+  2.pdf → 54 pages
+  3.pdf → 40 pages
+  end.pdf → 1 pages (not included in the old one)
+
+book-e3
+  cover page -> 1 page (not included in the old one)
+  1.pdf → 44 pages
+  2.pdf → 40 pages
+  3.pdf → 46 pages
+  4.pdf → 56 pages
+
+book-e4
+  cover page -> 1 page (not included in the old one)
+  1.pdf → 58 pages
+  2.pdf → 56 pages
+  3.pdf → 64 pages
+  end.pdf → 1 pages (not included in the old one)
+
+generate a script at /var/www/html/devtest/dse/pdf-reader/scripts/migrate-physics-oup-ai-generations.py that copy the old documents in physics-oup-a to physics-oup-a by
+matching the old ids (subjectid, bookid, sectionid and pageid) to the new ids.
+
+add an option --dry-run to show the matched list only
+
+///
+
+{"subjectId":"physics-oup","bookId":"1","sectionId":1,"pageId":9}
+
+

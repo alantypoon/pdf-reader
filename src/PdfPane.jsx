@@ -141,6 +141,18 @@ function PdfPane({
           next = newRow * cols + Math.min(currentCol, cols - 1);
           break;
         }
+        case 'Enter':
+          if (idx >= 0 && idx < total) {
+            e.preventDefault();
+            e.stopPropagation();
+            const page = thumbs[idx].page;
+            if (onThumbnailClick) {
+              onThumbnailClick(page);
+            } else {
+              onPageChange(page);
+            }
+          }
+          return;
         default:
           handled = false;
       }

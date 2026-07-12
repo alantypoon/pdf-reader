@@ -46,7 +46,7 @@ ENV_FILE = PROJECT_DIR / '.env'
 _CONFIG_KEYS = {'DATA_PATH', 'MONGODB_URI',
                 'VLLM_API_URL', 'VLLM_PROVIDER', 'VLLM_MODEL', 'VLLM_APIKEY',
                 'OLLAMA_PROVIDER', 'OLLAMA_MODEL', 'OLLAMA_APIKEY',
-                'OLLAMA_DIRECT_URL', 'AVAILABLE_MODELS_PATH'}
+                'AVAILABLE_MODELS_PATH'}
 if ENV_FILE.exists():
     with open(ENV_FILE, encoding='utf-8') as fh:
         for line in fh:
@@ -71,7 +71,6 @@ VLLM_APIKEY = os.environ.get('VLLM_APIKEY', '')
 OLLAMA_PROVIDER = os.environ.get('OLLAMA_PROVIDER', 'ollama')
 OLLAMA_MODEL = os.environ.get('OLLAMA_MODEL', 'gpt-oss:120b')
 OLLAMA_APIKEY = os.environ.get('OLLAMA_APIKEY', '')
-OLLAMA_DIRECT_URL = os.environ.get('OLLAMA_DIRECT_URL', 'http://aiserver3:11434/api/generate')
 
 # ── Model catalog (for looking up max_completion_tokens) ──
 AVAILABLE_MODELS_PATH = Path(os.environ.get('AVAILABLE_MODELS_PATH'))
@@ -1079,7 +1078,9 @@ def _subpage_sort_key(filename, prefix):
 def _build_gen_prompt(chapter, section_name, page_num, language, text, subject=''):
     """Match server's buildGenerationPrompt exactly."""
     lang_instruction = (
-        '所有內容必須使用繁體中文（Traditional Chinese, NOT Simplified Chinese）。問題和答案都要用繁體中文書寫。'
+        '所有內容必須使用繁體中文（Traditional Chinese, NOT Simplified Chinese）。'
+        '問題、答案、MCQ 選項（options）、解釋（explanation）全部都要用繁體中文書寫，'
+        '絕對不可以出現英文。'
         if language == 'tc' else
         'All content must be in English.'
     )
@@ -1118,7 +1119,9 @@ def _build_gen_prompt(chapter, section_name, page_num, language, text, subject='
 def _build_translation_prompt(chapter, section_name, page_num, target_lang, source, ref_text, subject=''):
     """Match server's buildTranslationPrompt exactly."""
     lang_instruction = (
-        'Translate everything into Traditional Chinese (繁體中文, NOT Simplified Chinese 简体中文).'
+        'Translate EVERYTHING into Traditional Chinese (繁體中文, NOT Simplified Chinese 简体中文). '
+        'This includes all MCQ options — translate every option from English into Traditional Chinese. '
+        'Do NOT leave any text untranslated.'
         if target_lang == 'tc' else
         'Translate everything into English.'
     )
@@ -1138,8 +1141,9 @@ def _build_translation_prompt(chapter, section_name, page_num, target_lang, sour
         f'- summary[i] in the output must match summary[i] in the source by meaning.\n'
         f'- flashcards[i] in the output must match flashcards[i] in the source by meaning.\n'
         f'- mcq[i] in the output must match mcq[i] in the source by meaning.\n'
-        f'- Keep exactly 4 options for each MCQ, labeled A-D.\n'
-        f'- Keep the SAME correct answer letter as the source.\n'
+        f'- CRITICAL: Translate ALL MCQ options (choices A, B, C, D) into Traditional Chinese.\n'
+        f'  Keep the same number of options (4), labeled A-D, with the SAME correct answer letter.\n'
+        f'  Do NOT leave any option in English — EVERY option must be in Traditional Chinese.\n'
         f'- Use textbook terminology from the reference text when available.\n'
         f'- Output ONLY valid JSON, no markdown.\n\n'
         f'--- REFERENCE TEXTBOOK TEXT ---\n'
@@ -1228,85 +1232,9 @@ def _call_generation_via_gateway(prompt, retries=3):
     raise last_error
 
 
-def _call_ollama_direct(prompt, retries=2):
-    """Send a text-generation prompt directly to the Ollama server (JSON API).
-
-    Matches the server's ``runPromptDirect`` — used as fallback when the
-    AI Gateway returns persistent 502/503/504 errors.
-    """
-    # Strip provider prefix for direct Ollama call
-    gen_model = _strip_provider_prefix(OLLAMA_MODEL)
-    ollama_options = {'temperature': 0.3}
-    num_predict = _get_max_tokens()
-    if num_predict > 0:
-        ollama_options['num_predict'] = num_predict  # omit when 0 — let Ollama decide
-    payload = {
-        'model': gen_model,
-        'prompt': prompt,
-        'stream': False,
-        'options': ollama_options,
-    }
-    last_error = None
-    for attempt in range(retries + 1):
-        try:
-            if DEBUG or VERBOSE:
-                tag = 'DEBUG' if DEBUG else 'VERBOSE'
-                _log_request(OLLAMA_DIRECT_URL, payload, None, tag)
-            else:
-                prompt_len = len(payload.get('prompt', ''))
-                print(f'  [ollama-direct] POST {OLLAMA_DIRECT_URL}  model={gen_model}  prompt={prompt_len} chars')
-            resp = requests.post(
-                OLLAMA_DIRECT_URL,
-                json=payload,
-                headers={'Content-Type': 'application/json'},
-                timeout=300,  # 5 min for direct
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            resp_text = (data.get('response') or '').strip()
-            if resp_text:
-                if DEBUG or VERBOSE:
-                    tag = 'DEBUG' if DEBUG else 'VERBOSE'
-                    _log_response(resp.status_code, json.dumps(data), tag)
-                print(f'  [ollama-direct] success ({len(resp_text)} chars)')
-                return resp_text
-            last_error = RuntimeError('Direct Ollama returned empty response')
-            if DEBUG or VERBOSE:
-                tag = 'DEBUG' if DEBUG else 'VERBOSE'
-                _log_response(resp.status_code, json.dumps(data), tag)
-        except requests.RequestException as error:
-            last_error = error
-            if (DEBUG or VERBOSE) and hasattr(error, 'response') and error.response is not None:
-                try:
-                    err_body = error.response.text
-                except Exception:
-                    err_body = '[unable to read response body]'
-                tag = 'DEBUG' if DEBUG else 'VERBOSE'
-                _log_response(
-                    error.response.status_code if hasattr(error, 'response') else None,
-                    err_body, tag,
-                )
-
-        if attempt < retries:
-            delay = min(2000 * (2 ** attempt), 15000) / 1000.0
-            print(f'  [ollama-direct] attempt {attempt + 1} failed, retrying in {delay:.0f}s …')
-            time.sleep(delay)
-    raise last_error
-
-
 def _run_generation(prompt):
-    """Send a text-generation prompt, trying gateway first then falling back to direct Ollama.
-
-    Matches the server's ``runGenerationPrompt`` exactly.
-    """
-    try:
-        raw = _call_generation_via_gateway(prompt)
-    except Exception as gateway_err:
-        if OLLAMA_DIRECT_URL:
-            print(f'  [gateway] failed ({gateway_err}), trying direct Ollama …')
-            raw = _call_ollama_direct(prompt)
-        else:
-            raise
+    """Send a text-generation prompt via the AI Gateway."""
+    raw = _call_generation_via_gateway(prompt)
     parsed = _parse_generated_json(raw)
     return _normalize_generated_content(parsed)
 

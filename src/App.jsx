@@ -239,6 +239,18 @@ function FloatingAudioPlayer({ url, name, onClose }) {
   );
 }
 
+/** Small helper for test-mode debug sub-sections within each pipeline step */
+function DebugSubSection({ label, data }) {
+  const isEmpty = !data || (typeof data === 'object' && Object.keys(data).length === 0);
+  const value = isEmpty ? '(empty)' : (typeof data === 'string' ? data : JSON.stringify(data, null, 2));
+  return (
+    <div className="ai-debug-sub">
+      <div className="ai-debug-sub-label">{label}</div>
+      <textarea className="ai-debug-textarea" readOnly value={value} rows={isEmpty ? 2 : 10} />
+    </div>
+  );
+}
+
 function App() {
   const savedPrefs = loadPreferences();
   const initialTextColor = useMemo(() => {
@@ -285,6 +297,14 @@ function App() {
   const showThumbnails = displayMode === 'thumbnails';
   const displayModeRef = useRef(displayMode);
   const selectedPageRef = useRef(selectedPage);
+  const selectedFileRef = useRef(selectedFile);
+  const currentChapterRef = useRef(null);  // synced via useEffect below
+  const selectedChapterRef = useRef(selectedChapter);
+  const maxNavigablePageRef = useRef(Infinity);
+  const regenSkipExtractionRef = useRef(false);
+  const regenSkipSummaryRef = useRef(false);
+  const regenSkipFlashcardsRef = useRef(false);
+  const regenSkipQuizRef = useRef(false);
   const [selectedLanguage, setSelectedLanguage] = useState(savedPrefs.selectedLanguage || 'bilingual');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(Boolean(savedPrefs.sidebarCollapsed));
   const [sidebarHidden, setSidebarHidden] = useState(Boolean(savedPrefs.sidebarHidden));
@@ -303,6 +323,7 @@ function App() {
   const textInputCommittedRef = useRef(false);
   const textInputBlurFlagRef = useRef(false);
   const [clearedTimestamps, setClearedTimestamps] = useState([]);
+  const [qrUrl, setQrUrl] = useState(null);  // QR code URL modal
   const [undoStack, setUndoStack] = useState([]);
   const [redoStack, setRedoStack] = useState([]);
   const [zoomLevel, setZoomLevel] = useState(Number(savedPrefs.zoomLevel || 1));
@@ -599,13 +620,13 @@ function App() {
   useEffect(() => {
     if (selectedBook !== 'physics-oup' || physicsChapterCatalog) return;
     const loadPhysicsChapters = async () => {
-      try {
-        const data = await fetchJson('/pdf-reader/data/physics-oup/physics-chapters.json');
-        setPhysicsChapterCatalog(data || {});
-      } catch (err) {
-        console.error('[physics-chapters] failed to load:', err);
-        setPhysicsChapterCatalog({});
-      }
+      // try {
+      //   const data = await fetchJson('/pdf-reader/data/physics-oup/physics-chapters.json');
+      //   setPhysicsChapterCatalog(data || {});
+      // } catch (err) {
+      //   console.error('[physics-chapters] failed to load:', err);
+      //   setPhysicsChapterCatalog({});
+      // }
     };
     loadPhysicsChapters();
   }, [selectedBook, physicsChapterCatalog]);
@@ -1073,6 +1094,18 @@ function App() {
   useEffect(() => {
     selectedPageRef.current = selectedPage;
   }, [selectedPage]);
+
+  useEffect(() => {
+    selectedFileRef.current = selectedFile;
+  }, [selectedFile]);
+
+  useEffect(() => {
+    currentChapterRef.current = currentChapter;
+  }, [currentChapter]);
+
+  useEffect(() => {
+    selectedChapterRef.current = selectedChapter;
+  }, [selectedChapter]);
 
   useEffect(() => {
     if (!selectedBook) return;
@@ -1638,17 +1671,17 @@ function App() {
   }, []);
 
   const changePage = (direction) => {
+    const page = selectedPageRef.current;
+    const file = selectedFileRef.current;
+    const chapter = currentChapterRef.current;
+    const maxPage = maxNavigablePageRef.current;
     if (direction > 0) {
       // ── Going forward ──────────────────────────────────
-      if (selectedPage >= maxNavigablePage) {
+      if (page >= maxPage) {
         // At last page of current section → try next section
-        if (currentChapter?.contents?.length) {
-          const sections = currentChapter.contents.map((item) => isOnePdfForAllSections
-            ? String(item.page ?? item.section ?? '')
-            : Number(item.page ?? item.section));
-          const currentIndex = sections.findIndex((page) => isOnePdfForAllSections
-            ? String(page) === String(selectedFile)
-            : page === Number(selectedFile));
+        if (chapter?.contents?.length) {
+          const sections = chapter.contents.map((item) => toFileId(item.page ?? item.section));
+          const currentIndex = sections.findIndex((p) => String(p) === String(file));
           if (currentIndex >= 0 && currentIndex < sections.length - 1) {
             setSelectedFile(sections[currentIndex + 1]);
             setSelectedPage(1);
@@ -1657,12 +1690,11 @@ function App() {
         }
         // At last section of current book → try first section of next book
         if (structure?.length) {
-          const bookIndex = structure.findIndex((ch) => ch.id === selectedChapter);
+          const selCh = selectedChapterRef.current;
+          const bookIndex = structure.findIndex((ch) => ch.id === selCh);
           if (bookIndex >= 0 && bookIndex < structure.length - 1) {
             const nextBook = structure[bookIndex + 1];
-            const nextSections = nextBook?.contents?.map((item) => isOnePdfForAllSections
-              ? String(item.page ?? item.section ?? '')
-              : Number(item.page ?? item.section)) || [];
+            const nextSections = (nextBook?.contents || []).map((item) => toFileId(item.page ?? item.section));
             if (nextSections.length > 0) {
               setSelectedChapter(nextBook.id);
               setSelectedFile(nextSections[0]);
@@ -1675,15 +1707,11 @@ function App() {
       }
     } else {
       // ── Going backward ─────────────────────────────────
-      if (selectedPage <= 1) {
+      if (page <= 1) {
         // At first page of current section → try previous section
-        if (currentChapter?.contents?.length) {
-          const sections = currentChapter.contents.map((item) => isOnePdfForAllSections
-            ? String(item.page ?? item.section ?? '')
-            : Number(item.page ?? item.section));
-          const currentIndex = sections.findIndex((page) => isOnePdfForAllSections
-            ? String(page) === String(selectedFile)
-            : page === Number(selectedFile));
+        if (chapter?.contents?.length) {
+          const sections = chapter.contents.map((item) => toFileId(item.page ?? item.section));
+          const currentIndex = sections.findIndex((p) => String(p) === String(file));
           if (currentIndex > 0) {
             // Navigate to previous section; setSelectedPage to MAX so the
             // clamping effect (see below) will cap it to the actual last page.
@@ -1694,12 +1722,11 @@ function App() {
         }
         // At first section of current book → try last section of previous book
         if (structure?.length) {
-          const bookIndex = structure.findIndex((ch) => ch.id === selectedChapter);
+          const selCh = selectedChapterRef.current;
+          const bookIndex = structure.findIndex((ch) => ch.id === selCh);
           if (bookIndex > 0) {
             const prevBook = structure[bookIndex - 1];
-            const prevSections = prevBook?.contents?.map((item) => isOnePdfForAllSections
-              ? String(item.page ?? item.section ?? '')
-              : Number(item.page ?? item.section)) || [];
+            const prevSections = (prevBook?.contents || []).map((item) => toFileId(item.page ?? item.section));
             if (prevSections.length > 0) {
               setSelectedChapter(prevBook.id);
               setSelectedFile(prevSections[prevSections.length - 1]);
@@ -1715,36 +1742,52 @@ function App() {
     // ── Normal page change within current section ─────────
     setSelectedPage((current) => {
       const next = current + direction;
-      const max = maxNavigablePage;
-      if (!Number.isFinite(max)) {
+      if (!Number.isFinite(maxPage)) {
         return Math.max(1, next);
       }
-      return Math.max(1, Math.min(max, next));
+      return Math.max(1, Math.min(maxPage, next));
     });
   };
 
   const moveSection = (direction) => {
-    if (!currentChapter?.contents?.length) return;
-    const sections = currentChapter.contents.map((item) => isOnePdfForAllSections
-      ? String(item.page ?? item.section ?? '')
-      : Number(item.page ?? item.section));
-    const currentIndex = sections.findIndex((page) => isOnePdfForAllSections
-      ? String(page) === String(selectedFile)
-      : page === Number(selectedFile));
+    const chapter = currentChapterRef.current;
+    const file = selectedFileRef.current;
+    if (!chapter?.contents?.length) return;
+    const sections = chapter.contents.map((item) => toFileId(item.page ?? item.section));
+    const currentIndex = sections.findIndex((p) => String(p) === String(file));
     if (currentIndex < 0) return;
-    const nextIndex = Math.max(0, Math.min(sections.length - 1, currentIndex + direction));
-    setSelectedFile(sections[nextIndex]);
-    setSelectedPage(1);
+    const nextIndex = currentIndex + direction;
+    if (nextIndex >= 0 && nextIndex < sections.length) {
+      // Within current book — move to adjacent section
+      setSelectedFile(sections[nextIndex]);
+      setSelectedPage(1);
+    } else {
+      // At book boundary — fall through to cross-book navigation
+      moveBook(direction);
+    }
   };
 
   const moveBook = (direction) => {
     if (!structure?.length) return;
-    const currentIndex = structure.findIndex((ch) => ch.id === selectedChapter);
+    const selCh = selectedChapterRef.current;
+    const currentIndex = structure.findIndex((ch) => ch.id === selCh);
     if (currentIndex < 0) return;
-    const nextIndex = Math.max(0, Math.min(structure.length - 1, currentIndex + direction));
+    const nextIndex = currentIndex + direction;
+    if (nextIndex < 0 || nextIndex >= structure.length) return; // no more books
     const nextBook = structure[nextIndex];
-    if (nextBook) {
-      handleBookSelect(nextBook.id);
+    if (!nextBook) return;
+    const sections = (nextBook?.contents || []).map((item) => toFileId(item.page ?? item.section));
+    if (!sections.length) return;
+    if (direction > 0) {
+      // Going forward → first section, first page
+      setSelectedChapter(nextBook.id);
+      setSelectedFile(sections[0]);
+      setSelectedPage(1);
+    } else {
+      // Going backward → last section, last page
+      setSelectedChapter(nextBook.id);
+      setSelectedFile(sections[sections.length - 1]);
+      setSelectedPage(Number.MAX_SAFE_INTEGER);
     }
   };
 
@@ -1752,24 +1795,16 @@ function App() {
     if (direction < 0 && selectedPage <= 1) {
       // First page → go to last page of previous section
       if (!currentChapter?.contents?.length) return;
-      const sections = currentChapter.contents.map((item) => isOnePdfForAllSections
-        ? String(item.page ?? item.section ?? '')
-        : Number(item.page ?? item.section));
-      const currentIndex = sections.findIndex((page) => isOnePdfForAllSections
-        ? String(page) === String(selectedFile)
-        : page === Number(selectedFile));
+      const sections = currentChapter.contents.map((item) => toFileId(item.page ?? item.section));
+      const currentIndex = sections.findIndex((page) => String(page) === String(selectedFile));
       if (currentIndex <= 0) return;
       setSelectedFile(sections[currentIndex - 1]);
       setSelectedPage(Number.MAX_SAFE_INTEGER); // clamped to actual max by useEffect
     } else if (direction > 0 && selectedPage >= maxNavigablePage) {
       // Last page → go to first page of next section
       if (!currentChapter?.contents?.length) return;
-      const sections = currentChapter.contents.map((item) => isOnePdfForAllSections
-        ? String(item.page ?? item.section ?? '')
-        : Number(item.page ?? item.section));
-      const currentIndex = sections.findIndex((page) => isOnePdfForAllSections
-        ? String(page) === String(selectedFile)
-        : page === Number(selectedFile));
+      const sections = currentChapter.contents.map((item) => toFileId(item.page ?? item.section));
+      const currentIndex = sections.findIndex((page) => String(page) === String(selectedFile));
       if (currentIndex < 0 || currentIndex >= sections.length - 1) return;
       setSelectedFile(sections[currentIndex + 1]);
       setSelectedPage(1);
@@ -2975,6 +3010,57 @@ function App() {
     };
   }, [pageAnnotations, allSectionAnnotations, displayMode, pageSources, redraw, visibleLanguages]);
 
+  // ── QR code detection on click ─────────────────────────
+  const handleStageClick = async (event) => {
+    // Only scan for QR codes when no annotation tool is active
+    if (tool !== 'hand' && tool !== 'move') return;
+    // Don't scan if a text input is active
+    if (textInputState) return;
+    // Don't scan if clicking on a UI element
+    if (event.target.closest('button, input, textarea, select, .annotation-textarea')) return;
+
+    try {
+      // Find the canvas element at the click position
+      const canvases = document.elementsFromPoint(event.clientX, event.clientY)
+        .filter(el => el.tagName === 'CANVAS');
+      if (!canvases.length) return;
+      const canvas = canvases[0];
+
+      // Extract a region around the click point (scan 300x300 area centered on click)
+      const canvasRect = canvas.getBoundingClientRect();
+      const clickX = event.clientX - canvasRect.left;
+      const clickY = event.clientY - canvasRect.top;
+      const scanSize = 300;
+      const sx = Math.max(0, clickX - scanSize / 2);
+      const sy = Math.max(0, clickY - scanSize / 2);
+      const sw = Math.min(scanSize, canvas.width - sx);
+      const sh = Math.min(scanSize, canvas.height - sy);
+      if (sw <= 0 || sh <= 0) return;
+
+      const offscreen = document.createElement('canvas');
+      offscreen.width = sw;
+      offscreen.height = sh;
+      const ctx = offscreen.getContext('2d');
+      ctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
+
+      // Use browser's native BarcodeDetector (Chrome 83+)
+      if (!('BarcodeDetector' in window)) return;
+      const detector = new BarcodeDetector({ formats: ['qr_code'] });
+      const barcodes = await detector.detect(offscreen);
+      if (!barcodes.length) return;
+
+      const value = barcodes[0].rawValue;
+      // Check if it's a URL
+      let url;
+      try { url = new URL(value); } catch { return; }
+      if (!url.protocol.startsWith('http')) return;
+
+      setQrUrl(url.href);
+    } catch (err) {
+      // BarcodeDetector not supported or detection failed — silently ignore
+    }
+  };
+
   const handleCanvasClick = async (event) => {
     // If a text input is already active, handle reposition or ignore
     if (textInputState) {
@@ -3299,11 +3385,18 @@ function App() {
       .filter((value) => value > 0);
     return counts.length ? Math.min(...counts) : Number.POSITIVE_INFINITY;
   }, [visibleLanguages, pageCounts]);
+
+  useEffect(() => {
+    maxNavigablePageRef.current = maxNavigablePage;
+  }, [maxNavigablePage]);
+
   const pageOptions = useMemo(() => {
     const maxPage = Number.isFinite(maxNavigablePage)
       ? Math.max(1, Math.floor(maxNavigablePage))
-      : Math.max(1, Number(selectedPage) || 1);
-    return Array.from({ length: maxPage }, (_, index) => index + 1);
+      : Math.max(1, Math.min(Number(selectedPage) || 1, 10000));
+    // Safety cap — selectedPage can be MAX_SAFE_INTEGER when navigating between sections
+    const safeMax = Math.min(maxPage, 10000);
+    return Array.from({ length: safeMax }, (_, index) => index + 1);
   }, [maxNavigablePage, selectedPage]);
 
   const pageSelectOptions = useMemo(() => (
@@ -3423,27 +3516,6 @@ function App() {
     }
   }, [aiDrawerOpen]);
 
-  // ── Fetch available vision providers on first drawer open ──
-  const fetchVisionProviders = useCallback(async () => {
-    if (visionProviders.length > 0) return; // already loaded
-    try {
-      const data = await fetchJson('api/vision-providers');
-      const providers = data.providers || [];
-      setVisionProviders(providers);
-      if (!visionProvider && providers.length > 0) {
-        setVisionProvider(providers[0]);
-      }
-    } catch (err) {
-      console.warn('[vision-providers] failed to load:', err.message);
-    }
-  }, [visionProviders.length, visionProvider]);
-
-  useEffect(() => {
-    if (aiDrawerOpen) {
-      fetchVisionProviders();
-    }
-  }, [aiDrawerOpen, fetchVisionProviders]);
-
   const handleAiGenerate = async (forceRegenerate = false, requireConfirmation = false) => {
     if (aiLoading) {
       setAiDrawerLanguage(preferredAiDrawerLanguage);
@@ -3455,18 +3527,61 @@ function App() {
     }
 
     if (forceRegenerate && requireConfirmation && typeof window !== 'undefined') {
+      // Determine which parts already exist (so they can be unchecked by default)
+      const enContent = aiContent?.en || {};
+      const hasSummary = Array.isArray(enContent.summary) && enContent.summary.length > 0;
+      const hasFlashcards = Array.isArray(enContent.flashcards) && enContent.flashcards.length > 0;
+      const hasQuiz = Array.isArray(enContent.mcq) && enContent.mcq.length > 0;
+      const hasAny = hasSummary || hasFlashcards || hasQuiz;
+
+      const html = `
+        <div style="text-align:left;display:flex;flex-direction:column;gap:10px;padding:8px 0;">
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:0.95rem;">
+            <input type="checkbox" class="swal-regen-check" value="extraction" ${!hasAny ? 'checked disabled' : ''} style="width:18px;height:18px;accent-color:#667eea;">
+            <span>1. ${_('regenTextExtraction')}</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:0.95rem;">
+            <input type="checkbox" class="swal-regen-check" value="summary" ${!hasSummary ? 'checked disabled' : ''} style="width:18px;height:18px;accent-color:#667eea;">
+            <span>2. ${_('regenSummary')}${hasSummary ? ' ✓' : ' (missing)'}</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:0.95rem;">
+            <input type="checkbox" class="swal-regen-check" value="flashcards" ${!hasFlashcards ? 'checked disabled' : ''} style="width:18px;height:18px;accent-color:#667eea;">
+            <span>3. ${_('regenFlashcards')}${hasFlashcards ? ' ✓' : ' (missing)'}</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:0.95rem;">
+            <input type="checkbox" class="swal-regen-check" value="quiz" ${!hasQuiz ? 'checked disabled' : ''} style="width:18px;height:18px;accent-color:#667eea;">
+            <span>4. ${_('regenQuiz')}${hasQuiz ? ' ✓' : ' (missing)'}</span>
+          </label>
+        </div>
+      `;
+
       const result = await Swal.fire({
-        icon: 'warning',
-        text: regenerateConfirmMessage,
+        title: _('regenerate'),
+        html,
         showCancelButton: true,
         confirmButtonText: _('confirm'),
         cancelButtonText: _('cancel'),
         reverseButtons: true,
         focusCancel: true,
+        preConfirm: () => {
+          const checks = document.querySelectorAll('.swal-regen-check');
+          return {
+            extraction: checks[0]?.checked || false,
+            summary: checks[1]?.checked || false,
+            flashcards: checks[2]?.checked || false,
+            quiz: checks[3]?.checked || false,
+          };
+        },
       });
       if (!result.isConfirmed) {
         return;
       }
+      // Store skip flags (inverse of checked = regenerate)
+      const sel = result.value || {};
+      regenSkipExtractionRef.current = !sel.extraction;
+      regenSkipSummaryRef.current = !sel.summary;
+      regenSkipFlashcardsRef.current = !sel.flashcards;
+      regenSkipQuizRef.current = !sel.quiz;
     }
 
     if (!forceRegenerate) {
@@ -3487,6 +3602,11 @@ function App() {
           console.log('[ai-generate] cache recheck failed:', err.message);
         }
       }
+      // No cached content found and not force-regenerating → just open drawer,
+      // show empty state. User must explicitly click "Generate" to start.
+      setAiDrawerLanguage(preferredAiDrawerLanguage);
+      setAiDrawerOpen(true);
+      return;
     }
 
     setAiLoading(true);
@@ -3513,7 +3633,12 @@ function App() {
         userId,
         force: forceRegenerate ? '1' : undefined,
         test: isTestMode ? '1' : undefined,
-        ...(visionProvider ? { visionProvider } : {}),
+        ...(forceRegenerate ? {
+          skipExtraction: regenSkipExtractionRef.current ? '1' : undefined,
+          skipSummary: regenSkipSummaryRef.current ? '1' : undefined,
+          skipFlashcards: regenSkipFlashcardsRef.current ? '1' : undefined,
+          skipQuiz: regenSkipQuizRef.current ? '1' : undefined,
+        } : {}),
       };
 
       if (isTestMode) {
@@ -3656,7 +3781,6 @@ function App() {
         if (modalInfo) { e.preventDefault(); setModalInfo(null); return; }
         if (resourcesDrawerOpen) { e.preventDefault(); setResourcesDrawerOpen(false); return; }
         if (searchDrawerOpen) { e.preventDefault(); setSearchDrawerOpen(false); return; }
-        if (aiDrawerOpen) { e.preventDefault(); setAiDrawerOpen(false); return; }
         return;
       }
 
@@ -4404,7 +4528,7 @@ function App() {
               {_('section')}
             </span>
             <div className="selector-stepper-row" data-autocomplete-id="section">
-              <button type="button" className="selector-stepper-btn" onClick={() => { if (currentSectionIndex > 0) { setSelectedFile(sectionSelectOptions[currentSectionIndex - 1].id); setSelectedPage(1); } }} disabled={currentSectionIndex <= 0}>-</button>
+              <button type="button" className="selector-stepper-btn" onClick={() => { const idx = currentSectionIndex; if (idx > 0) { setSelectedFile(sectionSelectOptions[idx - 1].id); setSelectedPage(1); } else { moveBook(-1); } }}>-</button>
               <SectionAutocomplete
                 sections={currentChapter?.contents || []}
                 currentSection={currentSection}
@@ -4415,7 +4539,7 @@ function App() {
                   setSelectedPage(1);
                 }}
               />
-              <button type="button" className="selector-stepper-btn" onClick={() => { if (currentSectionIndex >= 0 && currentSectionIndex < sectionSelectOptions.length - 1) { setSelectedFile(sectionSelectOptions[currentSectionIndex + 1].id); setSelectedPage(1); } }} disabled={currentSectionIndex < 0 || currentSectionIndex >= sectionSelectOptions.length - 1}>+</button>
+              <button type="button" className="selector-stepper-btn" onClick={() => { const idx = currentSectionIndex; const len = sectionSelectOptions.length; if (idx >= 0 && idx < len - 1) { setSelectedFile(sectionSelectOptions[idx + 1].id); setSelectedPage(1); } else { moveBook(1); } }}>+</button>
             </div>
           </label>
         )}
@@ -4663,7 +4787,7 @@ function App() {
   )}
 
       <main className="reader">
-        <div className={`book-stage ${displayMode} ${isBilingualView ? 'bilingual-layout' : ''} tool-${tool}`} ref={stageRef} onClick={tool === 'text' ? handleCanvasClick : undefined} onContextMenu={handleStageContextMenu}>
+        <div className={`book-stage ${displayMode} ${isBilingualView ? 'bilingual-layout' : ''} tool-${tool}`} ref={stageRef} onClick={(e) => { handleStageClick(e); if (tool === 'text') handleCanvasClick(e); }} onContextMenu={handleStageContextMenu}>
           {(pageLoading || (visibleLanguages.length === 0 && selectedChapter)) ? (
             <div className="page-loading">
               <div className="page-loading-spinner" />
@@ -4963,20 +5087,7 @@ function App() {
                 </svg>
                 {_('aiStudyMaterials')}
               </h2>
-              {visionProviders.length > 1 && (
-                <div className="ai-vision-provider">
-                  <label className="ai-vision-provider-label">Vision Provider</label>
-                  <select
-                    className="ai-vision-provider-select"
-                    value={visionProvider}
-                    onChange={(e) => setVisionProvider(e.target.value)}
-                  >
-                    {visionProviders.map((provider) => (
-                      <option key={provider} value={provider}>{provider}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
+
               <div className="ai-drawer-header-actions">
                 {aiContent && !aiLoading && isTestMode && (
                   <button className="ai-regenerate-btn" onClick={() => handleAiGenerate(true, true)} title={_('regenerate')}>
@@ -5172,11 +5283,11 @@ function App() {
                   )}
                 </div>
               )}
-              {/* Test mode: debug sections */}
+              {/* Test mode: debug sections — organized as 2-step pipeline */}
               {aiDebug && (
                 <div className="ai-debug-section">
                   <details className="ai-debug-details">
-                    <summary className="ai-debug-summary">Request Payload</summary>
+                    <summary className="ai-debug-summary">Client Request</summary>
                     <textarea
                       className="ai-debug-textarea"
                       readOnly
@@ -5184,23 +5295,19 @@ function App() {
                       rows={10}
                     />
                   </details>
-                  <details className="ai-debug-details">
-                    <summary className="ai-debug-summary">Extraction Raw Response</summary>
-                    <textarea
-                      className="ai-debug-textarea"
-                      readOnly
-                      value={aiDebug.extractionRaw || ''}
-                      rows={8}
-                    />
+
+                  {/* ── Step 1: Image → Text Extraction ── */}
+                  <details className="ai-debug-details" open>
+                    <summary className="ai-debug-summary">🔍 Step 1: Image → Text Extraction</summary>
+                    <DebugSubSection label="Request payload" data={aiDebug.extractionRequest} />
+                    <DebugSubSection label="Raw response (gateway)" data={aiDebug.extractionRaw} />
                   </details>
-                  <details className="ai-debug-details">
-                    <summary className="ai-debug-summary">Generation Raw Response</summary>
-                    <textarea
-                      className="ai-debug-textarea"
-                      readOnly
-                      value={aiDebug.generationRaw || ''}
-                      rows={8}
-                    />
+
+                  {/* ── Step 2: Text → Study Materials ── */}
+                  <details className="ai-debug-details" open>
+                    <summary className="ai-debug-summary">📝 Step 2: Text → Study Materials</summary>
+                    <DebugSubSection label="Request payload" data={aiDebug.generationRequest} />
+                    <DebugSubSection label="Raw response (gateway)" data={aiDebug.generationRaw} />
                   </details>
                 </div>
               )}
@@ -5212,6 +5319,7 @@ function App() {
                     <path d="M18 3L17.7789 3.59745C17.489 4.38087 17.3441 4.77259 17.0583 5.05833C16.7726 5.34408 16.3809 5.48903 15.5975 5.77892L15 6L15.5975 6.22108C16.3809 6.51097 16.7726 6.65592 17.0583 6.94167C17.3441 7.22741 17.489 7.61913 17.7789 8.40255L18 9L18.2211 8.40255C18.511 7.61913 18.6559 7.22741 18.9417 6.94166C19.2274 6.65592 19.6191 6.51097 20.4025 6.22108L21 6L20.4025 5.77892C19.6191 5.48903 19.2274 5.34408 18.9417 5.05833C18.6559 4.77259 18.511 4.38087 18.2211 3.59745L18 3Z" />
                   </svg>
                   <p>{_('aiEmptyPrompt')}</p>
+                  <button className="ai-generate-btn" onClick={() => handleAiGenerate(true, false)}>{_('aiGenerate')}</button>
                 </div>
               )}
             </div>
@@ -5513,6 +5621,23 @@ function App() {
             </button>
           </div>
         </>,
+        document.body
+      )}
+
+      {/* ── QR Code URL Modal ─────────────────────────────── */}
+      {qrUrl && createPortal(
+        <div className="qr-modal-overlay" onClick={() => setQrUrl(null)}>
+          <div className="qr-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="qr-modal-header">
+              <span className="qr-modal-title">QR Code Link</span>
+              <button className="qr-modal-close" onClick={() => setQrUrl(null)} aria-label={_('close')}>✕</button>
+            </div>
+            <div className="qr-modal-url">
+              <a href={qrUrl} target="_blank" rel="noopener noreferrer">{qrUrl}</a>
+            </div>
+            <iframe className="qr-modal-iframe" src={qrUrl} sandbox="allow-scripts allow-same-origin allow-popups allow-forms" title="QR Code URL" />
+          </div>
+        </div>,
         document.body
       )}
     </div>

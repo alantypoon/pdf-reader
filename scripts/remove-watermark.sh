@@ -87,7 +87,7 @@ if ! $UNLOCK_ONLY; then
     setup_venv
 
     # ── Python script path ──────────────────────────────────────────────────
-    PY_SCRIPT="${SCRIPT_DIR}/tools/remove_watermark.py"
+    PY_SCRIPT="${SCRIPT_DIR}/remove_watermark.py"
 
     if [ ! -f "$PY_SCRIPT" ]; then
         echo "ERROR: Python script not found: $PY_SCRIPT"
@@ -96,65 +96,95 @@ if ! $UNLOCK_ONLY; then
 fi
 
 # ── Ensure target directory exists ──────────────────────────────────────────
-mkdir -p "$DST_DIR"
+if [ -f "$INPUT" ] && [[ "$DST_DIR" == *.pdf ]]; then
+    # SRC is a single file and DST looks like a PDF path — treat DST as output file
+    mkdir -p "$(dirname "$DST_DIR")"
+elif [ ! -f "$DST_DIR" ]; then
+    mkdir -p "$DST_DIR"
+fi
 
 # ── Process a single PDF ────────────────────────────────────────────────────
 process_pdf() {
     local src_pdf="$1"
+    local dst_pdf
 
-    # Determine the output path: mirror directory structure under DST_DIR
-    local rel_path="${src_pdf#$SRC_DIR/}"
-    # Fallback: if SRC_DIR not a prefix, just use basename
-    if [[ "$rel_path" == "$src_pdf" ]]; then
-        rel_path="$(basename "$src_pdf")"
+    # If DST_DIR looks like a PDF file path (not an existing directory), use it directly
+    if [[ "$DST_DIR" == *.pdf ]] && [ ! -d "$DST_DIR" ]; then
+        dst_pdf="$DST_DIR"
+    else
+        # Determine the output path: mirror directory structure under DST_DIR
+        local rel_path="${src_pdf#$SRC_DIR/}"
+        # Fallback: if SRC_DIR not a prefix, just use basename
+        if [[ "$rel_path" == "$src_pdf" ]]; then
+            rel_path="$(basename "$src_pdf")"
+        fi
+        dst_pdf="${DST_DIR}/${rel_path}"
     fi
 
-    local dst_pdf="${DST_DIR}/${rel_path}"
     local dst_dir
     dst_dir="$(dirname "$dst_pdf")"
+    # Remove any existing regular file at dst_dir so mkdir -p doesn't fail
+    [ -f "$dst_dir" ] && rm -f "$dst_dir"
     mkdir -p "$dst_dir"
+
+    # Remove existing output file before writing
+    [ -f "$dst_pdf" ] && rm -f "$dst_pdf"
 
     echo "Processing: $src_pdf"
 
-    # ── Step 1: Unlock (remove restrictions) ────────────────────────────────
-    echo "  [1/2] Unlocking…"
-    if ! gs -q -dNOPAUSE -dBATCH -dQUIET -sDEVICE=pdfwrite -sOutputFile="$dst_pdf" "$src_pdf" 2>/dev/null; then
-        echo "  ERROR: Failed to unlock $src_pdf" >&2
+    local work_pdf="$src_pdf"   # PDF to pass to Ghostscript unlock
+    local wm_tmp=""             # temp file from watermark removal (clean up at end)
+
+    if ! $UNLOCK_ONLY; then
+        # ── Step 1: Remove watermark from the ORIGINAL PDF ──────────────────
+        # Watermark markers (e.g. /Artifact <</Subtype /Watermark) are
+        # stripped by Ghostscript, so we must process BEFORE unlocking.
+        echo "  [1/2] Removing watermark…"
+        wm_tmp="/tmp/wm_output_$$.pdf"
+
+        local wm_arg=()
+        if [ -n "${WATERMARK_TEMPLATE:-}" ]; then
+            wm_arg=(--watermark "$WATERMARK_TEMPLATE")
+        fi
+
+        local wm_ret=0
+        if [ ${#wm_arg[@]} -gt 0 ]; then
+            "$PYTHON" "$PY_SCRIPT" "$src_pdf" "$wm_tmp" "${wm_arg[@]}" || wm_ret=$?
+        else
+            "$PYTHON" "$PY_SCRIPT" "$src_pdf" "$wm_tmp" || wm_ret=$?
+        fi
+
+        if [ $wm_ret -eq 0 ]; then
+            echo "  Watermark removed successfully."
+            work_pdf="$wm_tmp"
+        elif [ $wm_ret -eq 2 ]; then
+            echo -e "\033[1;31m  FATAL: Some pages could not be cleaned! Aborting.\033[0m"
+            rm -f "$wm_tmp"
+            exit 2
+        else
+            echo "  (no watermarks found, will unlock original)"
+            rm -f "$wm_tmp"
+            wm_tmp=""
+            work_pdf="$src_pdf"
+        fi
+    fi
+
+    # ── Step 2: Unlock (remove restrictions) ────────────────────────────────
+    local step_label
+    if $UNLOCK_ONLY; then
+        step_label="[1/1]"
+    else
+        step_label="[2/2]"
+    fi
+    echo "  ${step_label} Unlocking…"
+    if ! gs -q -dNOPAUSE -dBATCH -dQUIET -sDEVICE=pdfwrite -sOutputFile="$dst_pdf" "$work_pdf" 2>/dev/null; then
+        echo "  ERROR: Failed to unlock $work_pdf" >&2
+        [ -n "$wm_tmp" ] && rm -f "$wm_tmp"
         return 1
     fi
 
-    if $UNLOCK_ONLY; then
-        echo "  → $dst_pdf"
-        return
-    fi
-
-    # ── Step 2: Remove watermark ────────────────────────────────────────────
-    echo "  [2/2] Removing watermark…"
-    local unlocked="/tmp/wm_unlocked_$$.pdf"
-    # Move the just-unlocked file to a temp location for watermark removal
-    mv "$dst_pdf" "$unlocked"
-
-    local wm_arg=()
-    if [ -n "${WATERMARK_TEMPLATE:-}" ]; then
-        wm_arg=(--watermark "$WATERMARK_TEMPLATE")
-    fi
-
-    if [ ${#wm_arg[@]} -gt 0 ]; then
-        "$PYTHON" "$PY_SCRIPT" "$unlocked" "$dst_pdf" "${wm_arg[@]}"
-    else
-        "$PYTHON" "$PY_SCRIPT" "$unlocked" "$dst_pdf"
-    fi
-    local ret=$?
-
-    if [ $ret -eq 0 ]; then
-        echo "  → $dst_pdf"
-    else
-        # No watermarks found — keep the unlocked file as-is
-        echo "  (no watermarks found, keeping unlocked file)"
-        mv "$unlocked" "$dst_pdf"
-        echo "  → $dst_pdf"
-    fi
-    rm -f "$unlocked"
+    echo "  → $dst_pdf"
+    [ -n "$wm_tmp" ] && rm -f "$wm_tmp"
 }
 
 # ── Main dispatch ───────────────────────────────────────────────────────────

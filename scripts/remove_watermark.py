@@ -179,6 +179,36 @@ def find_watermark_xobjects(pdf):
         if post_emc_count >= total * 0.5:
             watermarks = {"__ALL_POST_EMC__"}
 
+    # Strategy 3: /Artifact <</Subtype /Watermark blocks in content streams
+    # (InDesign-exported OUP watermarks).  These are clearly marked in the
+    # original PDF but stripped by Ghostscript, so process before unlocking.
+    if not watermarks:
+        artifact_count = 0
+        for page in pdf.pages:
+            contents = page.get("/Contents")
+            if contents is None:
+                continue
+            if isinstance(contents, pikepdf.Array):
+                streams = list(contents)
+            else:
+                streams = [contents]
+            all_data = b""
+            for s in streams:
+                try:
+                    all_data += s.read_bytes()
+                except Exception:
+                    pass
+            try:
+                text = all_data.decode("latin-1")
+            except Exception:
+                continue
+            # Look for /Artifact with /Subtype /Watermark
+            if re.search(r"/Artifact\s*<<.*?/Subtype\s*/\s*Watermark", text):
+                artifact_count += 1
+
+        if artifact_count >= total * 0.5:
+            watermarks = {"__ARTIFACT_WATERMARK__"}
+
     return watermarks
 
 
@@ -201,11 +231,22 @@ def remove_watermarks(pdf_path, output_path, template_regex=None):
         print(f"  Watermark XObjects detected: {sorted(watermark_names)}")
 
     is_post_emc_mode = "__ALL_POST_EMC__" in watermark_names
+    is_artifact_watermark_mode = "__ARTIFACT_WATERMARK__" in watermark_names
 
     if is_post_emc_mode:
         print("  (using post-EMC strip mode — all content after final EMC removed)")
+    if is_artifact_watermark_mode:
+        print("  (using artifact /Watermark strip mode — removing /Artifact /Watermark blocks)")
 
     patterns_to_remove = []
+
+    # Build removal patterns for artifact watermark mode
+    if is_artifact_watermark_mode:
+        # Remove /Artifact <</Subtype /Watermark ... >>BDC ... EMC blocks
+        # Pattern matches from /Artifact through the closing EMC of the block
+        patterns_to_remove.append(
+            r"/Artifact\s*<<[^>]*/Subtype\s*/\s*Watermark[^>]*>>\s*BDC\s*.*?EMC\s*"
+        )
 
     if is_template_mode:
         # Only the template regex — nothing else
@@ -241,8 +282,14 @@ def remove_watermarks(pdf_path, output_path, template_regex=None):
                     return False
                 print(f"  Watermark XObjects detected: {sorted(watermark_names)}")
                 is_post_emc_mode = "__ALL_POST_EMC__" in watermark_names
+                is_artifact_watermark_mode = "__ARTIFACT_WATERMARK__" in watermark_names
                 if is_post_emc_mode:
                     print("  (using post-EMC strip mode)")
+                if is_artifact_watermark_mode:
+                    print("  (using artifact /Watermark strip mode)")
+                    patterns_to_remove.append(
+                        r"/Artifact\s*<<[^>]*/Subtype\s*/\s*Watermark[^>]*>>\s*BDC\s*.*?EMC\s*"
+                    )
                 elif watermark_names:
                     for wm_name in watermark_names:
                         escaped = re.escape(wm_name)
@@ -250,16 +297,16 @@ def remove_watermarks(pdf_path, output_path, template_regex=None):
                             r"/Figure[^q]*?q\s+.*?" + escaped + r"\s+Do\s+EMC\s+Q"
                         )
                         patterns_to_remove.append(
-                            r"q\s+.*?" + escaped + r"\s+Do\s+Q"
+                            r"q\s+.*?" + escaped + r"\s+Do\s+(?:EMC\s+)?Q"
                         )
-    elif not is_post_emc_mode:
+    elif not is_post_emc_mode and not is_artifact_watermark_mode:
         for wm_name in watermark_names:
             escaped = re.escape(wm_name)
             patterns_to_remove.append(
-                r"/Figure/R\d+\s+BDC\s+q\s+.*?" + escaped + r"\s+Do\s+EMC\s+Q"
+                r"/Figure/R\d+\s+BDC\s+(?:Q\s+)?q\s+.*?" + escaped + r"\s+Do\s+EMC\s+Q"
             )
             patterns_to_remove.append(
-                r"q\s+.*?" + escaped + r"\s+Do\s+Q"
+                r"q\s+.*?" + escaped + r"\s+Do\s+(?:EMC\s+)?Q"
             )
 
     pages_modified = 0
@@ -299,31 +346,39 @@ def remove_watermarks(pdf_path, output_path, template_regex=None):
 
         # Post-EMC strip (only in non-template post-EMC mode)
         if is_post_emc_mode and not is_template_mode:
-            # Find the double-EMC that closes the main content block,
-            # then remove only the watermark q…/FmX Do…Q blocks after it.
+            # Strategy A: Strip ALL q…/FmX Do…Q blocks after the last EMC.
+            # The watermark may appear before or after the first Q in the
+            # post-EMC region, so we scan the entire tail rather than
+            # limiting to content after the first Q.
             double_emc = text.rfind("EMC")
             if double_emc > 0:
-                # Find the start of double EMC: "EMC \nEMC"
-                # Search backwards from the last EMC
                 before_last = text.rfind("EMC", 0, double_emc)
                 if before_last > 0 and before_last < double_emc - 1:
-                    # We have a double EMC.  Now find the Q that closes
-                    # the main block (it's between the EMCs and the watermark).
-                    between = text[before_last:double_emc + 3]
-                    q_after = re.search(r"Q\s+", text[double_emc + 3:])
-                    if q_after:
-                        post_start = double_emc + 3 + q_after.end()
-                        post_content = text[post_start:]
-                        # Remove q…/FmX Do…Q blocks from post content
-                        cleaned_post, n = re.subn(
-                            r"q\s+.*?/[Ff]m\d+\s+Do\s+Q\s*",
-                            "",
-                            post_content,
-                            flags=re.DOTALL,
-                        )
-                        if n > 0:
-                            text = text[:post_start] + cleaned_post
-                            modified = True
+                    after_emc = text[double_emc + 3:]
+                    cleaned, n = re.subn(
+                        r"q\s+.*?/[Ff]m\d+\s+Do\s+Q\s*",
+                        "",
+                        after_emc,
+                        flags=re.DOTALL,
+                    )
+                    if n > 0:
+                        text = text[:double_emc + 3] + cleaned
+                        modified = True
+
+            # Strategy B: Also strip watermarks embedded in double-EMC
+            # patterns elsewhere on the page (not just after the last EMC).
+            # Pattern: EMC\nEMC\n[Q\n]q\n.../FmX Do\nQ\n  → keep EMC\nEMC\n
+            # The Q between the double EMC and the q is optional — some
+            # pages place the watermark q-block directly after EMC EMC.
+            new_text, n = re.subn(
+                r"(EMC\s+EMC\s+)(?:Q\s+)?(q\s+.*?/[Ff]m\d+\s+Do\s+Q\s*)",
+                r"\1",
+                text,
+                flags=re.DOTALL,
+            )
+            if n > 0:
+                text = new_text
+                modified = True
 
         if modified:
             # Write everything back to the first stream, clear the rest
@@ -338,6 +393,13 @@ def remove_watermarks(pdf_path, output_path, template_regex=None):
             print(f"  … page {page_num}/{total_pages}", flush=True)
 
     print(f"  Modified {pages_modified}/{len(pdf.pages)} pages.")
+
+    if pages_modified < len(pdf.pages):
+        missed = len(pdf.pages) - pages_modified
+        print(f"\033[1;31m  FATAL: {missed} page(s) still contain watermarks! Aborting.\033[0m",
+              file=sys.stderr)
+        pdf.close()
+        sys.exit(2)
 
     pdf.save(output_path)
     pdf.close()
