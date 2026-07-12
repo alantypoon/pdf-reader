@@ -3660,8 +3660,8 @@ function App() {
         return;
       }
 
-      // Arrow key navigation
-      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      // Arrow key navigation — skip in thumbnails mode (PdfPane handles it)
+      if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && displayMode !== 'thumbnails') {
         const dir = e.key === 'ArrowRight' ? 1 : -1;
         if (e.shiftKey) {
           e.preventDefault();
@@ -3677,7 +3677,7 @@ function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [modalInfo, toolMenuOpen, studyMenuOpen, zoomMenuOpen, resourcesDrawerOpen, searchDrawerOpen, aiDrawerOpen, selectedChapter, structure]);
+  }, [modalInfo, toolMenuOpen, studyMenuOpen, zoomMenuOpen, resourcesDrawerOpen, searchDrawerOpen, aiDrawerOpen, selectedChapter, structure, displayMode]);
 
   // ── Right-click context menu: Copy to clipboard ────────
   const handleCopyToClipboard = useCallback(async () => {
@@ -4841,8 +4841,8 @@ function App() {
           <div className="panel-row-1">
           <div className="panel-main-controls" ref={mainControlsRef}>
           <div className="toolbar-group toolbar-primary" ref={primaryToolbarRef}>
-            <button className="icon-btn" onClick={() => jumpPage(-1)} data-tooltip={displayMode === 'scrolling' ? _('jumpPrevPage') : _('prevPage')} aria-label={displayMode === 'scrolling' ? _('jumpPrevPage') : _('prevPage')}>&lt;</button>
-            <button className="icon-btn" onClick={() => jumpPage(1)} data-tooltip={displayMode === 'scrolling' ? _('jumpNextPage') : _('nextPage')} aria-label={displayMode === 'scrolling' ? _('jumpNextPage') : _('nextPage')}>&gt;</button>
+            <button className="icon-btn" onClick={() => changePage(-1)} data-tooltip={displayMode === 'scrolling' ? _('jumpPrevPage') : _('prevPage')} aria-label={displayMode === 'scrolling' ? _('jumpPrevPage') : _('prevPage')}>&lt;</button>
+            <button className="icon-btn" onClick={() => changePage(1)} data-tooltip={displayMode === 'scrolling' ? _('jumpNextPage') : _('nextPage')} aria-label={displayMode === 'scrolling' ? _('jumpNextPage') : _('nextPage')}>&gt;</button>
             {!fitDisabled && (
             <div className="tool-menu-wrapper">
               <div className="tool-split-btn">

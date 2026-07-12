@@ -1293,7 +1293,7 @@ button, input, select {
 .thumbnail-grid {
   display: grid;
   gap: 14px;
-  padding: 60px 16px 16px;
+  padding: 60px 16px 80px;
   width: 100%;
   flex: 1 1 0;
   min-height: 0;
@@ -1373,6 +1373,7 @@ button, input, select {
 
 /* Allow scrolling in the full-width thumbnail grid mode */
 .pdf-content.thumbs-mode {
+  overflow: clip;
   display: flex;
   flex-direction: column;
 }

@@ -101,80 +101,73 @@ function PdfPane({
     modeGenRef.current += 1;
   }, [mode]);
 
-  // ── Keyboard navigation for thumbnail grid ──────────────
-  const handleThumbKeyDown = (e) => {
-    const total = thumbs.length;
-    if (!total) return;
-    const cols = Math.max(1, thumbCols);
-    const totalRows = Math.ceil(total / cols);
-    const currentRow = thumbFocusIndex < 0 ? 0 : Math.floor(thumbFocusIndex / cols);
-    const currentCol = thumbFocusIndex < 0 ? 0 : thumbFocusIndex % cols;
+  // ── Keyboard navigation for thumbnail grid (window-level for reliability) ──
+  const thumbFocusIndexRef = useRef(-1);
+  useEffect(() => { thumbFocusIndexRef.current = thumbFocusIndex; }, [thumbFocusIndex]);
 
-    let next = thumbFocusIndex;
-    switch (e.key) {
-      case 'ArrowRight':
-        next = thumbFocusIndex < 0 ? 0 : Math.min(thumbFocusIndex + 1, total - 1);
-        break;
-      case 'ArrowLeft':
-        next = thumbFocusIndex < 0 ? 0 : Math.max(thumbFocusIndex - 1, 0);
-        break;
-      case 'ArrowDown': {
-        const newRow = Math.min(currentRow + 1, totalRows - 1);
-        next = newRow * cols + Math.min(currentCol, cols - 1);
-        if (next >= total) next = total - 1;
-        break;
-      }
-      case 'ArrowUp': {
-        const newRow = Math.max(currentRow - 1, 0);
-        next = newRow * cols + Math.min(currentCol, cols - 1);
-        break;
-      }
-      case 'Enter':
-      case ' ': {
-        if (thumbFocusIndex >= 0 && thumbFocusIndex < total) {
-          e.preventDefault();
-          if (onThumbnailClick) {
-            onThumbnailClick(thumbs[thumbFocusIndex].page);
-          } else {
-            onPageChange(thumbs[thumbFocusIndex].page);
-          }
-          return;
+  useEffect(() => {
+    if (!thumbnailsOpen) return;
+    const cols = Math.max(1, thumbCols);
+
+    const onKey = (e) => {
+      const total = thumbs.length;
+      if (!total) return;
+      // Don't interfere with typing in inputs
+      const tag = (e.target.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return;
+
+      const idx = thumbFocusIndexRef.current;
+      const currentRow = idx < 0 ? 0 : Math.floor(idx / cols);
+      const currentCol = idx < 0 ? 0 : idx % cols;
+      const totalRows = Math.ceil(total / cols);
+
+      let next = idx;
+      let handled = true;
+      switch (e.key) {
+        case 'ArrowRight':
+          next = idx < 0 ? 0 : Math.min(idx + 1, total - 1);
+          break;
+        case 'ArrowLeft':
+          next = idx < 0 ? 0 : Math.max(idx - 1, 0);
+          break;
+        case 'ArrowDown': {
+          const newRow = Math.min(currentRow + 1, totalRows - 1);
+          next = newRow * cols + Math.min(currentCol, cols - 1);
+          if (next >= total) next = total - 1;
+          break;
         }
-        break;
+        case 'ArrowUp': {
+          const newRow = Math.max(currentRow - 1, 0);
+          next = newRow * cols + Math.min(currentCol, cols - 1);
+          break;
+        }
+        default:
+          handled = false;
       }
-      default:
-        return;
-    }
-    e.preventDefault();
-    setThumbFocusIndex(next);
-    // Scroll focused thumbnail into view
-    const grid = thumbGridRef.current;
-    if (grid) {
-      const btn = grid.querySelector(`[data-thumb-index="${next}"]`);
-      if (btn) {
-        btn.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      if (!handled) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+      setThumbFocusIndex(next);
+      // Scroll focused thumbnail into view
+      const grid = thumbGridRef.current;
+      if (grid) {
+        const btn = grid.querySelector(`[data-thumb-index="${next}"]`);
+        if (btn) {
+          btn.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }
       }
-    }
-  };
+    };
+
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [thumbnailsOpen, thumbCols, thumbs]);
 
   useEffect(() => {
     const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
     document.addEventListener('fullscreenchange', onFsChange);
     return () => document.removeEventListener('fullscreenchange', onFsChange);
   }, []);
-
-  // ── Auto-focus thumbnail grid for keyboard navigation ──
-  useEffect(() => {
-    if (thumbnailsOpen && thumbGridRef.current) {
-      const timer = setTimeout(() => {
-        thumbGridRef.current?.focus();
-        setThumbFocusIndex(0);
-      }, 150);
-      return () => clearTimeout(timer);
-    } else {
-      setThumbFocusIndex(-1);
-    }
-  }, [thumbnailsOpen]);
 
   // ── Image mode: derive page count & thumbnails from images array ──
   useEffect(() => {
@@ -917,9 +910,6 @@ function PdfPane({
             <div
               className="thumbnail-grid"
               ref={thumbGridRef}
-              tabIndex={0}
-              onKeyDown={handleThumbKeyDown}
-              onFocus={() => { if (thumbFocusIndex < 0) setThumbFocusIndex(0); }}
               style={{ gridTemplateColumns: `repeat(${Math.max(1, thumbCols)}, 1fr)` }}
             >
                 {thumbs.map((thumb, idx) => (
