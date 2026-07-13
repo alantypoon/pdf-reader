@@ -86,6 +86,30 @@ function getSectionResources(section, language) {
   return value.resources || [];
 }
 
+function buildQrUrlRewriteMap(chapter) {
+  const entries = [];
+
+  for (const section of chapter?.contents || []) {
+    for (const language of ['en', 'tc']) {
+      for (const resource of getSectionResources(section, language)) {
+        const sourceUrl = typeof resource?.['url-orig'] === 'string' ? resource['url-orig'].trim() : '';
+        const targetUrl = typeof resource?.url === 'string' ? resource.url.trim() : '';
+        if (!sourceUrl || !targetUrl) continue;
+
+        entries.push([sourceUrl, targetUrl]);
+
+        try {
+          entries.push([new URL(sourceUrl).href, targetUrl]);
+        } catch {
+          // Keep the raw sourceUrl entry when normalization is not possible.
+        }
+      }
+    }
+  }
+
+  return new Map(entries);
+}
+
 function hasRenderableSource(source) {
   if (Array.isArray(source)) return source.length > 0;
   return typeof source === 'string' && source.trim().length > 0;
@@ -333,7 +357,6 @@ function App() {
   const textInputCommittedRef = useRef(false);
   const textInputBlurFlagRef = useRef(false);
   const [clearedTimestamps, setClearedTimestamps] = useState([]);
-  const [qrUrl, setQrUrl] = useState(null);  // QR code URL modal
   const [clickMarker, setClickMarker] = useState(null);  // { x, y, imgLeft, imgTop, naturalX, naturalY } debug overlay
   const clickMarkerTimeoutRef = useRef(null);
   const [undoStack, setUndoStack] = useState([]);
@@ -346,6 +369,9 @@ function App() {
   const [pageCounts, setPageCounts] = useState({});
   const [redrawTick, setRedrawTick] = useState(0);
   const [modalInfo, setModalInfo] = useState(null);
+  const modalIframeRef = useRef(null);
+  const [modalFrameLoading, setModalFrameLoading] = useState(false);
+  const [modalFrameFailed, setModalFrameFailed] = useState(false);
   const [floatingPlayer, setFloatingPlayer] = useState(null);
   const [activeAnnotationLangId, setActiveAnnotationLangId] = useState('en');
   const [resourcesDrawerOpen, setResourcesDrawerOpen] = useState(false);
@@ -768,6 +794,8 @@ function App() {
     () => structure.find((chapter) => chapter.id === selectedChapter),
     [structure, selectedChapter]
   );
+
+  const qrUrlRewriteMap = useMemo(() => buildQrUrlRewriteMap(currentChapter), [currentChapter]);
 
   const handleBookSelect = (newBookId) => {
     applyBookSelection(structure, newBookId);
@@ -3335,32 +3363,45 @@ function App() {
     let host;
     try {
       url = new URL(value);
-      host = url.hostname;
     } catch {
       if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] QR value is not a valid URL:', value);
       return;
     }
+
+    const rewrittenUrl = qrUrlRewriteMap.get(url.href) || qrUrlRewriteMap.get(String(value).trim()) || url.href;
+    if (rewrittenUrl !== url.href && DEBUG_QRCODE_CAPTURE >= 1) {
+      console.log('[QR] Rewrote QR URL from contents mapping:', { from: url.href, to: rewrittenUrl });
+    }
+
+    try {
+      url = new URL(rewrittenUrl);
+      host = url.hostname;
+    } catch {
+      if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] Rewritten QR value is not a valid URL:', rewrittenUrl);
+      return;
+    }
+
     if (!url.protocol.startsWith('http')) {
       if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] URL protocol is not http(s):', url.protocol);
       return;
     }
-    if (url.href.startsWith('https://digital.oupchina.com.hk')) {
-      if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] ✅ Opening QR URL in external tab:', url.href);
-      window.open(url.href, '_blank', 'noopener,noreferrer');
+    if (/\.mp3(\?|$)/i.test(url.href)) {
+      if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] ✅ Opening MP3 QR URL in floating player:', url.href);
+      setFloatingPlayer({ url: url.href, name: 'QR Code Link' });
       return;
     }
     if (host === 'eresources.oupchina.com.hk' || host.endsWith('.oupchina.com.hk')) {
       if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] ✅ Opening OUP QR URL in proxy modal:', url.href);
-      setModalInfo({ url: url.href, name: 'QR Code Link' });
+      setModalInfo({ url: url.href });
       return;
     }
     if (/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([\w-]{11})/.test(url.href)) {
       if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] ✅ Opening YouTube QR URL in modal:', url.href);
-      setModalInfo({ url: url.href, name: 'QR Code Link' });
+      setModalInfo({ url: url.href });
       return;
     }
-    if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] ✅ Setting QR URL:', url.href);
-    setQrUrl(url.href);
+    if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] ✅ Opening QR URL in modal:', url.href);
+    setModalInfo({ url: url.href });
   };
 
   const handleCanvasClick = async (event) => {
@@ -4327,6 +4368,45 @@ function App() {
     } catch { /* invalid URL, use as-is */ }
     return url;
   }, [modalInfo]);
+
+  useEffect(() => {
+    if (!modalInfo || modalType === 'audio' || modalType?.type === 'youtube') {
+      setModalFrameLoading(false);
+      setModalFrameFailed(false);
+      return undefined;
+    }
+
+    setModalFrameLoading(true);
+    setModalFrameFailed(false);
+
+    const timeoutId = window.setTimeout(() => {
+      setModalFrameLoading(false);
+      setModalFrameFailed(true);
+    }, 4000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [modalInfo, modalType, modalFrameSrc]);
+
+  const handleModalFrameLoad = () => {
+    setModalFrameLoading(false);
+
+    if (!modalIframeRef.current || !modalFrameSrc.startsWith('api/proxy?url=')) {
+      setModalFrameFailed(false);
+      return;
+    }
+
+    try {
+      const bodyText = modalIframeRef.current.contentDocument?.body?.textContent?.trim() || '';
+      if (/^(Proxy error|Host not allowed|Missing \?url=)/.test(bodyText)) {
+        setModalFrameFailed(true);
+        return;
+      }
+    } catch {
+      // Ignore inspection failures and assume the frame loaded.
+    }
+
+    setModalFrameFailed(false);
+  };
 
   const openStudyDrawer = useCallback((type) => {
     // Toggle: if the requested drawer is already open, close it
@@ -5779,7 +5859,50 @@ function App() {
                 allowFullScreen
               />
             ) : (
-              <iframe src={modalFrameSrc} className="modal-iframe" title={_('resourceViewer')} />
+              <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+                <iframe
+                  ref={modalIframeRef}
+                  src={modalFrameSrc}
+                  className="modal-iframe"
+                  title={_('resourceViewer')}
+                  onLoad={handleModalFrameLoad}
+                />
+                {modalFrameFailed && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      inset: 0,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      background: 'rgba(255,255,255,0.92)',
+                      padding: '24px',
+                    }}
+                  >
+                    <button
+                      type="button"
+                      className="modal-open-link"
+                      style={{
+                        fontSize: '16px',
+                        padding: '12px 18px',
+                        width: 'auto',
+                        minWidth: 'max-content',
+                        height: 'auto',
+                        borderRadius: '10px',
+                        border: 'none',
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap',
+                        writingMode: 'horizontal-tb',
+                        wordBreak: 'keep-all',
+                        textOrientation: 'mixed',
+                      }}
+                      onClick={() => window.open(modalInfo.url, '_blank', 'noopener,noreferrer')}
+                    >
+                      {(_ && _('openInNewTab')) || 'Open in another tab'}
+                    </button>
+                  </div>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -5940,22 +6063,6 @@ function App() {
         document.body
       )}
 
-      {/* ── QR Code URL Modal ─────────────────────────────── */}
-      {qrUrl && createPortal(
-        <div className="qr-modal-overlay" onClick={() => setQrUrl(null)}>
-          <div className="qr-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="qr-modal-header">
-              <span className="qr-modal-title">QR Code Link</span>
-              <button className="qr-modal-close" onClick={() => setQrUrl(null)} aria-label={_('close')}>✕</button>
-            </div>
-            <div className="qr-modal-url">
-              <a href={qrUrl} target="_blank" rel="noopener noreferrer">{qrUrl}</a>
-            </div>
-            <iframe className="qr-modal-iframe" src={qrUrl} sandbox="allow-scripts allow-same-origin allow-popups allow-forms" title="QR Code URL" />
-          </div>
-        </div>,
-        document.body
-      )}
     </div>
   );
 }

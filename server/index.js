@@ -773,9 +773,92 @@ app.delete('/api/remarks', requireValidUserId(true), asyncRoute(async (request, 
 
 // ── Proxy for OUP resources (bypasses X-Frame-Options) ──────
 const ALLOWED_PROXY_HOSTS = [
+  'digital.oupchina.com.hk',
   'eresources.oupchina.com.hk',
   'isolution.oupchina.com.hk',
 ];
+
+function isAllowedProxyHost(hostname) {
+  return ALLOWED_PROXY_HOSTS.some((host) => hostname === host || hostname.endsWith('.' + host));
+}
+
+function rewriteProxyTarget(rawUrl, baseUrl) {
+  if (!rawUrl) return rawUrl;
+  const trimmed = String(rawUrl).trim();
+  if (!trimmed || trimmed.startsWith('#') || /^(data:|javascript:|mailto:|tel:|blob:)/i.test(trimmed)) {
+    return rawUrl;
+  }
+
+  try {
+    const absolute = new URL(trimmed, baseUrl).toString();
+    const parsed = new URL(absolute);
+    if (isAllowedProxyHost(parsed.hostname)) {
+      return `/api/proxy?url=${encodeURIComponent(absolute)}`;
+    }
+    return absolute;
+  } catch {
+    return rawUrl;
+  }
+}
+
+function rewriteSrcset(value, baseUrl) {
+  return String(value)
+    .split(',')
+    .map((candidate) => {
+      const trimmed = candidate.trim();
+      if (!trimmed) return candidate;
+      const parts = trimmed.split(/\s+/);
+      parts[0] = rewriteProxyTarget(parts[0], baseUrl);
+      return parts.join(' ');
+    })
+    .join(', ');
+}
+
+function rewriteCssUrls(cssText, baseUrl) {
+  return String(cssText).replace(/url\((['"]?)([^'")]+)\1\)/gi, (match, quote, urlValue) => {
+    const rewritten = rewriteProxyTarget(urlValue, baseUrl);
+    return `url(${quote}${rewritten}${quote})`;
+  });
+}
+
+function rewriteHtmlForProxy(html, parsedUrl) {
+  const baseUrl = parsedUrl.toString();
+
+  let rewritten = String(html)
+    .replace(/<meta[^>]+http-equiv=["']Content-Security-Policy["'][^>]*>/gi, '')
+    .replace(/<meta[^>]+http-equiv=["']X-Frame-Options["'][^>]*>/gi, '')
+    .replace(/<base[^>]*>/gi, '');
+
+  rewritten = rewritten.replace(/\b(href|src|action|poster)=(["'])(.*?)\2/gi, (match, attr, quote, value) => {
+    return `${attr}=${quote}${rewriteProxyTarget(value, baseUrl)}${quote}`;
+  });
+
+  rewritten = rewritten.replace(/\bsrcset=(["'])(.*?)\1/gi, (match, quote, value) => {
+    return `srcset=${quote}${rewriteSrcset(value, baseUrl)}${quote}`;
+  });
+
+  rewritten = rewritten.replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gi, (match, css) => {
+    return match.replace(css, rewriteCssUrls(css, baseUrl));
+  });
+
+  rewritten = rewritten.replace(/style=(["'])(.*?)\1/gi, (match, quote, css) => {
+    return `style=${quote}${rewriteCssUrls(css, baseUrl)}${quote}`;
+  });
+
+  const stub = `
+<script>
+window.ispring=window.ispring||{presenter:{player:{play:function(){}},navigator:{}}};
+window.addEventListener('DOMContentLoaded',function(){
+  document.querySelectorAll('meta[http-equiv="refresh"]').forEach(function(node){ node.remove(); });
+});
+</script>`;
+
+  rewritten = rewritten.replace(/<head[^>]*>/i, (match) => match + stub);
+  rewritten = rewritten.replace(/\btop\.location\s*=\s*self\.location\s*;?/gi, '');
+  rewritten = rewritten.replace(/\bparent\.location\s*=\s*self\.location\s*;?/gi, '');
+
+  return rewritten;
+}
 
 app.get('/api/proxy', async (request, response) => {
   try {
@@ -785,7 +868,7 @@ app.get('/api/proxy', async (request, response) => {
     }
 
     const parsed = new URL(targetUrl);
-    if (!ALLOWED_PROXY_HOSTS.some((h) => parsed.hostname === h || parsed.hostname.endsWith('.' + h))) {
+    if (!isAllowedProxyHost(parsed.hostname)) {
       return response.status(403).send('Host not allowed');
     }
 
@@ -803,16 +886,14 @@ app.get('/api/proxy', async (request, response) => {
       response.setHeader('Content-Type', contentType);
     }
     response.setHeader('X-Frame-Options', 'SAMEORIGIN'); // allow iframe on our domain
+    response.setHeader('Cache-Control', 'no-store');
 
     if (contentType.includes('text/html')) {
-      let html = await upstream.text();
-      // Inject <base> so relative CSS/JS/images still load from original host
-      const baseTag = `<base href="${parsed.origin}/">`;
-      html = html.replace(/<head[^>]*>/i, (match) => match + baseTag);
-      // Prepend stub at very start so it runs before ANY OUP script
-      const stub = `<script>window.ispring=window.ispring||{presenter:{player:{play:function(){}},navigator:{}}};</script>`;
-      html = stub + html;
-      response.send(html);
+      const html = await upstream.text();
+      response.send(rewriteHtmlForProxy(html, parsed));
+    } else if (contentType.includes('text/css')) {
+      const css = await upstream.text();
+      response.send(rewriteCssUrls(css, parsed));
     } else {
       // Stream binary/image/CSS/JS directly
       const buf = await upstream.arrayBuffer();
@@ -830,6 +911,10 @@ app.use(express.static(distPath, {
   setHeaders: (res, filePath) => {
     if (filePath.endsWith('.html')) {
       res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    }
+
+    if (filePath.endsWith('.wasm')) {
+      res.setHeader('Content-Type', 'application/wasm');
     }
   }
 }));
