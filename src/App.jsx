@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { createPortal } from 'react-dom';
 import QrScanner from 'qr-scanner';
 import jsQR from 'jsqr';
+import { detectCropUpscaleQr, detectCropUpscaleToClipboard } from './qr-utils.js';
 import Swal from 'sweetalert2';
 import BookAutocomplete from './BookAutocomplete';
 import PdfPane from './PdfPane';
@@ -14,6 +15,13 @@ const PREFERENCES_KEY = 'pdfReaderPreferences';
 const DEFAULT_ANNOTATION_COLOR = '#9acd32';
 const ANNOTATION_TOOLS = new Set(['pen', 'highlight', 'text', 'eraser', 'move', 'hand']);
 const COLOR_TOOLS = new Set(['pen', 'highlight', 'text']);
+
+// ── QR code debug capture levels ──────────────────────────
+// 0 = no debug
+// 1 = show click-position tooltip + console logs
+// 2 = also copy crop image data URL to clipboard
+// 3 = also trigger a Save-As file download
+const DEBUG_QRCODE_CAPTURE = 2;
 
 /** Return an ISO-8601 timestamp in Hong Kong time (UTC+8) */
 function hkNow() {
@@ -457,7 +465,10 @@ function App() {
 
   // Refresh layout when fullscreen, sidebar, panel, or window size changes
   useEffect(() => {
-    const onResize = () => { console.log('[layout] window resize — firing fit refresh'); refreshFitForCurrentMode(); };
+    const onResize = () => { 
+      // console.log('[layout] window resize — firing fit refresh'); 
+      refreshFitForCurrentMode(); 
+    };
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, [refreshFitForCurrentMode]);
@@ -3029,13 +3040,13 @@ function App() {
     const pageImg = document.elementsFromPoint(event.clientX, event.clientY)
       .find(el => el.tagName === 'IMG' && el.classList.contains('page-img'));
     if (!pageImg) {
-      console.log('[QR] No page-img found at click position');
+      if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] No page-img found at click position');
       return;
     }
 
     // Check that the image is fully loaded
     if (!pageImg.complete || pageImg.naturalWidth === 0) {
-      console.log('[QR] Page image not yet loaded');
+      if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] Page image not yet loaded');
       return;
     }
 
@@ -3049,9 +3060,11 @@ function App() {
     const clickNY = (cssY / rect.height) * naturalH;
 
     // Show a visual marker at the click position (auto-hides after 3s)
-    setClickMarker({ x: cssX, y: cssY, imgLeft: rect.left, imgTop: rect.top, naturalX: clickNX, naturalY: clickNY });
-    clearTimeout(clickMarkerTimeoutRef.current);
-    clickMarkerTimeoutRef.current = setTimeout(() => setClickMarker(null), 3000);
+    if (DEBUG_QRCODE_CAPTURE >= 1) {
+      setClickMarker({ x: cssX, y: cssY, imgLeft: rect.left, imgTop: rect.top, naturalX: clickNX, naturalY: clickNY });
+      clearTimeout(clickMarkerTimeoutRef.current);
+      clickMarkerTimeoutRef.current = setTimeout(() => setClickMarker(null), 3000);
+    }
 
     // ── Proportional crop: 30% of smaller image dimension, centered on click ──
     const fracX = clickNX / naturalW;
@@ -3063,10 +3076,12 @@ function App() {
     const csw = Math.min(cropDim, naturalW - csx);
     const csh = Math.min(cropDim, naturalH - csy);
 
-    console.log('[QR] Click:', clickNX.toFixed(1) + ',' + clickNY.toFixed(1),
-      '| proportional:', (fracX * 100).toFixed(1) + '%,' + (fracY * 100).toFixed(1) + '%',
-      '| crop:', csw + 'x' + csh, 'at', csx + ',' + csy,
-      '| image:', naturalW + 'x' + naturalH);
+    if (DEBUG_QRCODE_CAPTURE >= 1) {
+      console.log('[QR] Click:', clickNX.toFixed(1) + ',' + clickNY.toFixed(1),
+        '| proportional:', (fracX * 100).toFixed(1) + '%,' + (fracY * 100).toFixed(1) + '%',
+        '| crop:', csw + 'x' + csh, 'at', csx + ',' + csy,
+        '| image:', naturalW + 'x' + naturalH);
+    }
 
     // Draw proportional crop
     const cropCanvas = document.createElement('canvas');
@@ -3075,17 +3090,60 @@ function App() {
     const cropCtx = cropCanvas.getContext('2d');
     cropCtx.drawImage(pageImg, csx, csy, csw, csh, 0, 0, csw, csh);
 
-    // ── Save original proportional crop (only in debug mode: ?test=2) ──
-    const isDebugMode = new URLSearchParams(window.location.search).get('test') === '2';
-    if (isDebugMode) {
-      const origUrl = cropCanvas.toDataURL('image/png');
+    // ── Create raw crop canvas (before contrast enhancement) ──
+    const origCropCanvas = document.createElement('canvas');
+    origCropCanvas.width = csw;
+    origCropCanvas.height = csh;
+    const origCtx2 = origCropCanvas.getContext('2d');
+    origCtx2.drawImage(pageImg, csx, csy, csw, csh, 0, 0, csw, csh);
+
+    // ── Strategy 0: detect → crop → 3× upscale pipeline (runs FIRST, auto-copies to clipboard) ──
+    let qrResult = null;
+    try {
+      const pipeResult = await detectCropUpscaleQr(origCropCanvas);
+      if (pipeResult.data) {
+        qrResult = pipeResult.data;
+        if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] ✅ detect→crop→3× upscale:', qrResult,
+          '| crop:', pipeResult.cropW + '×' + pipeResult.cropH,
+          '| up:', pipeResult.canvas.width + '×' + pipeResult.canvas.height);
+      } else if (pipeResult.location) {
+        if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] detect→crop→3× upscale: QR located but decode failed');
+      }
+    } catch (err) {
+      if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] detect→crop→3× upscale error:', err.message || err);
+    }
+
+    // ── Debug: original crop image ──────────────────────
+    const origUrl = cropCanvas.toDataURL('image/png');
+
+    // Level 2: copy crop image to clipboard as PNG (paste-able into dnschecker.org etc.)
+    // Only if pipeline didn't already copy the upscaled version
+    if (DEBUG_QRCODE_CAPTURE >= 2 && !qrResult) {
+      try {
+        const blob = await new Promise(resolve => cropCanvas.toBlob(resolve, 'image/png'));
+        if (blob) {
+          await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+          if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] Copied crop image to clipboard');
+        }
+      } catch { /* clipboard may not be available */ }
+    }
+
+    // If pipeline already found the QR, skip remaining strategies
+    if (qrResult) {
+      if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] ✅ Setting QR URL:', qrResult);
+      processQrValue(qrResult);
+      return;
+    }
+
+    // Level 3: trigger Save-As download of original crop
+    if (DEBUG_QRCODE_CAPTURE >= 3) {
       const a1 = document.createElement('a');
       a1.href = origUrl;
       a1.download = `qr-debug-${Math.round(clickNX)}x${Math.round(clickNY)}.png`;
       document.body.appendChild(a1);
       a1.click();
       document.body.removeChild(a1);
-      console.log('[QR] Saved original crop:', a1.download);
+      if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] Saved original crop:', a1.download);
     }
 
     // ── Contrast enhancement ─────────────────────────────
@@ -3106,8 +3164,8 @@ function App() {
     }
     cropCtx.putImageData(imageData, 0, 0);
 
-    // ── Save contrast-enhanced proportional crop (only in debug mode: ?test=2) ──
-    if (isDebugMode) {
+    // ── Save contrast-enhanced proportional crop (level >= 3) ──
+    if (DEBUG_QRCODE_CAPTURE >= 3) {
       const contrastUrl = cropCanvas.toDataURL('image/png');
       const a2 = document.createElement('a');
       a2.href = contrastUrl;
@@ -3115,23 +3173,22 @@ function App() {
       document.body.appendChild(a2);
       a2.click();
       document.body.removeChild(a2);
-      console.log('[QR] Saved contrast crop (threshold:', threshold.toFixed(0) + ')');
+      if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] Saved contrast crop (threshold:', threshold.toFixed(0) + ')');
     }
 
-    // ── Decode QR code ──────────────────────────────────
-    let qrResult = null;
+    // ── Decode QR code (remaining strategies if pipeline didn't find it) ──
 
     // Helper: try jsQR on raw RGBA pixels
     const tryJsQR = (pixels, w, h, label) => {
       try {
         const res = jsQR(pixels, w, h, { inversionAttempts: 'attemptBoth' });
         if (res?.data) {
-          console.log('[QR] ✅ jsQR ' + label + ':', res.data);
+          if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] ✅ jsQR ' + label + ':', res.data);
           return res.data;
         }
-        console.log('[QR] jsQR ' + label + ': returned null (no QR detected)');
+        if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] jsQR ' + label + ': returned null (no QR detected)');
       } catch (err) {
-        console.log('[QR] jsQR ' + label + ' error:', err.message || err);
+        if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] jsQR ' + label + ' error:', err.message || err);
       }
       return null;
     };
@@ -3150,17 +3207,12 @@ function App() {
       return out;
     };
 
-    // Get raw (unprocessed) crop pixels
-    const origCropCanvas = document.createElement('canvas');
-    origCropCanvas.width = csw;
-    origCropCanvas.height = csh;
-    const origCtx = origCropCanvas.getContext('2d');
-    origCtx.drawImage(pageImg, csx, csy, csw, csh, 0, 0, csw, csh);
-    const origImageData = origCtx.getImageData(0, 0, csw, csh);
+    // Get raw (unprocessed) crop pixels (reuse origCropCanvas from above)
+    const origImageData = origCtx2.getImageData(0, 0, csw, csh);
     const origPixels = new Uint8ClampedArray(origImageData.data);
 
     // Strategy 1: jsQR on raw crop pixels
-    qrResult = tryJsQR(origPixels, csw, csh, 'raw crop');
+    if (!qrResult) qrResult = tryJsQR(origPixels, csw, csh, 'raw crop');
 
     // Strategy 2: jsQR on contrast-enhanced (auto threshold)
     if (!qrResult) {
@@ -3194,10 +3246,10 @@ function App() {
         const res = await QrScanner.scanImage(cropCanvas, { disallowCanvasResizing: true, alsoTryWithoutScanRegion: true });
         if (res) {
           qrResult = typeof res === 'string' ? res : res.data;
-          console.log('[QR] ✅ qr-scanner (no-resize) on contrast crop:', qrResult);
+          if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] ✅ qr-scanner (no-resize) on contrast crop:', qrResult);
         }
       } catch (err) {
-        console.log('[QR] qr-scanner (no-resize) failed:', err.message || err);
+        if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] qr-scanner (no-resize) failed:', err.message || err);
       }
     }
 
@@ -3209,11 +3261,11 @@ function App() {
           const res = await QrScanner.scanImage(blob, { disallowCanvasResizing: true, alsoTryWithoutScanRegion: true });
           if (res) {
             qrResult = typeof res === 'string' ? res : res.data;
-            console.log('[QR] ✅ qr-scanner on Blob:', qrResult);
+            if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] ✅ qr-scanner on Blob:', qrResult);
           }
         }
       } catch (err) {
-        console.log('[QR] qr-scanner on Blob failed:', err.message || err);
+        if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] qr-scanner on Blob failed:', err.message || err);
       }
     }
 
@@ -3224,10 +3276,10 @@ function App() {
         const detections = await detector.detect(origCropCanvas);
         if (detections.length > 0) {
           qrResult = detections[0].rawValue;
-          console.log('[QR] ✅ BarcodeDetector:', qrResult);
+          if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] ✅ BarcodeDetector:', qrResult);
         }
       } catch (err) {
-        console.log('[QR] BarcodeDetector failed:', err.message || err);
+        if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] BarcodeDetector failed:', err.message || err);
       }
     }
 
@@ -3237,18 +3289,18 @@ function App() {
         const res = await QrScanner.scanImage(pageImg, { disallowCanvasResizing: true, alsoTryWithoutScanRegion: true });
         if (res) {
           qrResult = typeof res === 'string' ? res : res.data;
-          console.log('[QR] ✅ qr-scanner on full image:', qrResult);
+          if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] ✅ qr-scanner on full image:', qrResult);
         }
       } catch (err) {
-        console.log('[QR] qr-scanner on full image failed:', err.message || err);
+        if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] qr-scanner on full image failed:', err.message || err);
       }
     }
 
-    // Strategy 9: server-side QR decode (sharp + jsQR on server)
+    // Strategy 9: server-side QR decode via zbarimg
     if (!qrResult) {
       try {
         const dataUrl = origCropCanvas.toDataURL('image/png');
-        const resp = await fetch('/api/qr-decode', {
+        const resp = await fetch('api/qr-decode', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ image: dataUrl }),
@@ -3257,37 +3309,57 @@ function App() {
           const json = await resp.json();
           if (json.data) {
             qrResult = json.data;
-            console.log('[QR] ✅ server-side decode:', qrResult);
+            if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] ✅ server-side decode:', qrResult);
+          } else {
+            if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] server-side decode: no QR found');
           }
         } else {
-          console.log('[QR] server-side decode: no QR found');
+          if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] server-side error:', resp.status);
         }
       } catch (err) {
-        console.log('[QR] server-side decode failed:', err.message || err);
+        if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] server-side decode failed:', err.message || err);
       }
     }
 
     if (qrResult) {
+      if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] ✅ Setting QR URL:', qrResult);
       processQrValue(qrResult);
     } else {
-      console.log('[QR] All strategies failed: no QR found');
+      if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] All strategies failed: no QR found');
     }
   };
 
-  /** Validate QR value as http(s) URL and open modal */
+  /** Validate QR value as http(s) URL and route it appropriately */
   const processQrValue = (value) => {
     let url;
+    let host;
     try {
       url = new URL(value);
+      host = url.hostname;
     } catch {
-      console.log('[QR] QR value is not a valid URL:', value);
+      if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] QR value is not a valid URL:', value);
       return;
     }
     if (!url.protocol.startsWith('http')) {
-      console.log('[QR] URL protocol is not http(s):', url.protocol);
+      if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] URL protocol is not http(s):', url.protocol);
       return;
     }
-    console.log('[QR] ✅ Setting QR URL:', url.href);
+    if (url.href.startsWith('https://digital.oupchina.com.hk')) {
+      if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] ✅ Opening QR URL in external tab:', url.href);
+      window.open(url.href, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    if (host === 'eresources.oupchina.com.hk' || host.endsWith('.oupchina.com.hk')) {
+      if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] ✅ Opening OUP QR URL in proxy modal:', url.href);
+      setModalInfo({ url: url.href, name: 'QR Code Link' });
+      return;
+    }
+    if (/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([\w-]{11})/.test(url.href)) {
+      if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] ✅ Opening YouTube QR URL in modal:', url.href);
+      setModalInfo({ url: url.href, name: 'QR Code Link' });
+      return;
+    }
+    if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] ✅ Setting QR URL:', url.href);
     setQrUrl(url.href);
   };
 

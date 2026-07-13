@@ -2122,6 +2122,16 @@ app.post('/api/qr-decode', asyncRoute(async (request, response) => {
   const b64 = image.replace(/^data:image\/\w+;base64,/, '');
   const buf = Buffer.from(b64, 'base64');
 
+  // Validate: check PNG header (8 bytes: 89 50 4E 47 0D 0A 1A 0A)
+  const pngMagic = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+  const isValidPng = buf.length >= 8 && buf.slice(0, 8).equals(pngMagic);
+  if (!isValidPng) {
+    console.log(`[qr-decode] invalid image: ${buf.length} bytes, header: ${buf.slice(0, 8).toString('hex')}`);
+    return response.json({ data: null });
+  }
+
+  console.log(`[qr-decode] received ${buf.length} bytes`);
+
   // Write to a temp PNG file for zbarimg
   const tmpDir = path.join(__dirname, '..', 'logs');
   await fs.mkdir(tmpDir, { recursive: true });
@@ -2179,7 +2189,7 @@ app.post('/api/qr-decode', asyncRoute(async (request, response) => {
         response.json({ data: result2 });
       } else {
         console.log('[qr-decode] zbarimg: no QR found');
-        response.status(404).json({ error: 'No QR code found' });
+        response.json({ data: null });
       }
     }
   } catch (err) {

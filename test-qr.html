@@ -56,6 +56,11 @@
     <canvas id="contrastPreview"></canvas>
     <span>Contrast-enhanced</span>
   </div>
+  <div class="preview-box">
+    <canvas id="upscaledPreview" style="image-rendering:pixelated"></canvas>
+    <span>Detect → Crop → 3× Upscale</span>
+    <button id="copyUpscaledBtn" class="btn-primary" style="display:none;margin-top:.4rem;font-size:.8rem">📋 Copy to clipboard</button>
+  </div>
 </div>
 
 <div class="results" id="results"></div>
@@ -67,6 +72,7 @@
   }
 }
 </script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
 <script type="module">
 import QrScanner from 'qr-scanner';
 const dropZone = document.getElementById('dropZone');
@@ -78,8 +84,11 @@ const results = document.getElementById('results');
 const previewRow = document.getElementById('previewRow');
 const originalPreview = document.getElementById('originalPreview');
 const contrastPreview = document.getElementById('contrastPreview');
+const upscaledPreview = document.getElementById('upscaledPreview');
+const copyUpscaledBtn = document.getElementById('copyUpscaledBtn');
 
 let currentImage = null;
+let lastUpscaledCanvas = null;  // keep reference for clipboard copy
 
 dropZone.addEventListener('click', () => fileInput.click());
 dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
@@ -96,6 +105,18 @@ retryBtn.addEventListener('click', () => { if (currentImage) runTests(currentIma
 thresholdSlider.addEventListener('input', () => {
   threshVal.textContent = thresholdSlider.value;
   if (currentImage) runTests(currentImage);
+});
+copyUpscaledBtn.addEventListener('click', async () => {
+  if (!lastUpscaledCanvas) return;
+  try {
+    const blob = await new Promise(r => lastUpscaledCanvas.toBlob(r, 'image/png'));
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+    copyUpscaledBtn.textContent = '✅ Copied!';
+    setTimeout(() => { copyUpscaledBtn.textContent = '📋 Copy to clipboard'; }, 2000);
+  } catch (e) {
+    copyUpscaledBtn.textContent = '❌ Failed: ' + (e.message || 'clipboard unavailable');
+    setTimeout(() => { copyUpscaledBtn.textContent = '📋 Copy to clipboard'; }, 3000);
+  }
 });
 
 async function loadImage(file) {
@@ -116,6 +137,80 @@ async function detectQr(source) {
   }
 }
 
+// ── detect → crop → 3× upscale pipeline ──────────────────────────
+function detectCropUpscaleQr(source) {
+  const result = { canvas: null, data: null, location: null, cropW: 0, cropH: 0 };
+
+  // Draw source to canvas to get pixels
+  let srcCanvas, w, h;
+  if (source instanceof HTMLCanvasElement) {
+    srcCanvas = source;
+    w = source.width;
+    h = source.height;
+  } else {
+    srcCanvas = document.createElement('canvas');
+    w = source.naturalWidth || source.width;
+    h = source.naturalHeight || source.height;
+    srcCanvas.width = w;
+    srcCanvas.height = h;
+    srcCanvas.getContext('2d').drawImage(source, 0, 0);
+  }
+  const ctx = srcCanvas.getContext('2d');
+  const imageData = ctx.getImageData(0, 0, w, h);
+  const pixels = imageData.data;
+
+  // 1. Detect QR position with jsQR
+  let qr;
+  try {
+    qr = jsQR(pixels, w, h, { inversionAttempts: 'attemptBoth' });
+  } catch { /* ignore */ }
+
+  if (!qr || !qr.location) return result;
+
+  result.location = qr.location;
+  result.data = qr.data;
+
+  // 2. Compute axis-aligned bounding box
+  const corners = [qr.location.topLeftCorner, qr.location.topRightCorner,
+                   qr.location.bottomRightCorner, qr.location.bottomLeftCorner];
+  const PAD = 2;
+  const xs = corners.map(p => p.x);
+  const ys = corners.map(p => p.y);
+  const bx = Math.max(0, Math.floor(Math.min(...xs)) - PAD);
+  const by = Math.max(0, Math.floor(Math.min(...ys)) - PAD);
+  const bw = Math.min(w - bx, Math.ceil(Math.max(...xs)) - bx + PAD * 2);
+  const bh = Math.min(h - by, Math.ceil(Math.max(...ys)) - by + PAD * 2);
+  result.cropW = bw;
+  result.cropH = bh;
+  if (bw <= 0 || bh <= 0) return result;
+
+  // 3. Crop
+  const cropCanvas = document.createElement('canvas');
+  cropCanvas.width = bw;
+  cropCanvas.height = bh;
+  const cropCtx = cropCanvas.getContext('2d');
+  cropCtx.drawImage(srcCanvas, bx, by, bw, bh, 0, 0, bw, bh);
+
+  // 4. Upscale 3× — nearest-neighbour for sharp QR modules
+  const SCALE = 3;
+  const upCanvas = document.createElement('canvas');
+  upCanvas.width = bw * SCALE;
+  upCanvas.height = bh * SCALE;
+  const upCtx = upCanvas.getContext('2d');
+  upCtx.imageSmoothingEnabled = false;
+  upCtx.drawImage(cropCanvas, 0, 0, upCanvas.width, upCanvas.height);
+  result.canvas = upCanvas;
+
+  // 5. Re-decode on upscaled image
+  const upData = upCtx.getImageData(0, 0, upCanvas.width, upCanvas.height);
+  try {
+    const qrUp = jsQR(upData.data, upCanvas.width, upCanvas.height, { inversionAttempts: 'attemptBoth' });
+    if (qrUp?.data) result.data = qrUp.data;
+  } catch { /* keep original result.data */ }
+
+  return result;
+}
+
 async function runTests(img) {
   const w = img.naturalWidth;
   const h = img.naturalHeight;
@@ -124,6 +219,9 @@ async function runTests(img) {
   originalPreview.width = w;
   originalPreview.height = h;
   originalPreview.getContext('2d').drawImage(img, 0, 0);
+  // Clear upscaled preview from previous run
+  upscaledPreview.width = 0;
+  upscaledPreview.height = 0;
   previewRow.style.display = '';
 
   // Build contrast canvas
@@ -227,6 +325,30 @@ async function runTests(img) {
     rows.push({ pass: true, label: 'qr-scanner: threshold sweep HIT', detail: sweepResults.join(' | ') });
   } else {
     rows.push({ pass: false, label: 'qr-scanner: threshold sweep (40–220)', detail: 'no QR found at any threshold' });
+  }
+
+  // Test 6: detect → crop → 3× upscale pipeline (jsQR-based)
+  try {
+    const pipeResult = detectCropUpscaleQr(img);
+    if (pipeResult.canvas) {
+      lastUpscaledCanvas = pipeResult.canvas;
+      upscaledPreview.width = pipeResult.canvas.width;
+      upscaledPreview.height = pipeResult.canvas.height;
+      upscaledPreview.getContext('2d').drawImage(pipeResult.canvas, 0, 0);
+      copyUpscaledBtn.style.display = '';
+    } else {
+      lastUpscaledCanvas = null;
+      copyUpscaledBtn.style.display = 'none';
+    }
+    if (pipeResult.data) {
+      rows.push({ pass: true, label: 'detect→crop→3× upscale', detail: `crop:${pipeResult.cropW}×${pipeResult.cropH} → up:${pipeResult.canvas.width}×${pipeResult.canvas.height} → ${pipeResult.data}` });
+    } else if (pipeResult.location) {
+      rows.push({ pass: false, label: 'detect→crop→3× upscale', detail: `QR located (crop:${pipeResult.cropW}×${pipeResult.cropH}) but decode failed` });
+    } else {
+      rows.push({ pass: false, label: 'detect→crop→3× upscale', detail: 'no QR location detected by jsQR' });
+    }
+  } catch (e) {
+    rows.push({ pass: false, label: 'detect→crop→3× upscale', detail: 'Error: ' + e.message });
   }
 
   // Render results
