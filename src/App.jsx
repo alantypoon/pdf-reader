@@ -5209,11 +5209,10 @@ function App() {
       </aside>
   )}
 
-      <main className="reader" style={displayMode === 'scrolling' && fitMode === 'none' ? { overflow: 'visible' } : undefined}>
+      <main className="reader">
         <div
           className={`book-stage ${displayMode} ${isBilingualView ? 'bilingual-layout' : ''} tool-${tool}`}
           ref={stageRef}
-          style={displayMode === 'scrolling' && fitMode === 'none' ? { overflow: 'auto' } : undefined}
           onClick={(e) => { handleStageClick(e); if (tool === 'text') handleCanvasClick(e); }}
           onContextMenu={handleStageContextMenu}
         >
@@ -5453,7 +5452,10 @@ function App() {
                   <div className="tool-menu-zoom-slider">
                     <button
                       className="tool-menu-zoom-btn"
-                      onClick={() => changeZoom(-0.25)}
+                      onClick={(e) => {
+                        const delta = e.shiftKey ? -0.10 : e.ctrlKey ? -0.05 : -0.01;
+                        changeZoom(delta);
+                      }}
                       aria-label={_('zoomOut')}
                     >−</button>
                     <input
@@ -5468,7 +5470,10 @@ function App() {
                     />
                     <button
                       className="tool-menu-zoom-btn"
-                      onClick={() => changeZoom(0.25)}
+                      onClick={(e) => {
+                        const delta = e.shiftKey ? 0.10 : e.ctrlKey ? 0.05 : 0.01;
+                        changeZoom(delta);
+                      }}
                       aria-label={_('zoomIn')}
                     >+</button>
                   </div>

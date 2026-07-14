@@ -1625,18 +1625,9 @@ button, input, select {
   line-height: 1.4;
 }
 
-/* ── Free-zoom mode: relax all overflow constraints ──── */
+/* ── Free-zoom mode: relax overflow constraints within pdf-content ──── */
 /* When the user releases fit-width/height (data-fit-mode="none"),
-   allow content to overflow the viewport so zoom-in actually works. */
-.app-shell[data-fit-mode="none"] .book-stage.scrolling {
-  overflow: visible !important;
-}
-.app-shell[data-fit-mode="none"].scrolling-mode .reader {
-  overflow: visible !important;
-}
-.app-shell[data-fit-mode="none"] .book-stage.scrolling .page-frame {
-  overflow: visible !important;
-}
+   allow content to overflow within pdf-content so zoom-in works. */
 .app-shell[data-fit-mode="none"] .book-stage.scrolling .pdf-content {
   overflow: visible !important;
 }

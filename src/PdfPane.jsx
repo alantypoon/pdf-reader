@@ -24,18 +24,19 @@ function safeDevicePixelRatio(viewportWidth, viewportHeight) {
  * @param {number} oldScrollTop  - scrollTop before content changed
  * @param {number} oldScrollHeight - scrollHeight before content changed
  * @param {'vertical'|'both'} axis - which axis to anchor
+ * @param {number} [oldScrollLeft] - scrollLeft before content changed (for 'both')
+ * @param {number} [oldScrollWidth] - scrollWidth before content changed (for 'both')
  * @returns {{ top: number, left?: number }} scrollTo options
  */
-function centerAnchoredScroll(container, oldScrollTop, oldScrollHeight, axis = 'vertical') {
+function centerAnchoredScroll(container, oldScrollTop, oldScrollHeight, axis = 'vertical', oldScrollLeft = 0, oldScrollWidth = 0) {
   const vpCenter = oldScrollTop + container.clientHeight / 2;
   const centerRatio = oldScrollHeight > 0 ? vpCenter / oldScrollHeight : 0;
   const newTop = centerRatio * container.scrollHeight - container.clientHeight / 2;
   const result = { top: Math.max(0, newTop), behavior: 'instant' };
   if (axis === 'both') {
-    const oldScrollLeft = container.scrollLeft;
-    const oldScrollWidth = container.scrollWidth;
-    const hpCenter = oldScrollLeft + container.clientWidth / 2;
-    const hCenterRatio = oldScrollWidth > 0 ? hpCenter / oldScrollWidth : 0;
+    const hpCenter = (oldScrollLeft || container.scrollLeft) + container.clientWidth / 2;
+    const hOldWidth = oldScrollWidth || container.scrollWidth;
+    const hCenterRatio = hOldWidth > 0 ? hpCenter / hOldWidth : 0;
     const newLeft = hCenterRatio * container.scrollWidth - container.clientWidth / 2;
     const maxScrollLeft = Math.max(0, container.scrollWidth - container.clientWidth);
     result.left = Math.max(0, Math.min(newLeft, maxScrollLeft));
@@ -311,7 +312,9 @@ function PdfPane({
       if (!holder) return;
       // Capture scroll position before canvas resize changes scrollHeight
       const oldScrollTop = holder.scrollTop;
+      const oldScrollLeft = holder.scrollLeft;
       const oldScrollHeight = Math.max(1, holder.scrollHeight);
+      const oldScrollWidth = Math.max(1, holder.scrollWidth);
       const sidebarWidth = Math.max(0, document.querySelector('.sidebar')?.getBoundingClientRect().width || 0);
       const toolbarHeight = Math.max(0, document.querySelector('.annotation-panel')?.getBoundingClientRect().height || 0);
       const viewportWidthCap = Math.max(180, window.innerWidth - sidebarWidth);
@@ -350,14 +353,14 @@ function PdfPane({
       canvas.style.flexShrink = '0';
       context.setTransform(ratio, 0, 0, ratio, 0, 0);
       // Restore center-anchored scroll now that new dimensions are set
-      if (oldScrollHeight !== holder.scrollHeight) {
-        holder.scrollTo(centerAnchoredScroll(holder, oldScrollTop, oldScrollHeight, 'both'));
+      if (oldScrollHeight !== holder.scrollHeight || oldScrollWidth !== holder.scrollWidth) {
+        holder.scrollTo(centerAnchoredScroll(holder, oldScrollTop, oldScrollHeight, 'both', oldScrollLeft, oldScrollWidth));
       }
       await page.render({ canvasContext: context, viewport }).promise;
       if (modeGenRef.current !== gen) return;
       // Re-apply after render in case paint caused a layout shift
-      if (oldScrollHeight !== holder.scrollHeight) {
-        holder.scrollTo(centerAnchoredScroll(holder, oldScrollTop, oldScrollHeight, 'both'));
+      if (oldScrollHeight !== holder.scrollHeight || oldScrollWidth !== holder.scrollWidth) {
+        holder.scrollTo(centerAnchoredScroll(holder, oldScrollTop, oldScrollHeight, 'both', oldScrollLeft, oldScrollWidth));
       }
       setRenderedPage(pageNumber);
       if (pageNumber !== currentPage) {
@@ -449,18 +452,20 @@ function PdfPane({
   }, [isImageMode, mode, currentPage, images, zoom, fitMode, contentWidth, contentHeight, imageLoadVersion, fitRefreshToken]);
 
   // ── Image pagination: keep viewport center anchored on zoom ─
-  const imgPaginationScrollRef = useRef({ top: 0, height: 0 });
+  const imgPaginationScrollRef = useRef({ top: 0, left: 0, height: 0, width: 0 });
   useLayoutEffect(() => {
     if (!isImageMode || mode !== 'pagination') return;
     const container = imgRef.current?.closest('.pdf-single-page');
     if (!container) return;
-    const { top, height } = imgPaginationScrollRef.current;
-    if (height > 0 && height !== container.scrollHeight) {
-      container.scrollTo(centerAnchoredScroll(container, top, height, 'both'));
+    const { top, left, height, width } = imgPaginationScrollRef.current;
+    if ((height > 0 && height !== container.scrollHeight) || (width > 0 && width !== container.scrollWidth)) {
+      container.scrollTo(centerAnchoredScroll(container, top, height, 'both', left, width));
     }
     imgPaginationScrollRef.current = {
       top: container.scrollTop,
+      left: container.scrollLeft,
       height: Math.max(1, container.scrollHeight),
+      width: Math.max(1, container.scrollWidth),
     };
   }, [isImageMode, mode, zoom, fitMode, fitRefreshToken, imageLoadVersion]);
 
@@ -476,15 +481,26 @@ function PdfPane({
     const gen = modeGenRef.current;
     mount.style.justifyItems = 'center';
     mount.style.overflowX = fitMode === 'none' ? 'auto' : 'hidden';
+
+    // Measure the base (unzoomed) width from .pdf-content before any zoom scaling.
+    const baseRect = contentRef.current ? contentRef.current.getBoundingClientRect() : mount.getBoundingClientRect();
+    const baseWidth = Math.max(180, baseRect.width);
+
     if (contentRef.current) {
       contentRef.current.style.overflow = fitMode === 'none' ? 'visible' : 'hidden';
+      // Drive zoom by changing .pdf-content width so it's visible in CSS
+      contentRef.current.style.width = fitMode === 'none' ? `${100 * zoom}%` : '';
     }
+    // Constrain .pdf-scroll-pages to the base (viewport) width so its content overflows → scrollbar
+    mount.style.width = `${baseWidth}px`;
 
     const drawAll = async () => {
       let lastScale = zoom;
       const mountRect = mount.getBoundingClientRect();
       const containerHeight = Math.max(180, mountRect.height);
-      const containerWidth = Math.max(180, mountRect.width);
+      // Use the base (viewport) width for scale calculations, not the mount's
+      // measured width which is now explicitly constrained.
+      const containerWidth = baseWidth;
       const fragment = document.createDocumentFragment();
       for (let i = 1; i <= numPages; i += 1) {
         if (disposed || modeGenRef.current !== gen) return;
@@ -505,6 +521,8 @@ function PdfPane({
         const ratio = safeDevicePixelRatio(viewport.width, viewport.height);
         canvas.width = Math.floor(viewport.width * ratio);
         canvas.height = Math.floor(viewport.height * ratio);
+        // Always use explicit px so the canvas can be wider than the constrained
+        // scroll container, which produces a horizontal scrollbar when zoomed.
         canvas.style.width = `${viewport.width}px`;
         canvas.style.height = `${viewport.height}px`;
         canvas.style.display = 'block';
@@ -524,7 +542,9 @@ function PdfPane({
 
       if (disposed || modeGenRef.current !== gen) return;
       const savedScrollTop = mount.scrollTop;
+      const savedScrollLeft = mount.scrollLeft;
       const savedScrollHeight = Math.max(1, mount.scrollHeight);
+      const savedScrollWidth = Math.max(1, mount.scrollWidth);
 
       mount.innerHTML = '';
       mount.appendChild(fragment);
@@ -579,8 +599,8 @@ function PdfPane({
       requestAnimationFrame(() => {
         if (disposed || modeGenRef.current !== gen) return;
 
-        if (savedScrollHeight !== mount.scrollHeight) {
-          mount.scrollTo(centerAnchoredScroll(mount, savedScrollTop, savedScrollHeight));
+        if (savedScrollHeight !== mount.scrollHeight || savedScrollWidth !== mount.scrollWidth) {
+          mount.scrollTo(centerAnchoredScroll(mount, savedScrollTop, savedScrollHeight, 'both', savedScrollLeft, savedScrollWidth));
         }
 
         // After restoring scroll (or even if heights matched), fire the
@@ -696,10 +716,21 @@ function PdfPane({
     mount.innerHTML = '';
     mount.style.justifyItems = 'center';
 
+    // Measure the base (unzoomed) width from .pdf-content before any zoom scaling.
+    // This is the grid-column width — the viewport through which the user scrolls.
+    const baseRect = contentRef.current ? contentRef.current.getBoundingClientRect() : { width: mount.getBoundingClientRect().width };
+    const baseWidth = Math.max(180, baseRect.width);
+
+    // Apply zoom at the .pdf-content level so CSS width reflects the zoom percentage
+    if (contentRef.current) {
+      contentRef.current.style.width = fitMode === 'none' ? `${100 * zoom}%` : '';
+    }
+    // Constrain .pdf-scroll-pages to the base (viewport) width so its content overflows → scrollbar
+    mount.style.width = `${baseWidth}px`;
+
     // Create all img elements first (without src) so DOM order is fixed
-    const mountRect = mount.getBoundingClientRect();
-    const containerHeight = Math.max(180, mountRect.height);
-    const containerWidth = Math.max(180, mountRect.width);
+    // For height-fit mode the container height drives image size; otherwise width does.
+    const mountH = Math.max(180, mount.getBoundingClientRect().height);
     const imgElements = images.map((url, idx) => {
       const pageNum = idx + 1;
       const img = document.createElement('img');
@@ -708,11 +739,13 @@ function PdfPane({
       img.dataset.src = url;
       img.className = 'page-img';
       if (fitMode === 'height') {
-        img.style.height = `${containerHeight * zoom}px`;
+        img.style.height = `${mountH * zoom}px`;
         img.style.width = 'auto';
       } else {
-        img.style.width = `${containerWidth * zoom}px`;
+        // Image width > scroll container width → horizontal scrollbar when zoomed
+        img.style.width = `${baseWidth * zoom}px`;
         img.style.height = 'auto';
+        img.style.maxWidth = 'none';
       }
       img.style.display = 'block';
       img.style.minHeight = '120px';
@@ -831,7 +864,7 @@ function PdfPane({
     };
   }, [isImageMode, images, mode, syncGroup, syncId]);
 
-  // ── Apply zoom to image-mode scrolling images ─────────────
+  // ── Apply zoom to image-mode scrolling via .pdf-content width ─
   useEffect(() => {
     if (!isImageMode) return;
     if (mode !== 'scrolling') return;
@@ -841,38 +874,67 @@ function PdfPane({
     if (contentRef.current) {
       contentRef.current.style.overflow = fitMode === 'none' ? 'visible' : 'hidden';
     }
-    const mountRect = mount.getBoundingClientRect();
-    const containerHeight = Math.max(180, mountRect.height);
-    const containerWidth = Math.max(180, mountRect.width);
+
+    // Measure the true base width by temporarily clearing any zoom width,
+    // then re-apply the zoom width. All synchronous — no visible flash.
+    if (contentRef.current) {
+      contentRef.current.style.width = '';
+    }
+    const rawRect = contentRef.current ? contentRef.current.getBoundingClientRect() : mount.getBoundingClientRect();
+    const baseWidth = Math.max(180, rawRect.width);
+
+    if (contentRef.current) {
+      // Drive zoom by changing .pdf-content width so it's visible in CSS
+      contentRef.current.style.width = fitMode === 'none' ? `${100 * zoom}%` : '';
+    }
+    // Constrain .pdf-scroll-pages to the base width so content overflows → scrollbar
+    mount.style.width = `${baseWidth}px`;
+
+    // Size images wider than the scroll container to create horizontal overflow.
+    // For height-fit mode use container height to drive image size instead.
     const imgs = mount.querySelectorAll('img.page-img');
-    let reportedScale = zoom;
-    imgs.forEach((img) => {
-      if (fitMode === 'height') {
-        img.style.height = `${containerHeight * zoom}px`;
+    if (fitMode === 'height') {
+      const mountH = Math.max(180, mount.getBoundingClientRect().height);
+      imgs.forEach((img) => {
+        img.style.height = `${mountH * zoom}px`;
         img.style.width = 'auto';
-        if (img.naturalHeight > 0 && containerHeight > 0 && reportedScale === zoom) {
-          reportedScale = (containerHeight * zoom) / img.naturalHeight;
+        img.style.maxWidth = '';
+      });
+    } else {
+      imgs.forEach((img) => {
+        img.style.width = `${baseWidth * zoom}px`;
+        img.style.height = 'auto';
+        img.style.maxWidth = 'none';
+      });
+    }
+
+    // Report the render scale for the zoom percentage display.
+    if (typeof onRenderScaleChange === 'function') {
+      const firstImg = mount.querySelector('img.page-img');
+      if (firstImg && firstImg.naturalWidth > 0) {
+        const displayedWidth = firstImg.getBoundingClientRect().width;
+        if (displayedWidth > 0) {
+          onRenderScaleChange(displayedWidth / firstImg.naturalWidth);
+        } else {
+          onRenderScaleChange(zoom);
         }
       } else {
-        img.style.width = `${containerWidth * zoom}px`;
-        img.style.height = 'auto';
-        if (img.naturalWidth > 0 && containerWidth > 0 && reportedScale === zoom) {
-          reportedScale = (containerWidth * zoom) / img.naturalWidth;
-        }
+        onRenderScaleChange(zoom);
       }
-    });
-    if (typeof onRenderScaleChange === 'function') {
-      onRenderScaleChange(Math.max(0.01, reportedScale));
     }
     // After fit/zoom changes, page boundaries shift. Restore the same relative
-    // scroll position instead of snapping to the top of the nearest page.
+    // scroll position (both axes) so zoom is anchored at the screen center.
     const DELAY_AFTER_FIT_CHANGE = 0;
     const savedScrollTop = mount.scrollTop;
+    const savedScrollLeft = mount.scrollLeft;
     const savedScrollHeight = Math.max(1, mount.scrollHeight);
+    const savedScrollWidth = Math.max(1, mount.scrollWidth);
     const timer = setTimeout(() => {
       if (!mount) return;
-      if (savedScrollHeight !== mount.scrollHeight) {
-        mount.scrollTo(centerAnchoredScroll(mount, savedScrollTop, savedScrollHeight));
+      const hChanged = savedScrollHeight !== mount.scrollHeight;
+      const wChanged = savedScrollWidth !== mount.scrollWidth;
+      if (hChanged || wChanged) {
+        mount.scrollTo(centerAnchoredScroll(mount, savedScrollTop, savedScrollHeight, 'both', savedScrollLeft, savedScrollWidth));
       }
     }, DELAY_AFTER_FIT_CHANGE);
 
@@ -887,7 +949,6 @@ function PdfPane({
     <section
       className="page-frame page-card pdf-pane"
       data-annotation-language={paneLanguage}
-      style={mode === 'scrolling' && fitMode === 'none' ? { overflow: 'visible' } : undefined}
     >
       <header className="page-card-header">
         <strong className="header-book">{title}</strong>
