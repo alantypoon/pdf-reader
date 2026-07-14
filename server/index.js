@@ -772,14 +772,10 @@ app.delete('/api/remarks', requireValidUserId(true), asyncRoute(async (request, 
 }));
 
 // ── Proxy for OUP resources (bypasses X-Frame-Options) ──────
-const ALLOWED_PROXY_HOSTS = [
-  'digital.oupchina.com.hk',
-  'eresources.oupchina.com.hk',
-  'isolution.oupchina.com.hk',
-];
-
-function isAllowedProxyHost(hostname) {
-  return ALLOWED_PROXY_HOSTS.some((host) => hostname === host || hostname.endsWith('.' + host));
+// All external hosts are now allowed through the proxy.
+// (The whitelist was removed — any URL can be proxied.)
+function isAllowedProxyHost(_hostname) {
+  return true; // allow all external hosts
 }
 
 function rewriteProxyTarget(rawUrl, baseUrl) {
@@ -793,7 +789,9 @@ function rewriteProxyTarget(rawUrl, baseUrl) {
     const absolute = new URL(trimmed, baseUrl).toString();
     const parsed = new URL(absolute);
     if (isAllowedProxyHost(parsed.hostname)) {
-      return `/api/proxy?url=${encodeURIComponent(absolute)}`;
+      // The proxy page itself is at /pdf-reader/api/proxy, so a relative
+      // "proxy?url=..." resolves to /pdf-reader/api/proxy?url=...
+      return `proxy?url=${encodeURIComponent(absolute)}`;
     }
     return absolute;
   } catch {
@@ -822,9 +820,27 @@ function rewriteCssUrls(cssText, baseUrl) {
 }
 
 function rewriteHtmlForProxy(html, parsedUrl) {
-  const baseUrl = parsedUrl.toString();
+  let baseUrl = parsedUrl.toString();
+  // Ensure the base URL ends with "/" so relative URLs resolve against
+  // the directory, not the parent.
+  if (!baseUrl.endsWith('/') && !/\.\w+$/.test(parsedUrl.pathname)) {
+    baseUrl += '/';
+  }
+  const str = String(html);
 
-  let rewritten = String(html)
+  // React / Next.js SPAs: don't modify the HTML — any change breaks hydration.
+  // Only rewrite sub-resource URLs and inject the interception script.
+  if (/__NEXT_DATA__|_next\/static|react-root|data-reactroot|__REACT_DEVTOOLS/i.test(str)) {
+    const pageBase = JSON.stringify(baseUrl);
+    const interceptScript = `<script>(function(){var PAGE_BASE=${pageBase},PROXY='/pdf-reader/api/proxy?url=',OUR_HOST=location.hostname;function proxyUrl(raw){if(!raw||typeof raw!=='string')return raw;var t=raw.trim();if(!t||/^(data:|javascript:|mailto:|tel:|blob:|#)/i.test(t))return raw;if(t.indexOf(PROXY)===0)return raw;try{var a=new URL(t,PAGE_BASE).href,u=new URL(a);if(u.hostname===OUR_HOST){var p='/pdf-reader/api/',i=a.indexOf(p);if(i!==-1){var r=a.slice(i+p.length);if(r.indexOf('proxy')!==0){a=new URL(r,PAGE_BASE).href;u=new URL(a)}}}if(u.hostname===OUR_HOST)return a;return PROXY+encodeURIComponent(a)}catch(e){return raw}}var OX=XMLHttpRequest,oo=OX.prototype.open;OX.prototype.open=function(m,u){return oo.apply(this,[m,proxyUrl(u)].concat(Array.prototype.slice.call(arguments,2)))};var of=window.fetch;window.fetch=function(i,n){if(typeof i==='string')i=proxyUrl(i);else if(i instanceof Request){try{i=new Request(proxyUrl(i.url),i)}catch(e){}}return of.call(this,i,n)};var os=navigator.sendBeacon;if(os){navigator.sendBeacon=function(u,d){return os.call(navigator,proxyUrl(u),d)}}function pp(pr,pn){var d=Object.getOwnPropertyDescriptor(pr,pn);if(!d||!d.set)return;var os=d.set;Object.defineProperty(pr,pn,{set:function(v){os.call(this,proxyUrl(v))},get:d.get,configurable:true,enumerable:true})}try{pp(HTMLScriptElement.prototype,'src');pp(HTMLImageElement.prototype,'src');pp(HTMLSourceElement.prototype,'src');pp(HTMLEmbedElement.prototype,'src');pp(HTMLVideoElement.prototype,'src');pp(HTMLAudioElement.prototype,'src');pp(HTMLTrackElement.prototype,'src');pp(HTMLIFrameElement.prototype,'src');pp(HTMLLinkElement.prototype,'href')}catch(e){}})();</script>`;
+    return interceptScript + str.replace(/\b(href|src|action|poster)=(["'])(.*?)\2/gi, (match, attr, quote, value) => {
+      return `${attr}=${quote}${rewriteProxyTarget(value, baseUrl)}${quote}`;
+    }).replace(/\bsrcset=(["'])(.*?)\1/gi, (match, quote, value) => {
+      return `srcset=${quote}${rewriteSrcset(value, baseUrl)}${quote}`;
+    });
+  }
+
+  let rewritten = str
     .replace(/<meta[^>]+http-equiv=["']Content-Security-Policy["'][^>]*>/gi, '')
     .replace(/<meta[^>]+http-equiv=["']X-Frame-Options["'][^>]*>/gi, '')
     .replace(/<base[^>]*>/gi, '');
@@ -845,7 +861,89 @@ function rewriteHtmlForProxy(html, parsedUrl) {
     return `style=${quote}${rewriteCssUrls(css, baseUrl)}${quote}`;
   });
 
+  const pageBase = JSON.stringify(baseUrl);
   const stub = `
+<script>
+(function(){
+  var PAGE_BASE = ${pageBase};
+  var PROXY = '/pdf-reader/api/proxy?url=';
+  var OUR_HOST = location.hostname;
+  function proxyUrl(raw){
+    if (!raw || typeof raw !== 'string') return raw;
+    var trimmed = raw.trim();
+    if (!trimmed || /^(data:|javascript:|mailto:|tel:|blob:|#)/i.test(trimmed)) return raw;
+    if (trimmed.indexOf(PROXY) === 0) return raw;
+    try {
+      var abs = new URL(trimmed, PAGE_BASE).href;
+      var u = new URL(abs);
+      if (u.hostname === OUR_HOST) {
+        // This URL might have been pre-resolved against the proxy page's location.
+        // Try to extract the relative path and resolve against the original base.
+        var ourPrefix = '/pdf-reader/api/';
+        var idx = abs.indexOf(ourPrefix);
+        if (idx !== -1) {
+          var relPath = abs.slice(idx + ourPrefix.length);
+          // Skip if it's already a proxy URL
+          if (relPath.indexOf('proxy') !== 0) {
+            abs = new URL(relPath, PAGE_BASE).href;
+            u = new URL(abs);
+          }
+        }
+      }
+      if (u.hostname === OUR_HOST) return abs;
+      return PROXY + encodeURIComponent(abs);
+    } catch(e) { return raw; }
+  }
+
+  // Patch XMLHttpRequest
+  var OrigXHR = XMLHttpRequest;
+  var origOpen = OrigXHR.prototype.open;
+  OrigXHR.prototype.open = function(method, url){
+    return origOpen.apply(this, [method, proxyUrl(url)].concat(Array.prototype.slice.call(arguments, 2)));
+  };
+
+  // Patch fetch
+  var origFetch = window.fetch;
+  window.fetch = function(input, init){
+    if (typeof input === 'string') input = proxyUrl(input);
+    else if (input instanceof Request) {
+      try { input = new Request(proxyUrl(input.url), input); } catch(e) {}
+    }
+    return origFetch.call(this, input, init);
+  };
+
+  // Patch navigator.sendBeacon
+  var origSendBeacon = navigator.sendBeacon;
+  if (origSendBeacon) {
+    navigator.sendBeacon = function(url, data){
+      return origSendBeacon.call(navigator, proxyUrl(url), data);
+    };
+  }
+
+  // Patch element.src / element.href setters for dynamically created elements
+  function patchProp(proto, prop) {
+    var desc = Object.getOwnPropertyDescriptor(proto, prop);
+    if (!desc || !desc.set) return;
+    var origSet = desc.set;
+    Object.defineProperty(proto, prop, {
+      set: function(val) { origSet.call(this, proxyUrl(val)); },
+      get: desc.get,
+      configurable: true, enumerable: true
+    });
+  }
+  try {
+    patchProp(HTMLScriptElement.prototype, 'src');
+    patchProp(HTMLImageElement.prototype, 'src');
+    patchProp(HTMLSourceElement.prototype, 'src');
+    patchProp(HTMLEmbedElement.prototype, 'src');
+    patchProp(HTMLVideoElement.prototype, 'src');
+    patchProp(HTMLAudioElement.prototype, 'src');
+    patchProp(HTMLTrackElement.prototype, 'src');
+    patchProp(HTMLIFrameElement.prototype, 'src');
+    patchProp(HTMLLinkElement.prototype, 'href');
+  } catch(e) {}
+})();
+</script>
 <script>
 window.ispring=window.ispring||{presenter:{player:{play:function(){}},navigator:{}}};
 window.addEventListener('DOMContentLoaded',function(){
@@ -854,13 +952,16 @@ window.addEventListener('DOMContentLoaded',function(){
 </script>`;
 
   rewritten = rewritten.replace(/<head[^>]*>/i, (match) => match + stub);
-  rewritten = rewritten.replace(/\btop\.location\s*=\s*self\.location\s*;?/gi, '');
-  rewritten = rewritten.replace(/\bparent\.location\s*=\s*self\.location\s*;?/gi, '');
+  // Neutralise frame-busting code without breaking JS syntax.
+  // Replace assignments with a harmless expression (false) instead of
+  // deleting them (which would leave syntax errors like `if () {}`).
+  rewritten = rewritten.replace(/\btop\.location\s*=\s*self\.location\s*;?/gi, 'false');
+  rewritten = rewritten.replace(/\bparent\.location\s*=\s*self\.location\s*;?/gi, 'false');
 
   return rewritten;
 }
 
-app.get('/api/proxy', async (request, response) => {
+app.all('/api/proxy', async (request, response) => {
   try {
     const targetUrl = request.query.url;
     if (!targetUrl) {
@@ -868,16 +969,30 @@ app.get('/api/proxy', async (request, response) => {
     }
 
     const parsed = new URL(targetUrl);
-    if (!isAllowedProxyHost(parsed.hostname)) {
-      return response.status(403).send('Host not allowed');
-    }
 
-    const upstream = await fetch(targetUrl, {
+    const fetchOpts = {
+      method: request.method,
       redirect: 'follow',
       headers: { 'User-Agent': 'Book reader Proxy/1.0' },
-    });
+    };
+    // Forward request body for non-GET/HEAD methods if present
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      const ct = request.get('content-type') || '';
+      if (ct) fetchOpts.headers['Content-Type'] = ct;
+      // Use raw body if available (Express raw body), otherwise parsed body
+      if (Buffer.isBuffer(request.body)) {
+        fetchOpts.body = request.body;
+      } else if (request.body && typeof request.body === 'object') {
+        fetchOpts.body = JSON.stringify(request.body);
+      } else if (request.body) {
+        fetchOpts.body = String(request.body);
+      }
+    }
+
+    const upstream = await fetch(targetUrl, fetchOpts);
 
     const contentType = upstream.headers.get('content-type') || '';
+    const pathname = parsed.pathname.toLowerCase();
 
     response.status(upstream.status);
 
@@ -888,10 +1003,13 @@ app.get('/api/proxy', async (request, response) => {
     response.setHeader('X-Frame-Options', 'SAMEORIGIN'); // allow iframe on our domain
     response.setHeader('Cache-Control', 'no-store');
 
-    if (contentType.includes('text/html')) {
+    const isCss = contentType.includes('text/css') || pathname.endsWith('.css');
+    const isHtml = contentType.includes('text/html') || (!isCss && /\.(html?|php|aspx?|jsp)$/i.test(pathname));
+
+    if (isHtml) {
       const html = await upstream.text();
       response.send(rewriteHtmlForProxy(html, parsed));
-    } else if (contentType.includes('text/css')) {
+    } else if (isCss) {
       const css = await upstream.text();
       response.send(rewriteCssUrls(css, parsed));
     } else {
@@ -905,22 +1023,54 @@ app.get('/api/proxy', async (request, response) => {
   }
 });
 
-// Serve built frontend (production) — disable cache for HTML
+// ── Cache-busting middleware ────────────────────────────────
+// Adding ?cache=0 to any URL disables all caching headers so the
+// browser fetches fresh resources on the next load.
+app.use((req, res, next) => {
+  if (req.query.cache === '0') {
+    res.locals.noCache = true;
+  }
+  next();
+});
+
+// Serve built frontend (production)
 const distPath = path.resolve(__dirname, '../dist');
 app.use(express.static(distPath, {
   setHeaders: (res, filePath) => {
+    if (res.locals.noCache) {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      return;
+    }
     if (filePath.endsWith('.html')) {
       res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     }
-
+    // Hashed assets (JS, CSS, WASM) — cache for 1 year
+    if (/\.(js|css|wasm)$/i.test(filePath)) {
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    }
     if (filePath.endsWith('.wasm')) {
       res.setHeader('Content-Type', 'application/wasm');
     }
   }
 }));
 
-app.use('/data', express.static(path.resolve(__dirname, '../data')));
-app.use('/pdf-reader/data', express.static(path.resolve(__dirname, '../data')));
+// Serve textbook data (page images, mp3, htmls) with aggressive caching.
+// These are static resources that never change — browser can cache indefinitely.
+const dataPath = path.resolve(__dirname, '../data');
+const dataStatic = express.static(dataPath, {
+  setHeaders: (res, filePath) => {
+    if (res.locals.noCache) {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      return;
+    }
+    // Images, audio, and other static assets — cache for 1 year
+    if (/\.(png|jpg|jpeg|gif|webp|svg|mp3|wav|ogg|pdf|ico)$/i.test(filePath)) {
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    }
+  }
+});
+app.use('/data', dataStatic);
+app.use('/pdf-reader/data', dataStatic);
 
 // ── AI Generation ─────────────────────────────────────────
 //

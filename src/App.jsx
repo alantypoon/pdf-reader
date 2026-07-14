@@ -21,7 +21,8 @@ const COLOR_TOOLS = new Set(['pen', 'highlight', 'text']);
 // 1 = show click-position tooltip + console logs
 // 2 = also copy crop image data URL to clipboard
 // 3 = also trigger a Save-As file download
-const DEBUG_QRCODE_CAPTURE = 2;
+const DEBUG_QRCODE_CAPTURE = 0;
+// const DEBUG_QRCODE_CAPTURE = 2;
 
 /** Return an ISO-8601 timestamp in Hong Kong time (UTC+8) */
 function hkNow() {
@@ -96,10 +97,10 @@ function buildQrUrlRewriteMap(chapter) {
         const targetUrl = typeof resource?.url === 'string' ? resource.url.trim() : '';
         if (!sourceUrl || !targetUrl) continue;
 
-        entries.push([sourceUrl, targetUrl]);
+        entries.push([sourceUrl, { url: targetUrl, name: resource?.name || '' }]);
 
         try {
-          entries.push([new URL(sourceUrl).href, targetUrl]);
+          entries.push([new URL(sourceUrl).href, { url: targetUrl, name: resource?.name || '' }]);
         } catch {
           // Keep the raw sourceUrl entry when normalization is not possible.
         }
@@ -132,7 +133,7 @@ function getSubjectAbbreviation(subjectId, selectedLanguage = 'en') {
   else if (normalized === 'chemistry-winter') result = selectedLanguage === 'tc' ? '化學' : 'Che';
   else if (normalized === 'physics-oup') result = selectedLanguage === 'tc' ? '物理' : 'Phy';
   else result = getSubjectLabel(subjectId, selectedLanguage);
-  console.log('[subjectBtn] getSubjectAbbreviation', { subjectId, selectedLanguage, normalized, result });
+  // console.log('[subjectBtn] getSubjectAbbreviation', { subjectId, selectedLanguage, normalized, result });
   return result;
 }
 
@@ -359,6 +360,8 @@ function App() {
   const [clearedTimestamps, setClearedTimestamps] = useState([]);
   const [clickMarker, setClickMarker] = useState(null);  // { x, y, imgLeft, imgTop, naturalX, naturalY } debug overlay
   const clickMarkerTimeoutRef = useRef(null);
+  const [qrCropRect, setQrCropRect] = useState(null);     // { left, top, width, height } dashed overlay for QR crop
+  const qrCropRectTimeoutRef = useRef(null);
   const [undoStack, setUndoStack] = useState([]);
   const [redoStack, setRedoStack] = useState([]);
   const [zoomLevel, setZoomLevel] = useState(Number(savedPrefs.zoomLevel || 1));
@@ -370,6 +373,7 @@ function App() {
   const [redrawTick, setRedrawTick] = useState(0);
   const [modalInfo, setModalInfo] = useState(null);
   const modalIframeRef = useRef(null);
+  const modalFrameTimeoutRef = useRef(null);
   const [modalFrameLoading, setModalFrameLoading] = useState(false);
   const [modalFrameFailed, setModalFrameFailed] = useState(false);
   const [floatingPlayer, setFloatingPlayer] = useState(null);
@@ -1881,9 +1885,10 @@ function App() {
   }, [jumpNotice]);
 
   const changeZoom = (delta) => {
+    setFitMode('none'); // release fit-width / fit-height so zoom works standalone
     setZoomLevel((current) => {
       const next = current + delta;
-      return Math.min(5, Math.max(0, Number(next.toFixed(2))));
+      return Math.min(5, Math.max(0.1, Number(next.toFixed(2))));
     });
   };
 
@@ -1924,7 +1929,7 @@ function App() {
   };
 
   // Refs for collapsed sidebar buttons – used to position the autocomplete dropdowns
-  const collapsedBtnRefs = useRef({ subject: null, book: null, section: null, page: null, language: null });
+  const collapsedBtnRefs = useRef({ subject: null, book: null, section: null, page: null, language: null, displayMode: null });
   const subjectBtnTextRef = useRef(null);
   const [collapsedDropdownId, setCollapsedDropdownId] = useState(null);
   const [collapsedDropdownPos, setCollapsedDropdownPos] = useState({ top: 0, left: 0 });
@@ -3094,10 +3099,10 @@ function App() {
       clickMarkerTimeoutRef.current = setTimeout(() => setClickMarker(null), 3000);
     }
 
-    // ── Proportional crop: 30% of smaller image dimension, centered on click ──
+    // ── Proportional crop: 15% of smaller image dimension, centered on click ──
     const fracX = clickNX / naturalW;
     const fracY = clickNY / naturalH;
-    const cropDim = Math.round(Math.min(naturalW, naturalH) * 0.30);
+    const cropDim = Math.round(Math.min(naturalW, naturalH) * 0.075);
     const halfCrop = Math.floor(cropDim / 2);
     const csx = Math.max(0, Math.floor(clickNX - halfCrop));
     const csy = Math.max(0, Math.floor(clickNY - halfCrop));
@@ -3110,6 +3115,15 @@ function App() {
         '| crop:', csw + 'x' + csh, 'at', csx + ',' + csy,
         '| image:', naturalW + 'x' + naturalH);
     }
+
+    // ── Show dashed crop area overlay on the page image ──
+    const cropLeft = rect.left + (csx / naturalW) * rect.width;
+    const cropTop = rect.top + (csy / naturalH) * rect.height;
+    const cropW = (csw / naturalW) * rect.width;
+    const cropH = (csh / naturalH) * rect.height;
+    setQrCropRect({ left: cropLeft, top: cropTop, width: cropW, height: cropH });
+    clearTimeout(qrCropRectTimeoutRef.current);
+    qrCropRectTimeoutRef.current = setTimeout(() => setQrCropRect(null), 3000);
 
     // Draw proportional crop
     const cropCanvas = document.createElement('canvas');
@@ -3368,17 +3382,30 @@ function App() {
       return;
     }
 
-    const rewrittenUrl = qrUrlRewriteMap.get(url.href) || qrUrlRewriteMap.get(String(value).trim()) || url.href;
+    const rewriteEntry = qrUrlRewriteMap.get(url.href) || qrUrlRewriteMap.get(String(value).trim());
+    const rewrittenUrl = rewriteEntry?.url || url.href;
+    const resourceName = rewriteEntry?.name || '';
     if (rewrittenUrl !== url.href && DEBUG_QRCODE_CAPTURE >= 1) {
-      console.log('[QR] Rewrote QR URL from contents mapping:', { from: url.href, to: rewrittenUrl });
+      console.log('[QR] Rewrote QR URL from contents mapping:', { from: url.href, to: rewrittenUrl, name: resourceName });
     }
 
     try {
       url = new URL(rewrittenUrl);
       host = url.hostname;
     } catch {
-      if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] Rewritten QR value is not a valid URL:', rewrittenUrl);
-      return;
+      // Rewritten URL may be a relative path (e.g. /pdf-reader/data/...)
+      if (typeof rewrittenUrl === 'string' && rewrittenUrl.startsWith('/')) {
+        try {
+          url = new URL(rewrittenUrl, window.location.origin);
+          host = url.hostname;
+        } catch {
+          if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] Rewritten QR value is not a valid URL:', rewrittenUrl);
+          return;
+        }
+      } else {
+        if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] Rewritten QR value is not a valid URL:', rewrittenUrl);
+        return;
+      }
     }
 
     if (!url.protocol.startsWith('http')) {
@@ -3386,8 +3413,8 @@ function App() {
       return;
     }
     if (/\.mp3(\?|$)/i.test(url.href)) {
-      if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] ✅ Opening MP3 QR URL in floating player:', url.href);
-      setFloatingPlayer({ url: url.href, name: 'QR Code Link' });
+      if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] ✅ Opening MP3 QR URL in floating player:', url.href, resourceName);
+      setFloatingPlayer({ url: url.href, name: resourceName || 'QR Code Link' });
       return;
     }
     if (host === 'eresources.oupchina.com.hk' || host.endsWith('.oupchina.com.hk')) {
@@ -4361,8 +4388,10 @@ function App() {
     if (!modalInfo) return '';
     const url = modalInfo.url;
     try {
-      const host = new URL(url).hostname;
-      if (host === 'isolution.oupchina.com.hk' || host.endsWith('.oupchina.com.hk')) {
+      const parsed = new URL(url);
+      // Proxy external URLs through the server to avoid mixed-content blocking (HTTP on HTTPS page)
+      // and to work around CORS / X-Frame-Options restrictions.
+      if (parsed.hostname !== window.location.hostname) {
         return `api/proxy?url=${encodeURIComponent(url)}`;
       }
     } catch { /* invalid URL, use as-is */ }
@@ -4379,15 +4408,25 @@ function App() {
     setModalFrameLoading(true);
     setModalFrameFailed(false);
 
-    const timeoutId = window.setTimeout(() => {
+    modalFrameTimeoutRef.current = window.setTimeout(() => {
       setModalFrameLoading(false);
       setModalFrameFailed(true);
-    }, 4000);
+    }, 12000);
 
-    return () => window.clearTimeout(timeoutId);
+    return () => {
+      if (modalFrameTimeoutRef.current) {
+        window.clearTimeout(modalFrameTimeoutRef.current);
+        modalFrameTimeoutRef.current = null;
+      }
+    };
   }, [modalInfo, modalType, modalFrameSrc]);
 
   const handleModalFrameLoad = () => {
+    // Clear the failure timeout — iframe loaded successfully
+    if (modalFrameTimeoutRef.current) {
+      window.clearTimeout(modalFrameTimeoutRef.current);
+      modalFrameTimeoutRef.current = null;
+    }
     setModalFrameLoading(false);
 
     if (!modalIframeRef.current || !modalFrameSrc.startsWith('api/proxy?url=')) {
@@ -4699,6 +4738,7 @@ function App() {
     <div
       className={`app-shell ${displayMode === 'scrolling' ? 'scrolling-mode' : ''} ${sidebarHidden ? 'sidebar-hidden' : ''} ${isFullscreen ? 'fullscreen-active' : ''}`}
       style={{ '--bottom-toolbar-offset': `${panelReservedHeight}px` }}
+      data-fit-mode={fitMode}
       onDoubleClick={() => {
         if (canRestoreHiddenSidebar) {
           restoreSidebarCollapsed();
@@ -5102,9 +5142,10 @@ function App() {
             )}
             <button
               className="sidebar-icon-btn"
-              onClick={cycleDisplayMode}
-              data-tooltip={displayMode === 'thumbnails' ? _('thumbnailsMode') : displayMode === 'scrolling' ? _('scrollingMode') : _('paginationMode')}
-              aria-label={_('toggleDisplayMode')}
+              ref={(el) => { collapsedBtnRefs.current.displayMode = el; }}
+              onClick={() => openSidebarAutocomplete('displayMode')}
+              data-tooltip={_('displayMode')}
+              aria-label={_('displayMode')}
             >
               {displayMode === 'thumbnails' ? (
                 <svg viewBox="0 0 24 24" role="presentation" focusable="false">
@@ -5168,8 +5209,14 @@ function App() {
       </aside>
   )}
 
-      <main className="reader">
-        <div className={`book-stage ${displayMode} ${isBilingualView ? 'bilingual-layout' : ''} tool-${tool}`} ref={stageRef} onClick={(e) => { handleStageClick(e); if (tool === 'text') handleCanvasClick(e); }} onContextMenu={handleStageContextMenu}>
+      <main className="reader" style={displayMode === 'scrolling' && fitMode === 'none' ? { overflow: 'visible' } : undefined}>
+        <div
+          className={`book-stage ${displayMode} ${isBilingualView ? 'bilingual-layout' : ''} tool-${tool}`}
+          ref={stageRef}
+          style={displayMode === 'scrolling' && fitMode === 'none' ? { overflow: 'auto' } : undefined}
+          onClick={(e) => { handleStageClick(e); if (tool === 'text') handleCanvasClick(e); }}
+          onContextMenu={handleStageContextMenu}
+        >
           {/* ── Click coordinate debug marker ──────────────── */}
           {clickMarker && (
             <div
@@ -5183,6 +5230,19 @@ function App() {
                 Img: ({Math.round(clickMarker.naturalX)}, {Math.round(clickMarker.naturalY)})
               </span>
             </div>
+          )}
+          {/* ── QR crop area dashed overlay (portal to body to escape stacking contexts) ── */}
+          {qrCropRect && tool === 'hand' && createPortal(
+            <div
+              className="qr-crop-overlay"
+              style={{
+                left: qrCropRect.left,
+                top: qrCropRect.top,
+                width: qrCropRect.width,
+                height: qrCropRect.height
+              }}
+            />,
+            document.body
           )}
           {(pageLoading || (visibleLanguages.length === 0 && selectedChapter)) ? (
             <div className="page-loading">
@@ -5369,7 +5429,7 @@ function App() {
                 <button
                   className="tool-btn tool-split-main"
                   disabled={fitDisabled}
-                  onClick={() => setZoomLevel(1)}
+                  onClick={() => { setFitMode('none'); setZoomLevel(1); }}
                   data-tooltip={_('zoomLevel')}
                   aria-label={_('zoomLevel')}
                 >
@@ -5393,7 +5453,7 @@ function App() {
                   <div className="tool-menu-zoom-slider">
                     <button
                       className="tool-menu-zoom-btn"
-                      onClick={() => changeZoom(-0.1)}
+                      onClick={() => changeZoom(-0.25)}
                       aria-label={_('zoomOut')}
                     >−</button>
                     <input
@@ -5403,12 +5463,12 @@ function App() {
                       max="5"
                       step="0.05"
                       value={zoomLevel}
-                      onChange={(e) => setZoomLevel(Number(e.target.value))}
+                      onChange={(e) => { setFitMode('none'); setZoomLevel(Number(e.target.value)); }}
                       aria-label={_('zoomLevel')}
                     />
                     <button
                       className="tool-menu-zoom-btn"
-                      onClick={() => changeZoom(0.1)}
+                      onClick={() => changeZoom(0.25)}
                       aria-label={_('zoomIn')}
                     >+</button>
                   </div>
@@ -5827,22 +5887,40 @@ function App() {
           <div className={`modal-frame${modalType === 'audio' ? ' modal-audio-frame' : ''}`} onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <span className="modal-url-label">{modalInfo.name || modalInfo.url}</span>
-              <a
-                href={modalInfo.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="modal-open-link"
-                title={_('openInNewTab')}
-              >
-                ↗
-              </a>
-              <button
-                className="modal-close"
-                onClick={() => setModalInfo(null)}
-                aria-label={_('close')}
-              >
-                ✕
-              </button>
+              <div className="modal-actions">
+                <button
+                  className="modal-copy-btn"
+                  title={(_ && _('copyToClipboard')) || 'Copy URL to clipboard'}
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(modalInfo.url);
+                      const btn = document.activeElement;
+                      if (btn) {
+                        btn.textContent = '✓';
+                        setTimeout(() => { btn.textContent = '📋'; }, 1500);
+                      }
+                    } catch { /* ignore */ }
+                  }}
+                >
+                  📋
+                </button>
+                <a
+                  href={modalInfo.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="modal-open-link"
+                  title={_('openInNewTab')}
+                >
+                  ↗
+                </a>
+                <button
+                  className="modal-close"
+                  onClick={() => setModalInfo(null)}
+                  aria-label={_('close')}
+                >
+                  ✕
+                </button>
+              </div>
             </div>
             {modalType === 'audio' ? (
               <div className="modal-audio-wrap">
@@ -6013,6 +6091,47 @@ function App() {
                 hideFilter
                 alwaysOpen
               />
+            </div>
+          )}
+          {collapsedDropdownId === 'displayMode' && (
+            <div
+              data-collapsed-autocomplete="displayMode"
+              className="collapsed-displaymode-menu"
+            >
+              <button
+                className={`collapsed-displaymode-item ${displayMode === 'pagination' ? 'active' : ''}`}
+                onClick={() => { setDisplayMode('pagination'); setCollapsedDropdownId(null); }}
+              >
+                <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="collapsed-displaymode-icon">
+                  <rect x="4" y="3" width="16" height="18" rx="2" fill="currentColor" />
+                  <line x1="8" y1="8" x2="16" y2="8" stroke="#f4f9fc" strokeWidth="1.5" />
+                  <line x1="8" y1="12" x2="16" y2="12" stroke="#f4f9fc" strokeWidth="1.5" />
+                  <line x1="8" y1="16" x2="13" y2="16" stroke="#f4f9fc" strokeWidth="1.5" />
+                </svg>
+                <span>{_('paginated')}</span>
+              </button>
+              <button
+                className={`collapsed-displaymode-item ${displayMode === 'scrolling' ? 'active' : ''}`}
+                onClick={() => { setDisplayMode('scrolling'); setCollapsedDropdownId(null); }}
+              >
+                <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="collapsed-displaymode-icon">
+                  <rect x="3" y="3" width="18" height="4" rx="1" fill="currentColor" />
+                  <rect x="3" y="9" width="18" height="4" rx="1" fill="currentColor" />
+                  <rect x="3" y="15" width="18" height="4" rx="1" fill="currentColor" />
+                </svg>
+                <span>{_('scrollingMode')}</span>
+              </button>
+              <button
+                className={`collapsed-displaymode-item ${displayMode === 'thumbnails' ? 'active' : ''}`}
+                onClick={() => { setDisplayMode('thumbnails'); setCollapsedDropdownId(null); }}
+              >
+                <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="collapsed-displaymode-icon">
+                  <rect x="3" y="4" width="6" height="7" rx="1.2" fill="currentColor" />
+                  <rect x="3" y="13" width="6" height="7" rx="1.2" fill="currentColor" />
+                  <rect x="11" y="4" width="10" height="16" rx="1.5" fill="currentColor" />
+                </svg>
+                <span>{_('thumbnailsMode')}</span>
+              </button>
             </div>
           )}
         </div>,

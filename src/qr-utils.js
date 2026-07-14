@@ -93,12 +93,25 @@ function positionToLocation(position) {
 
 async function ensureZxingReady() {
   if (!zxingReadyPromise) {
-    zxingReadyPromise = prepareZXingModule({
-      overrides: {
-        locateFile: (path, prefix) => (path.endsWith('.wasm') ? zxingReaderWasmUrl : prefix + path),
-      },
-      fireImmediately: true,
-    });
+    zxingReadyPromise = (async () => {
+      // Pre-fetch WASM binary to bypass WebAssembly.instantiateStreaming
+      // which fails when the reverse-proxy/CDN sends wrong MIME type.
+      const wasmResp = await fetch(zxingReaderWasmUrl);
+      if (!wasmResp.ok) throw new Error(`Failed to fetch WASM: ${wasmResp.status}`);
+      const wasmBinary = await wasmResp.arrayBuffer();
+
+      return prepareZXingModule({
+        wasmBinary,
+        // Override instantiation to use non-streaming compile
+        instantiateWasm: (imports, onSuccess) => {
+          WebAssembly.instantiate(wasmBinary, imports).then(
+            result => onSuccess(result.instance, result.module),
+          );
+          return {}; // Emscripten requires returning an empty object
+        },
+        fireImmediately: true,
+      });
+    })();
   }
   return zxingReadyPromise;
 }

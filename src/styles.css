@@ -39,7 +39,7 @@ button, input, select {
 
 .app-shell.scrolling-mode {
   height: 100dvh;
-  overflow: hidden;
+  /* overflow: hidden; -- removed for free-zoom */
 }
 
 .app-shell.sidebar-hidden {
@@ -1002,14 +1002,14 @@ button, input, select {
 }
 
 .app-shell.scrolling-mode .reader {
-  overflow: hidden;
+  /* overflow: hidden; -- removed for free-zoom */
 }
 
 .page-frame {
   position: relative;
   min-height: 70vh;
   border-radius: 0;
-  overflow: hidden;
+  /* overflow: hidden; -- removed for free-zoom */
   background: transparent;
   box-shadow: none;
   display: flex;
@@ -1086,7 +1086,7 @@ button, input, select {
   grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
   height: calc(100dvh - var(--bottom-toolbar-offset, 0px));
   min-height: 0;
-  overflow: hidden;
+  /* overflow: hidden; -- removed for free-zoom */
 }
 
 /* Prevent native iOS scroll on the PDF scroll containers when using
@@ -1367,7 +1367,7 @@ button, input, select {
   min-width: 0;
   height: 100%;
   padding: 0;
-  overflow: hidden;
+  /* overflow: hidden; -- removed for free-zoom */
   touch-action: inherit;
 }
 
@@ -1398,8 +1398,7 @@ button, input, select {
 .pdf-scroll-pages {
   width: 100%;
   height: 100%;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: auto;
   touch-action: pan-y;
   overscroll-behavior-x: contain;
   user-select: none;
@@ -1624,6 +1623,84 @@ button, input, select {
   border-radius: 4px;
   text-align: center;
   line-height: 1.4;
+}
+
+/* ── Free-zoom mode: relax all overflow constraints ──── */
+/* When the user releases fit-width/height (data-fit-mode="none"),
+   allow content to overflow the viewport so zoom-in actually works. */
+.app-shell[data-fit-mode="none"] .book-stage.scrolling {
+  overflow: visible !important;
+}
+.app-shell[data-fit-mode="none"].scrolling-mode .reader {
+  overflow: visible !important;
+}
+.app-shell[data-fit-mode="none"] .book-stage.scrolling .page-frame {
+  overflow: visible !important;
+}
+.app-shell[data-fit-mode="none"] .book-stage.scrolling .pdf-content {
+  overflow: visible !important;
+}
+/* Scroll container: allow both horizontal and vertical overflow when zooming freely */
+.app-shell[data-fit-mode="none"] .book-stage.scrolling .pdf-scroll-pages {
+  overflow: auto !important;
+}
+
+/* ── QR crop area dashed overlay ───────────────────────── */
+.qr-crop-overlay {
+  position: fixed;
+  z-index: 11000;
+  pointer-events: none;
+  border: 2px dashed #ff4444;
+  border-radius: 4px;
+  animation: qr-crop-appear 0.2s ease-out;
+  box-shadow: 0 0 0 2px rgba(255, 68, 68, 0.15);
+}
+@keyframes qr-crop-appear {
+  0% { opacity: 0; transform: scale(0.95); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+/* ── Collapsed sidebar display-mode dropdown ──────────── */
+.collapsed-displaymode-menu {
+  background: #fff;
+  border: 1px solid #dde4ea;
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.14);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 148px;
+}
+.collapsed-displaymode-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: #1f4d6c;
+  transition: background 0.15s;
+}
+.collapsed-displaymode-item:hover {
+  background: #f0f4f8;
+}
+.collapsed-displaymode-item.active {
+  background: #e8f0f8;
+  font-weight: 600;
+}
+.collapsed-displaymode-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  color: #1f4d6c;
+}
+.collapsed-displaymode-item.active .collapsed-displaymode-icon {
+  color: #0d3b5c;
 }
 
 /* ── QR Code URL Modal ──────────────────────────────────── */
@@ -2550,7 +2627,7 @@ button, input, select {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  z-index: 1000;
+  z-index: 12000;
   background: rgba(0, 0, 0, 0.55);
   display: flex;
   align-items: center;
@@ -2598,20 +2675,21 @@ button, input, select {
   flex-shrink: 0;
   width: 34px;
   height: 34px;
-  border: 1px solid #d7e0e8;
+  border: 1px solid #fecaca;
   border-radius: 10px;
-  background: #f8fafc;
+  background: #fef2f2;
   font-size: 1.1rem;
-  color: #475569;
+  color: #dc2626;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: background 120ms ease;
+  transition: background 120ms ease, color 120ms ease;
 }
 
 .modal-close:hover {
-  background: #e2e8f0;
+  background: #fecaca;
+  color: #991b1b;
 }
 
 .modal-open-link {
@@ -2634,9 +2712,39 @@ button, input, select {
   background: #e2e8f0;
 }
 
+.modal-copy-btn {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border: 1px solid #d7e0e8;
+  border-radius: 10px;
+  background: #f8fafc;
+  font-size: 1rem;
+  color: #475569;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 120ms ease;
+  padding: 0;
+  line-height: 1;
+}
+
+.modal-copy-btn:hover {
+  background: #e2e8f0;
+}
+
+.modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .modal-iframe {
   flex: 1;
   width: 100%;
+  height: 100%;
   border: none;
 }
 

@@ -325,7 +325,9 @@ function PdfPane({
         ? scaleH
         : fitMode === 'width'
           ? scaleW
-          : Math.min(scaleW, scaleH);
+          : fitMode === 'none'
+            ? scaleW  // same baseline as fit-width, but max-width is released
+            : Math.min(scaleW, scaleH);
       const scale = Math.max(0.001, fitScale * zoom);
       if (typeof onRenderScaleChange === 'function') {
         onRenderScaleChange(scale);
@@ -339,11 +341,10 @@ function PdfPane({
       canvas.height = Math.floor(viewport.height * ratio);
       canvas.style.width = `${viewport.width}px`;
       canvas.style.height = `${viewport.height}px`;
-      // Fit-height: allow horizontal overflow for wide/landscape pages.
-      // CSS (.pdf-single-page canvas) already applies max-width:100%,
-      // so we only need to relax it for fit-height.  max-height is
-      // intentionally left unconstrained so zoom-in works correctly.
-      canvas.style.maxWidth = fitMode === 'height' ? 'none' : '';
+      // Fit-height / none (absolute zoom): allow horizontal overflow.
+      // CSS (.pdf-single-page canvas) applies max-width:100%, so we
+      // must explicitly clear it when the user wants unconstrained zoom.
+      canvas.style.maxWidth = (fitMode === 'height' || fitMode === 'none') ? 'none' : '';
       canvas.style.maxHeight = '';
       canvas.style.display = 'block';
       canvas.style.flexShrink = '0';
@@ -408,6 +409,15 @@ function PdfPane({
         img.style.maxWidth = 'none';
         img.style.maxHeight = 'none';
       }
+    } else if (fitMode === 'none') {
+      // Same baseline as width-fit but max-width constraint is released for unconstrained zoom
+      const w = container.clientWidth;
+      if (w > 0) {
+        img.style.width = `${w * zoom}px`;
+        img.style.height = 'auto';
+        img.style.maxWidth = 'none';
+        img.style.maxHeight = 'none';
+      }
     } else {
       const w = container.clientWidth;
       if (w > 0) {
@@ -465,6 +475,10 @@ function PdfPane({
     let pageRefreshTimer = null;
     const gen = modeGenRef.current;
     mount.style.justifyItems = 'center';
+    mount.style.overflowX = fitMode === 'none' ? 'auto' : 'hidden';
+    if (contentRef.current) {
+      contentRef.current.style.overflow = fitMode === 'none' ? 'visible' : 'hidden';
+    }
 
     const drawAll = async () => {
       let lastScale = zoom;
@@ -477,9 +491,14 @@ function PdfPane({
         const page = await pdfDoc.getPage(i);
         if (disposed || modeGenRef.current !== gen) return;
         const viewportBase = page.getViewport({ scale: 1 });
-        const fitDim = fitMode === 'height' ? containerHeight : containerWidth;
-        const fitBase = fitMode === 'height' ? viewportBase.height : viewportBase.width;
-        lastScale = Math.max(0.001, (fitDim / fitBase) * zoom);
+        if (fitMode === 'none') {
+          // Same baseline as fit-width but max-width CSS constraints are released
+          lastScale = Math.max(0.001, (containerWidth / viewportBase.width) * zoom);
+        } else {
+          const fitDim = fitMode === 'height' ? containerHeight : containerWidth;
+          const fitBase = fitMode === 'height' ? viewportBase.height : viewportBase.width;
+          lastScale = Math.max(0.001, (fitDim / fitBase) * zoom);
+        }
         const viewport = page.getViewport({ scale: lastScale });
         const canvas = document.createElement('canvas');
         const context = canvas.getContext('2d');
@@ -490,6 +509,13 @@ function PdfPane({
         canvas.style.height = `${viewport.height}px`;
         canvas.style.display = 'block';
         canvas.dataset.page = String(i);
+        // Debug: log scroll-mode canvas sizes when free-zooming
+        if (fitMode === 'none' && i === 1) {
+          console.log('[scroll-zoom] fitMode=' + fitMode + ' zoom=' + zoom +
+            ' lastScale=' + lastScale.toFixed(3) +
+            ' canvasW=' + viewport.width.toFixed(0) +
+            ' containerW=' + containerWidth);
+        }
         context.setTransform(ratio, 0, 0, ratio, 0, 0);
         await page.render({ canvasContext: context, viewport }).promise;
         if (disposed || modeGenRef.current !== gen) return;
@@ -811,6 +837,10 @@ function PdfPane({
     if (mode !== 'scrolling') return;
     const mount = scrollRef.current;
     if (!mount) return;
+    mount.style.overflowX = fitMode === 'none' ? 'auto' : 'hidden';
+    if (contentRef.current) {
+      contentRef.current.style.overflow = fitMode === 'none' ? 'visible' : 'hidden';
+    }
     const mountRect = mount.getBoundingClientRect();
     const containerHeight = Math.max(180, mountRect.height);
     const containerWidth = Math.max(180, mountRect.width);
@@ -854,7 +884,11 @@ function PdfPane({
   const titleSuffix = useMemo(() => `${renderedPage}${numPages ? ` / ${numPages}` : ''}`, [renderedPage, numPages]);
 
   return (
-    <section className="page-frame page-card pdf-pane" data-annotation-language={paneLanguage}>
+    <section
+      className="page-frame page-card pdf-pane"
+      data-annotation-language={paneLanguage}
+      style={mode === 'scrolling' && fitMode === 'none' ? { overflow: 'visible' } : undefined}
+    >
       <header className="page-card-header">
         <strong className="header-book">{title}</strong>
         {section != null && (
