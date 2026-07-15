@@ -17,6 +17,24 @@ function safeDevicePixelRatio(viewportWidth, viewportHeight) {
 }
 
 /**
+ * If the page URL has ?timestamp=1, append a cache-busting datestamp
+ * (up to milliseconds) to the given URL so the browser never serves a
+ * stale cached copy.
+ */
+function withTimestamp(url) {
+  if (typeof window === 'undefined') return url;
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has('timestamp')) return url;
+  } catch { return url; }
+  const now = new Date();
+  const pad = (n, len) => String(n).padStart(len, '0');
+  const ts = `${now.getFullYear()}${pad(now.getMonth() + 1, 2)}${pad(now.getDate(), 2)}-${pad(now.getHours(), 2)}${pad(now.getMinutes(), 2)}${pad(now.getSeconds(), 2)}-${pad(now.getMilliseconds(), 3)}`;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}_t=${ts}`;
+}
+
+/**
  * Compute a scroll position that keeps the viewport center anchored
  * after content dimensions change (e.g. zoom in/out).
  *
@@ -773,7 +791,7 @@ function PdfPane({
       if (!url || img.src) return false;
       loadedSet.add(idx);
       loading++;
-      img.src = url;
+      img.src = withTimestamp(url);
       img.onload = () => {
         loading--;
         img.style.minHeight = '';
@@ -1074,7 +1092,7 @@ function PdfPane({
               {imgSrc ? (
                 <img
                   ref={imgRef}
-                  src={imgSrc}
+                  src={withTimestamp(imgSrc)}
                   alt={`${_('pageN')} ${currentPage}`}
                   className="page-img"
                   onLoad={handleImageLoad}

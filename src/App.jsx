@@ -1076,7 +1076,16 @@ function App() {
         console.log(`[loadPages] chapter=${selectedChapter} file=${selectedFile} languages=${targets.join(',')}`);
         const entries = await Promise.allSettled(
           targets.map(async (language) => {
-            const url = `api/page?chapter=${selectedChapter}&language=${language}&page=${selectedFile}${bookParam}`;
+            let url = `api/page?chapter=${selectedChapter}&language=${language}&page=${selectedFile}${bookParam}`;
+            // Cache-bust the API call when ?timestamp is in the page URL
+            if (typeof window !== 'undefined') {
+              try {
+                const sp = new URLSearchParams(window.location.search);
+                if (sp.has('timestamp')) {
+                  url += `&_t=${Date.now()}`;
+                }
+              } catch { /* ignore */ }
+            }
             console.log(`[loadPages] fetching: ${url}`);
             const data = await fetchJson(url);
             const result = data.images || data.url || '';
