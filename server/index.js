@@ -566,27 +566,53 @@ app.get('/api/catalog', asyncRoute(async (request, response) => {
   const folders = (await fs.readdir(dataRoot, { withFileTypes: true }))
     .sort((a, b) => compareNaturalIds(a.name, b.name));
   console.log('[catalog] folders found:', folders.map(f => f.name));
+
+  /** Detect which languages have content for a chapter */
+  async function detectLanguages(chapterDir) {
+    const langs = [];
+    for (const lang of ['en', 'tc']) {
+      const pagesDir = path.join(dataRoot, chapterDir, lang, 'contents', 'pages');
+      try {
+        const stat = await fs.stat(pagesDir);
+        if (stat.isDirectory()) langs.push(lang);
+      } catch { /* dir doesn't exist */ }
+    }
+    return langs;
+  }
+
+  /** Scan all chapters and return the union of available languages across the book */
+  const bookAvailableLanguages = new Set();
+
   const chapters = await Promise.all(
     folders
       .filter((entry) => entry.isDirectory())
       .map(async (entry) => {
-        const contentsPath = path.join(dataRoot, entry.name, 'contents.json');
+        const chapterDir = entry.name;
+        const contentsPath = path.join(dataRoot, chapterDir, 'contents.json');
         console.log('[catalog] reading:', contentsPath);
         const contents = await readJSON(contentsPath, { contents: [] });
         const sections = (contents.contents || []).length;
-        console.log(`[catalog]   ${entry.name}: ${sections} sections`);
+        console.log(`[catalog]   ${chapterDir}: ${sections} sections`);
         const { nameEn, nameZh } = getBookNamesFromContents(contents);
+        const availableLanguages = await detectLanguages(chapterDir);
+        availableLanguages.forEach((l) => bookAvailableLanguages.add(l));
         return {
-          id: entry.name,
-          name: formatBookLabel(entry.name, nameEn || nameZh),
+          id: chapterDir,
+          name: formatBookLabel(chapterDir, nameEn || nameZh),
           nameEn,
           nameZh,
-          contents: contents.contents || []
+          contents: contents.contents || [],
+          availableLanguages,
         };
       })
   );
   console.log('[catalog] returning', chapters.length, 'chapters');
-  response.json({ chapters, books, activeBookId });
+  response.json({
+    chapters,
+    books,
+    activeBookId,
+    availableLanguages: [...bookAvailableLanguages].sort(),
+  });
 }));
 
 app.get('/api/page', asyncRoute(async (request, response) => {

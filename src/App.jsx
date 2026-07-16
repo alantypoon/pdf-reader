@@ -316,6 +316,7 @@ function App() {
   const [structure, setStructure] = useState([]);
   const [dataBooks, setDataBooks] = useState([]);
   const [activeBookId, setActiveBookId] = useState('');
+  const [bookAvailableLanguages, setBookAvailableLanguages] = useState(['en', 'tc']);
   const [physicsChapterCatalog, setPhysicsChapterCatalog] = useState(null);
   const physicsChapterCatalogRef = useRef(null);
   useEffect(() => {
@@ -344,6 +345,17 @@ function App() {
   const regenSkipFlashcardsRef = useRef(false);
   const regenSkipQuizRef = useRef(false);
   const [selectedLanguage, setSelectedLanguage] = useState(savedPrefs.selectedLanguage || 'bilingual');
+
+  // Auto-fallback to English if the selected language isn't available for the current book.
+  // 'bilingual' is a UI mode combining en+tc — only skip fallback when both languages exist.
+  useEffect(() => {
+    if (bookAvailableLanguages.length === 0) return;
+    const hasBoth = bookAvailableLanguages.includes('en') && bookAvailableLanguages.includes('tc');
+    if (selectedLanguage === 'bilingual' && hasBoth) return;
+    if (!bookAvailableLanguages.includes(selectedLanguage)) {
+      setSelectedLanguage('en');
+    }
+  }, [bookAvailableLanguages, selectedLanguage]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(Boolean(savedPrefs.sidebarCollapsed));
   const [sidebarHidden, setSidebarHidden] = useState(Boolean(savedPrefs.sidebarHidden));
   const [pageSources, setPageSources] = useState({});
@@ -643,6 +655,10 @@ function App() {
         setActiveBookId(bookId);
         setSelectedBook(book || bookId);
         setStructure(chapters);
+        const langs = Array.isArray(data.availableLanguages) && data.availableLanguages.length > 0
+          ? data.availableLanguages
+          : ['en', 'tc'];
+        setBookAvailableLanguages(langs);
         if (chapters.length) {
           applySubjectSelection(book || bookId, chapters, bookId);
         } else {
@@ -5113,6 +5129,7 @@ function App() {
               className={`toggle-btn ${selectedLanguage === 'en' ? 'active' : ''}`}
               onClick={() => setSelectedLanguage('en')}
               aria-pressed={selectedLanguage === 'en'}
+              disabled={!bookAvailableLanguages.includes('en')}
             >
               {_('english')}
             </button>
@@ -5120,6 +5137,7 @@ function App() {
               className={`toggle-btn ${selectedLanguage === 'tc' ? 'active' : ''}`}
               onClick={() => setSelectedLanguage('tc')}
               aria-pressed={selectedLanguage === 'tc'}
+              disabled={!bookAvailableLanguages.includes('tc')}
             >
               {_('chinese')}
             </button>
@@ -5127,6 +5145,7 @@ function App() {
               className={`toggle-btn ${selectedLanguage === 'bilingual' ? 'active' : ''}`}
               onClick={() => setSelectedLanguage('bilingual')}
               aria-pressed={selectedLanguage === 'bilingual'}
+              disabled={!(bookAvailableLanguages.includes('en') && bookAvailableLanguages.includes('tc'))}
             >
               {_('bilingual')}
             </button>
@@ -6152,11 +6171,15 @@ function App() {
           {collapsedDropdownId === 'language' && (
             <div data-collapsed-autocomplete="language">
               <AutocompleteDropdown
-                items={[
-                  { id: 'bilingual', primary: _('bilingual'), searchText: _('bilingual') },
-                  { id: 'en', primary: _('english'), searchText: _('english') },
-                  { id: 'tc', primary: _('chinese'), searchText: _('chinese') },
-                ]}
+                items={(() => {
+                  const items = [];
+                  const hasEn = bookAvailableLanguages.includes('en');
+                  const hasTc = bookAvailableLanguages.includes('tc');
+                  if (hasEn && hasTc) items.push({ id: 'bilingual', primary: _('bilingual'), searchText: _('bilingual') });
+                  if (hasEn) items.push({ id: 'en', primary: _('english'), searchText: _('english') });
+                  if (hasTc) items.push({ id: 'tc', primary: _('chinese'), searchText: _('chinese') });
+                  return items;
+                })()}
                 value={selectedLanguage}
                 onSelect={(id) => { setSelectedLanguage(id); setCollapsedDropdownId(null); }}
                 onOpenChange={(open) => { if (!open) setCollapsedDropdownId(null); }}
