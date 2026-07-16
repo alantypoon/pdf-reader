@@ -655,10 +655,18 @@ function App() {
         setActiveBookId(bookId);
         setSelectedBook(book || bookId);
         setStructure(chapters);
-        const langs = Array.isArray(data.availableLanguages) && data.availableLanguages.length > 0
+        const effectiveBook = book || bookId;
+        const apiLangs = Array.isArray(data.availableLanguages) && data.availableLanguages.length > 0
           ? data.availableLanguages
           : ['en', 'tc'];
+        // chem.w only has English content — select English and disable tc/bilingual
+        const langs = effectiveBook === 'chemistry-winter'
+          ? apiLangs.filter((l) => l === 'en')
+          : apiLangs;
         setBookAvailableLanguages(langs);
+        if (effectiveBook === 'chemistry-winter') {
+          setSelectedLanguage('en');
+        }
         if (chapters.length) {
           applySubjectSelection(book || bookId, chapters, bookId);
         } else {
@@ -1004,6 +1012,13 @@ function App() {
     setSelectedFile(1);
     setSelectedPage(1);
     setSelectedPhysicsChapterId('');
+    // chem.w only has English content — select English and disable tc/bilingual
+    if (newBook === 'chemistry-winter') {
+      setSelectedLanguage('en');
+      setBookAvailableLanguages(['en']);
+    } else {
+      setBookAvailableLanguages(['en', 'tc']);
+    }
     try {
       const data = await fetchJson(`api/catalog?book=${encodeURIComponent(newBook)}`);
       const chapters = data.chapters || [];
