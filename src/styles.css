@@ -3152,9 +3152,41 @@ button, input, select {
   background: #eef2ff;
 }
 
+.ai-lookup-key-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .ai-lookup-key strong {
   font-size: 0.8rem;
   color: #4338ca;
+}
+
+.ai-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid #c7d2fe;
+  border-radius: 6px;
+  background: #fff;
+  color: #4338ca;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  line-height: 1;
+}
+
+.ai-copy-btn:hover {
+  background: #e0e7ff;
+  border-color: #a5b4fc;
+}
+
+.ai-copy-btn:active {
+  background: #c7d2fe;
 }
 
 .ai-lookup-key code {

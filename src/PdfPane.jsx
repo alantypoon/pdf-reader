@@ -927,17 +927,15 @@ function PdfPane({
     }
 
     // Report the render scale for the zoom percentage display.
+    // Only report when we can measure actual rendered dimensions — never
+    // emit a fallback guess (e.g. zoom=1.0) that would briefly flash 100%.
     if (typeof onRenderScaleChange === 'function') {
       const firstImg = mount.querySelector('img.page-img');
       if (firstImg && firstImg.naturalWidth > 0) {
         const displayedWidth = firstImg.getBoundingClientRect().width;
         if (displayedWidth > 0) {
           onRenderScaleChange(displayedWidth / firstImg.naturalWidth);
-        } else {
-          onRenderScaleChange(zoom);
         }
-      } else {
-        onRenderScaleChange(zoom);
       }
     }
     // After fit/zoom changes, page boundaries shift. Restore the same relative

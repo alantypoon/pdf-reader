@@ -1497,18 +1497,24 @@ async function runGenerationPrompt(prompt, retries = 3) {
 }
 
 async function runPromptViaGateway(prompt, genModel, retries) {
-  const genFormData = new FormData();
-  genFormData.append('provider', GEN_PROVIDER);
-  genFormData.append('apiKey', GEN_APIKEY);
-  genFormData.append('model', genModel);
-  genFormData.append('prompt', prompt);
   const mt = getGenMaxTokens();
-  if (mt > 0) genFormData.append('max_tokens', String(mt));  // omit when 0 — let gateway decide
 
   let lastError;
   for (let attempt = 0; attempt <= retries; attempt++) {
+    // Build a fresh FormData for each attempt — FormData streams are
+    // single-use in Node.js; reusing a consumed FormData sends an empty body.
+    const genFormData = new FormData();
+    genFormData.append('provider', GEN_PROVIDER);
+    genFormData.append('apiKey', GEN_APIKEY);
+    genFormData.append('model', genModel);
+    genFormData.append('prompt', prompt);
+    if (mt > 0) genFormData.append('max_tokens', String(mt));  // omit when 0 — let gateway decide
+
+    // Use a longer timeout: translation prompts are ~2x larger than
+    // generation prompts, and 120B models can take 3-5 minutes.
+    const genTimeoutMs = 300000; // 5 min per attempt
     const genController = new AbortController();
-    const genTimeoutId = setTimeout(() => genController.abort(), 180000); // 3 min per attempt
+    const genTimeoutId = setTimeout(() => genController.abort(), genTimeoutMs);
 
     let genResponse;
     try {
@@ -1518,9 +1524,19 @@ async function runPromptViaGateway(prompt, genModel, retries) {
         body: genFormData,
         signal: genController.signal,
       });
-    } finally {
+    } catch (fetchErr) {
+      // Timeout or network error — retry if attempts remain
       clearTimeout(genTimeoutId);
+      lastError = new Error(`AI Gateway generation error: ${fetchErr.message}`);
+      if (attempt < retries) {
+        const delay = Math.min(2000 * Math.pow(2, attempt), 15000);
+        console.log(`[ai-generate] gen attempt ${attempt + 1} failed (${fetchErr.message}), retrying in ${delay}ms...`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        continue;
+      }
+      throw lastError;
     }
+    clearTimeout(genTimeoutId);
 
     if (genResponse.ok) {
       const genText = await genResponse.text();
@@ -1667,6 +1683,12 @@ async function extractPageText(dataRoot, chapter, sectionNum, page, language, vi
       body,
       signal: controller.signal,
     });
+  } catch (fetchErr) {
+    // Wrap AbortError / network errors so the debug payload (extractionRequest) propagates
+    throw new AiGenerationError(
+      `AI Gateway extraction error (${language}): ${fetchErr.message}`,
+      debug
+    );
   } finally {
     clearTimeout(timeoutId);
   }
@@ -2113,11 +2135,16 @@ app.post('/api/ai-generate', async (request, response) => {
         debugInfo.extractionRaw.en = debugInfo.extractionRaw.en || err.debug?.extractionRaw || '';
         debugInfo.generationRaw.en = debugInfo.generationRaw.en || err.debug?.generationRaw || '[generation not attempted]';
         debugInfo.extractionRequest = debugInfo.extractionRequest || {};
-        debugInfo.extractionRequest.en = err.debug?.extractionRequest || null;
+        debugInfo.extractionRequest.en = debugInfo.extractionRequest.en || err.debug?.extractionRequest || null;
         debugInfo.generationRequest = debugInfo.generationRequest || {};
-        debugInfo.generationRequest.en = err.debug?.generationRequest || null;
-        debugInfo.errors.en = debugInfo.errors.en || err.message;
-        debugInfo.errors.tc = debugInfo.errors.tc || err.message;
+        debugInfo.generationRequest.en = debugInfo.generationRequest.en || err.debug?.generationRequest || null;
+        // Only assign the error to languages that actually failed
+        if (!results.en || results.en.error) {
+          debugInfo.errors.en = debugInfo.errors.en || err.message;
+        }
+        if (!results.tc || results.tc.error) {
+          debugInfo.errors.tc = debugInfo.errors.tc || err.message;
+        }
 
         // Save English content even if TC translation failed, so the user
         // gets partial results instead of losing everything.

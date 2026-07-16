@@ -9,6 +9,7 @@ import PdfPane from './PdfPane';
 import SectionAutocomplete from './SectionAutocomplete';
 import StepperSelect from './StepperSelect';
 import AutocompleteDropdown from './components/AutocompleteDropdown';
+import MathText from './components/MathText';
 import { t, uiLang } from './i18n';
 
 const PREFERENCES_KEY = 'pdfReaderPreferences';
@@ -119,9 +120,10 @@ function hasRenderableSource(source) {
 function getSubjectLabel(subjectId, selectedLanguage = 'en') {
   const normalized = String(subjectId || '').trim().toLowerCase();
   const showChinese = selectedLanguage === 'tc';
-  if (normalized === 'biology-oup') return showChinese ? '生物' : 'Biology';
-  if (normalized === 'chemistry-winter') return showChinese ? '化學' : 'Chemistry';
-  if (normalized === 'physics-oup') return showChinese ? '物理' : 'Physics';
+  if (normalized === 'biology-oup') return showChinese ? '生物' : 'Bio';
+  if (normalized === 'chemistry-aristo') return showChinese ? '化學' : 'Chem';
+  if (normalized === 'chemistry-winter') return showChinese ? '化學.W' : 'Chem.W';
+  if (normalized === 'physics-oup') return showChinese ? '物理' : 'Phy';
   return String(subjectId || '').trim();
 }
 
@@ -961,7 +963,7 @@ function App() {
   };
 
   const subjectToggleOptions = useMemo(() => {
-    const desiredOrder = ['physics-oup', 'chemistry-winter', 'biology-oup'];
+    const desiredOrder = ['physics-oup', 'chemistry-aristo', 'chemistry-winter', 'biology-oup'];
     const existing = new Set((dataBooks || []).map((item) => String(item)));
     return desiredOrder
       .filter((id) => existing.has(id))
@@ -3755,9 +3757,9 @@ function App() {
     if (scales.length > 0) {
       return Math.round(Math.min(...scales) * 100);
     }
-
-    return Math.round(zoomLevel * 100);
-  }, [visibleLanguages, renderScaleByLanguage, zoomLevel]);
+    // No render scale reported yet — unknown
+    return null;
+  }, [visibleLanguages, renderScaleByLanguage]);
   const maxNavigablePage = useMemo(() => {
     const counts = visibleLanguages
       .map((language) => Number(pageCounts[language] || 0))
@@ -5441,7 +5443,7 @@ function App() {
                   data-tooltip={_('zoomLevel')}
                   aria-label={_('zoomLevel')}
                 >
-                  <span className="zoom-percent-label">{displayZoomPercent}%</span>
+                  <span className="zoom-percent-label">{displayZoomPercent != null ? `${displayZoomPercent}%` : ''}</span>
                 </button>
                 <button
                   className="tool-btn tool-split-arrow"
@@ -5596,7 +5598,20 @@ function App() {
             }}>
               {isTestMode && (
                 <div className="ai-lookup-key">
-                  <strong>Lookup Key</strong>
+                  <div className="ai-lookup-key-header">
+                    <strong>Lookup Key</strong>
+                    <button
+                      className="ai-copy-btn"
+                      title="Copy lookup key to clipboard"
+                      onClick={async (e) => {
+                        try {
+                          await navigator.clipboard.writeText(JSON.stringify(aiLookupKey));
+                          e.currentTarget.textContent = '✓';
+                          setTimeout(() => { e.currentTarget.textContent = '📋'; }, 1500);
+                        } catch { /* ignore */ }
+                      }}
+                    >📋</button>
+                  </div>
                   <code>{JSON.stringify(aiLookupKey)}</code>
                 </div>
               )}
@@ -5648,7 +5663,7 @@ function App() {
                       </h3>
                       <ul className="ai-summary">
                         {aiDisplayContent.summary.map((point, idx) => (
-                          <li key={idx}>{point}</li>
+                          <li key={idx}><MathText text={point} /></li>
                         ))}
                       </ul>
                     </div>
@@ -5674,12 +5689,12 @@ function App() {
                             <div className="flashcard-inner">
                               <div className="flashcard-front">
                                 <span className="flashcard-label">Q{idx + 1}</span>
-                                <p>{card.question}</p>
+                                <p><MathText text={card.question} /></p>
                                 <small className="flashcard-hint">{_('clickToReveal')}</small>
                               </div>
                               <div className="flashcard-back">
                                 <span className="flashcard-label">A{idx + 1}</span>
-                                <p>{card.answer}</p>
+                                <p><MathText text={card.answer} /></p>
                               </div>
                             </div>
                           </div>
@@ -5704,7 +5719,7 @@ function App() {
                           return (
                             <div key={qIdx} className={`mcq-item ${selected ? 'answered' : ''}`}>
                               <p className="mcq-question">
-                                <strong>Q{qIdx + 1}.</strong> {q.question}
+                                <strong>Q{qIdx + 1}.</strong> <MathText text={q.question} />
                               </p>
                               <div className="mcq-options">
                                 {(q.options || []).map((opt) => {
@@ -5721,7 +5736,7 @@ function App() {
                                       onClick={() => !selected && handleMcqSelect(qIdx, optLetter)}
                                       disabled={!!selected}
                                     >
-                                      {opt}
+                                      <MathText text={opt} />
                                     </button>
                                   );
                                 })}
@@ -5729,7 +5744,7 @@ function App() {
                               {selected && (
                                 <div className={`mcq-feedback ${isCorrect ? 'correct' : 'incorrect'}`}>
                                   <strong>{isCorrect ? _('correct') : _('incorrect')}</strong>
-                                  <p>{q.explanation}</p>
+                                  <p><MathText text={q.explanation} /></p>
                                 </div>
                               )}
                             </div>
