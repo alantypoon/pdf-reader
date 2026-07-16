@@ -31,9 +31,9 @@ else
 fi
 
 if [[ -n "$server_pid" ]]; then
-    echo "  Server   :3001  ✓ (pid $server_pid)"
+    echo "  Server   :3007  ✓ (pid $server_pid)"
 else
-    echo "  Server   :3001  ✗ NOT RUNNING"
+    echo "  Server   :3007  ✗ NOT RUNNING"
 fi
 echo ""
 
