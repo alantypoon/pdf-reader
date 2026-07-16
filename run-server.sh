@@ -2,23 +2,38 @@
 # ============================================================
 # run-server.sh — foreground runner for the pdf-reader server
 # Called by launchd (macOS) or systemd (Linux) as a service.
-# The OS process manager monitors this process and restarts it
-# automatically if it exits.
+# Guarantees exactly ONE process on the target port.
 # ============================================================
 
 set -e
 cd "$(dirname "$0")"
+PORT=3001
 
-# Kill any leftover instances (defensive)
-pkill -f "node server/index.js" 2>/dev/null || true
-sleep 1
+# ── Force-release the port (kill ALL processes on it) ──────
+echo "[run-server] Releasing port $PORT..."
+for i in 1 2 3; do
+  PIDS=$(lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true)
+  if [ -z "$PIDS" ]; then
+    echo "[run-server] Port $PORT is free"
+    break
+  fi
+  echo "[run-server] Killing PIDs $PIDS on port $PORT (attempt $i)"
+  for pid in $PIDS; do
+    kill -9 "$pid" 2>/dev/null || true
+  done
+  sleep 1
+done
 
-# Build the frontend once at startup
+# Double-check
+PIDS=$(lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true)
+if [ -n "$PIDS" ]; then
+  echo "[run-server] WARNING: Port $PORT still occupied by $PIDS after kill attempts"
+fi
+
+# ── Build frontend ─────────────────────────────────────────
 echo "[run-server] Building frontend..."
 sh build.sh
 
-# Start the Node.js server in the foreground.
-# IMPORTANT: do NOT use nohup / & — the service manager needs
-# the process to stay in the foreground so it can monitor it.
-echo "[run-server] Starting Node.js server..."
+# ── Start server ───────────────────────────────────────────
+echo "[run-server] Starting Node.js server on port $PORT..."
 exec node server/index.js

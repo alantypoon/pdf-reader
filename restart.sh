@@ -7,6 +7,10 @@
 #   Linux  → systemctl restart
 # ============================================================
 
+clear
+
+./stop-service.sh
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

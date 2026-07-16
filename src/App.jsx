@@ -372,7 +372,22 @@ function App() {
   const textInputRef = useRef(null);
   const textInputCommittedRef = useRef(false);
   const textInputBlurFlagRef = useRef(false);
-  const [clearedTimestamps, setClearedTimestamps] = useState([]);
+  const [clearedTimestamps, setClearedTimestamps] = useState(() => {
+    if (typeof window === 'undefined') return [];
+    try {
+      const raw = window.localStorage.getItem('pdfReaderClearedTimestamps');
+      return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+  });
+  const clearedTimestampsRef = useRef(clearedTimestamps);
+  useEffect(() => { clearedTimestampsRef.current = clearedTimestamps; }, [clearedTimestamps]);
+  // Persist cleared timestamps so erased annotations stay hidden across page reloads
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem('pdfReaderClearedTimestamps', JSON.stringify(clearedTimestamps));
+    } catch { /* quota exceeded, ignore */ }
+  }, [clearedTimestamps]);
   const [clickMarker, setClickMarker] = useState(null);  // { x, y, imgLeft, imgTop, naturalX, naturalY } debug overlay
   const clickMarkerTimeoutRef = useRef(null);
   const [qrCropRect, setQrCropRect] = useState(null);     // { left, top, width, height } dashed overlay for QR crop
@@ -455,6 +470,14 @@ function App() {
   const restoreLongPressRef = useRef(false);
   const dragRef = useRef({ dragging: false, startX: 0, startY: 0, posX: 0, posY: 0 });
   const pageViewRef = useRef({ key: '', startedAt: 0, loginLogged: false });
+  const touchScrollingRef = useRef(false);
+  const lastTouchScrollAtRef = useRef(0);
+  const momentumRef = useRef({ animating: false, vx: 0, vy: 0, target: null, lastTime: 0, rafId: null });
+  const isIOSDevice = useRef((() => {
+    if (typeof navigator === 'undefined') return false;
+    return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.maxTouchPoints > 1 && /MacIntel/.test(navigator.platform));
+  })()).current;
 
   // Position the color picker popover relative to the color button
   useLayoutEffect(() => {
@@ -742,6 +765,7 @@ function App() {
   }, [selectedLanguage, pageSources]);
 
   const sectionScopedAnnotations = displayMode === 'scrolling' || displayMode === 'thumbnails';
+  const remarksLoadGenRef = useRef(0);
 
   const loadRemarksForCurrentScope = useCallback(async () => {
     const langTargets = selectedLanguage === 'bilingual'
@@ -751,6 +775,9 @@ function App() {
       setRemarks([]);
       return [];
     }
+
+    // Increment generation to cancel any in-flight stale fetches
+    const gen = ++remarksLoadGenRef.current;
 
     const responses = await Promise.all(
       langTargets.map((langId) => {
@@ -764,18 +791,26 @@ function App() {
         if (!sectionScopedAnnotations) {
           params.set('pageId', String(selectedPage));
         }
+        params.set('_', String(Date.now()));
         return fetchJson(`api/remarks?${params.toString()}`);
       })
     );
 
+    // Discard if a newer fetch was started while this one was in flight
+    if (gen !== remarksLoadGenRef.current) {
+      console.log(`[remarks] discarding stale fetch gen=${gen}, current=${remarksLoadGenRef.current}`);
+      return [];
+    }
+
     const nextRemarks = responses.flatMap((data) => data.remarks || []);
-    // Merge server data with any local optimistic entries that haven't been
-    // confirmed yet — this prevents in-flight saves from being wiped when
-    // loadRemarksForCurrentScope fires (e.g. on scope change or clear).
+    // Merge server data with local optimistic entries and filter out
+    // any timestamps that were cleared (prevents erased annotations from
+    // reappearing when the server hasn't processed the DELETE yet).
     setRemarks((prev) => {
       const serverIds = new Set(nextRemarks.map((r) => r.createdAt));
       const optimistic = prev.filter((r) => r._optimistic && !serverIds.has(r.createdAt));
-      return [...nextRemarks, ...optimistic];
+      const filtered = nextRemarks.filter((r) => !clearedTimestampsRef.current.includes(r.createdAt));
+      return [...filtered, ...optimistic];
     });
     return nextRemarks;
   }, [userId, selectedBook, selectedChapter, selectedFile, selectedLanguage, selectedPage, visibleLanguages, sectionScopedAnnotations]);
@@ -792,6 +827,12 @@ function App() {
 
     loadRemarks();
   }, [loadRemarksForCurrentScope]);
+
+  // Clear the "deleted timestamps" blocklist when navigating to a different
+  // scope, so annotations that were erased on page A don't stay hidden on page B.
+  useEffect(() => {
+    setClearedTimestamps([]);
+  }, [selectedBook, selectedChapter, selectedFile]);
 
   useEffect(() => {
     const existing = remarks.filter(
@@ -1378,26 +1419,282 @@ function App() {
     }
   }, [annotationToolsOpen, tool]);
 
-  // Pass through wheel events to scroll the PDF content when annotation
-  // tools are active (hand mode lets the browser scroll natively).
+  // ── Momentum / inertia scrolling ──────────────────────
+  const animateMomentum = useCallback(() => {
+    const m = momentumRef.current;
+    if (!m.animating || !m.target || !m.target.isConnected) {
+      m.animating = false;
+      m.rafId = null;
+      m.target = null;
+      return;
+    }
+
+    const now = performance.now();
+    const dt = Math.min(now - (m.lastTime || now), 50);
+    m.lastTime = now;
+
+    if (dt > 0) {
+      m.target.scrollBy({
+        left: m.vx * dt,
+        top: m.vy * dt,
+        behavior: 'auto',
+      });
+
+      const frictionBase = isIOSDevice ? 0.975 : 0.95;
+      const friction = Math.pow(frictionBase, dt / 16.67);
+      m.vx *= friction;
+      m.vy *= friction;
+    }
+
+    const speed = Math.sqrt(m.vx * m.vx + m.vy * m.vy);
+    if (speed > 0.02 && m.target.isConnected) {
+      m.rafId = requestAnimationFrame(animateMomentum);
+    } else {
+      m.animating = false;
+      m.rafId = null;
+      m.target = null;
+    }
+  }, []);
+
+  const startMomentum = useCallback((vx, vy, target) => {
+    if (!target) return;
+    const m = momentumRef.current;
+    if (m.rafId) cancelAnimationFrame(m.rafId);
+
+    m.animating = true;
+    m.vx = vx;
+    m.vy = vy;
+    m.target = target;
+    m.lastTime = performance.now();
+    m.rafId = requestAnimationFrame(animateMomentum);
+  }, [animateMomentum]);
+
+  const cancelMomentum = useCallback(() => {
+    const m = momentumRef.current;
+    m.animating = false;
+    m.vx = 0;
+    m.vy = 0;
+    m.target = null;
+    if (m.rafId) {
+      cancelAnimationFrame(m.rafId);
+      m.rafId = null;
+    }
+  }, []);
+
+  const getScrollTargetForGesture = useCallback((event) => {
+    const stage = stageRef.current;
+    if (!stage) return null;
+
+    if (displayModeRef.current === 'pagination') {
+      const source = event?.touches?.[0] || event?.changedTouches?.[0] || event;
+      const clientX = source?.clientX;
+      const clientY = source?.clientY;
+      if (Number.isFinite(clientX) && Number.isFinite(clientY)) {
+        const panes = stage.querySelectorAll('[data-annotation-language]');
+        for (const pane of panes) {
+          const rect = pane.getBoundingClientRect();
+          if (clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom) {
+            return pane.querySelector('.pdf-single-page') || stage;
+          }
+        }
+      }
+      return stage.querySelector('.pdf-single-page') || stage;
+    }
+
+    if (displayModeRef.current !== 'scrolling') return stage;
+
+    const source = event?.touches?.[0] || event?.changedTouches?.[0] || event;
+    const clientX = source?.clientX;
+    const clientY = source?.clientY;
+    const panes = stage.querySelectorAll('[data-annotation-language]');
+
+    if (Number.isFinite(clientX) && Number.isFinite(clientY)) {
+      for (const pane of panes) {
+        const rect = pane.getBoundingClientRect();
+        if (clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom) {
+          return pane.querySelector('.pdf-scroll-pages') || pane;
+        }
+      }
+    }
+
+    return stage.querySelector('.pdf-scroll-pages') || stage;
+  }, []);
+
+  // Pass through wheel events to scroll the PDF content.
   useEffect(() => {
     const stage = stageRef.current;
     if (!stage) return;
 
     const onWheel = (e) => {
-      // In hand mode, let the browser scroll natively.
       if (tool === 'hand') return;
+      if (touchScrollingRef.current) return;
+      if (Date.now() - lastTouchScrollAtRef.current < 250) return;
+      cancelMomentum();
 
-      const scrollContainer =
-        stage.querySelector('.pdf-scroll-pages') ||
-        stage.querySelector('.pdf-single-page');
-      if (!scrollContainer) return;
+      const scrollTarget = getScrollTargetForGesture(e);
+      if (!scrollTarget) return;
       e.preventDefault();
-      scrollContainer.scrollBy({ left: e.deltaX, top: e.deltaY, behavior: 'auto' });
+      scrollTarget.scrollBy({ left: e.deltaX, top: e.deltaY, behavior: 'auto' });
     };
     stage.addEventListener('wheel', onWheel, { passive: false });
     return () => stage.removeEventListener('wheel', onWheel);
-  }, [tool]);
+  }, [getScrollTargetForGesture, cancelMomentum, tool]);
+
+  // In scrolling/pagination mode on touch devices: one finger draws, two fingers scroll.
+  useEffect(() => {
+    if ((displayMode !== 'scrolling' && displayMode !== 'pagination') || tool === 'hand') return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    let touchStartX = 0;
+    let touchStartY = 0;
+    let touchActive = false;
+    let touchScrollTarget = null;
+    let pendingRaf = null;
+    let accumulatedDeltaX = 0;
+    let accumulatedDeltaY = 0;
+
+    let velocityX = 0;
+    let velocityY = 0;
+    let lastVelocityTime = 0;
+    let lastVelocityX = 0;
+    let lastVelocityY = 0;
+
+    const getTouchMidpoint = (touches) => {
+      if (!touches || touches.length < 2) return null;
+      return {
+        x: (touches[0].clientX + touches[1].clientX) / 2,
+        y: (touches[0].clientY + touches[1].clientY) / 2,
+      };
+    };
+
+    const applyScroll = () => {
+      pendingRaf = null;
+      if (!touchActive) return;
+      const dx = accumulatedDeltaX;
+      const dy = accumulatedDeltaY;
+      accumulatedDeltaX = 0;
+      accumulatedDeltaY = 0;
+      if (dx === 0 && dy === 0) return;
+      touchScrollTarget?.scrollBy({ left: dx, top: dy, behavior: 'auto' });
+    };
+
+    const onTouchStart = (e) => {
+      cancelMomentum();
+
+      if (e.touches.length === 2) {
+        const midpoint = getTouchMidpoint(e.touches);
+        if (!midpoint) return;
+        e.preventDefault();
+        lastTouchScrollAtRef.current = Date.now();
+        touchStartX = midpoint.x;
+        touchStartY = midpoint.y;
+        accumulatedDeltaX = 0;
+        accumulatedDeltaY = 0;
+        touchActive = true;
+        touchScrollTarget = getScrollTargetForGesture(e);
+        touchScrollingRef.current = true;
+
+        velocityX = 0;
+        velocityY = 0;
+        lastVelocityTime = 0;
+
+        // Save the in-progress stroke before switching to scroll mode
+        if (drawingRef.current && currentStrokeRef.current) {
+          const stroke = currentStrokeRef.current;
+          drawingRef.current = false;
+          currentStrokeRef.current = null;
+          const pageImageRects = getPageImageRects();
+          const isScrollMode = displayModeRef.current === 'scrolling';
+          const rectKey = isScrollMode ? `${stroke.langId}-${stroke.page || selectedPage}` : stroke.langId;
+          const imageRect = pageImageRects[rectKey];
+          const normalizedStroke = imageRect
+            ? normalizeAnnotationCoords(stroke, imageRect)
+            : stroke;
+          saveRemark(normalizedStroke).catch((err) =>
+            console.error('[draw] failed to save touch-scroll-cancelled stroke:', err)
+          );
+        }
+      } else {
+        touchActive = false;
+        touchScrollTarget = null;
+      }
+    };
+
+    const onTouchMove = (e) => {
+      if (!touchActive) return;
+      if (e.touches.length !== 2) {
+        touchActive = false;
+        touchScrollTarget = null;
+        return;
+      }
+      const midpoint = getTouchMidpoint(e.touches);
+      if (!midpoint) return;
+      e.preventDefault();
+      lastTouchScrollAtRef.current = Date.now();
+
+      const now = performance.now();
+      const dt = now - lastVelocityTime;
+      if (dt > 0 && lastVelocityTime > 0) {
+        const instantVX = (midpoint.x - lastVelocityX) / dt;
+        const instantVY = (midpoint.y - lastVelocityY) / dt;
+        const alpha = 0.3;
+        velocityX = velocityX * (1 - alpha) + instantVX * alpha;
+        velocityY = velocityY * (1 - alpha) + instantVY * alpha;
+      }
+      lastVelocityTime = now;
+      lastVelocityX = midpoint.x;
+      lastVelocityY = midpoint.y;
+
+      accumulatedDeltaX += touchStartX - midpoint.x;
+      accumulatedDeltaY += touchStartY - midpoint.y;
+      touchStartX = midpoint.x;
+      touchStartY = midpoint.y;
+
+      if (!pendingRaf) {
+        pendingRaf = requestAnimationFrame(applyScroll);
+      }
+    };
+
+    const onTouchEnd = () => {
+      touchActive = false;
+      touchScrollingRef.current = false;
+      lastTouchScrollAtRef.current = Date.now();
+      if (pendingRaf) {
+        cancelAnimationFrame(pendingRaf);
+        pendingRaf = null;
+      }
+      if (accumulatedDeltaX !== 0 || accumulatedDeltaY !== 0) {
+        touchScrollTarget?.scrollBy({ left: accumulatedDeltaX, top: accumulatedDeltaY, behavior: 'auto' });
+        accumulatedDeltaX = 0;
+        accumulatedDeltaY = 0;
+      }
+
+      const iosBoost = isIOSDevice ? 1.5 : 1.0;
+      const speed = Math.sqrt(velocityX * velocityX + velocityY * velocityY);
+      if (speed > 0.05 && touchScrollTarget && displayModeRef.current === 'scrolling') {
+        startMomentum(-velocityX * iosBoost, -velocityY * iosBoost, touchScrollTarget);
+      }
+
+      velocityX = 0;
+      velocityY = 0;
+      lastVelocityTime = 0;
+      touchScrollTarget = null;
+    };
+
+    canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+    canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+    canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+    canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+    return () => {
+      if (pendingRaf) cancelAnimationFrame(pendingRaf);
+      canvas.removeEventListener('touchstart', onTouchStart);
+      canvas.removeEventListener('touchmove', onTouchMove);
+      canvas.removeEventListener('touchend', onTouchEnd);
+      canvas.removeEventListener('touchcancel', onTouchEnd);
+    };
+  }, [displayMode, getScrollTargetForGesture, tool, cancelMomentum, startMomentum]);
 
   // Re-trigger canvas redraw when thumbnail images finish loading
   useEffect(() => {
@@ -1849,39 +2146,102 @@ function App() {
 
   const clearPageRemarks = async () => {
     const targetPage = Math.max(1, Number(selectedPageRef.current || selectedPage || 1));
-    // Save current page remarks for undo before deleting
     const currentPageRemarks = remarks.filter(
       (r) => r.chapter === selectedChapter
         && Number(r.page) === targetPage
     );
-    const data = await fetchJson(
-      `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&sectionId=${selectedFile}&pageId=${targetPage}`,
-      { method: 'DELETE' }
-    );
-    if (sectionScopedAnnotations) {
-      await loadRemarksForCurrentScope();
-    } else {
-      setRemarks(data.remarks || []);
+
+    // Optimistic: remove from local state immediately (even if empty —
+    // we must still send DELETE to the server to clean orphaned data).
+    setRemarks((prev) => prev.filter(
+      (r) => !(r.chapter === selectedChapter && Number(r.page) === targetPage)
+    ));
+
+    console.log(`[erase] clearPage — userId=${userId.slice(0,6)} subject=${selectedBook} book=${selectedChapter} section=${selectedFile} page=${targetPage} localRemarks=${currentPageRemarks.length}`);
+
+    try {
+      const res = await fetchJson(
+        `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&sectionId=${selectedFile}&pageId=${targetPage}`,
+        { method: 'DELETE' }
+      );
+      console.log(`[erase] clearPage — server response:`, res);
+      // Remember erased timestamps so they stay filtered even if the server
+      // re-sends them in a subsequent GET (eventual consistency delay).
+      setClearedTimestamps((prev) => [...new Set([...prev, ...currentPageRemarks.map((r) => r.createdAt)])]);
+      if (currentPageRemarks.length > 0) {
+        setUndoStack((prev) => [...prev, { type: 'erasePage', remarks: currentPageRemarks }]);
+        setRedoStack([]);
+      }
+    } catch (err) {
+      console.error('[erase] failed to clear page remarks:', err);
+      setRemarks((prev) => [...prev, ...currentPageRemarks]);
     }
-    if (currentPageRemarks.length > 0) {
-      setUndoStack((prev) => [...prev, { type: 'erasePage', remarks: currentPageRemarks }]);
-      setRedoStack([]);
+  };
+
+  const clearSectionRemarks = async () => {
+    const currentSectionRemarks = remarks.filter(
+      (r) => r.chapter === selectedChapter
+        && String(r.sectionId || r.section || '') === String(selectedFile)
+    );
+
+    setRemarks((prev) => prev.filter(
+      (r) => !(r.chapter === selectedChapter && String(r.sectionId || r.section || '') === String(selectedFile))
+    ));
+
+    console.log(`[erase] clearSection — userId=${userId.slice(0,6)} subject=${selectedBook} book=${selectedChapter} section=${selectedFile} localRemarks=${currentSectionRemarks.length}`);
+
+    try {
+      const res = await fetchJson(
+        `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&sectionId=${selectedFile}`,
+        { method: 'DELETE' }
+      );
+      console.log(`[erase] clearSection — server response:`, res);
+      setClearedTimestamps((prev) => [...new Set([...prev, ...currentSectionRemarks.map((r) => r.createdAt)])]);
+      if (currentSectionRemarks.length > 0) {
+        setUndoStack((prev) => [...prev, { type: 'eraseSection', remarks: currentSectionRemarks }]);
+        setRedoStack([]);
+      }
+    } catch (err) {
+      console.error('[erase] failed to clear section remarks:', err);
+      setRemarks((prev) => [...prev, ...currentSectionRemarks]);
     }
   };
 
   const clearAllRemarks = async () => {
-    // Save current book remarks for undo before deleting
     const currentBookRemarks = remarks.filter(
       (r) => r.chapter === selectedChapter
     );
-    const data = await fetchJson(
-      `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&sectionId=${selectedFile}`,
-      { method: 'DELETE' }
-    );
-    setRemarks(data.remarks || []);
-    if (currentBookRemarks.length > 0) {
-      setUndoStack((prev) => [...prev, { type: 'eraseBook', remarks: currentBookRemarks }]);
-      setRedoStack([]);
+
+    // ── Aggressive cleanup: clear state, localStorage, and force server delete ──
+    setRemarks([]);
+    setClearedTimestamps([]);
+    setUndoStack([]);
+    setRedoStack([]);
+    try {
+      window.localStorage.removeItem('pdfReaderClearedTimestamps');
+    } catch {}
+
+    console.log(`[erase] clearBook — userId=${userId.slice(0,6)} subject=${selectedBook} book=${selectedChapter} localRemarks=${currentBookRemarks.length}`);
+
+    try {
+      const res = await fetchJson(
+        `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&_=${Date.now()}`,
+        { method: 'DELETE' }
+      );
+      console.log(`[erase] clearBook — server deletedCount=${res.deletedCount}`);
+
+      // Verify: fetch again to confirm server is empty
+      const verify = await fetchJson(
+        `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&_=${Date.now() + 1}`
+      );
+      console.log(`[erase] clearBook — verify: ${verify.remarks?.length || 0} remarks remain`);
+
+      if (currentBookRemarks.length > 0) {
+        setUndoStack((prev) => [...prev, { type: 'eraseBook', remarks: currentBookRemarks }]);
+        setRedoStack([]);
+      }
+    } catch (err) {
+      console.error('[erase] failed to clear book remarks:', err);
     }
   };
 
@@ -1889,23 +2249,31 @@ function App() {
     if (typeof window === 'undefined') return;
 
     const result = await Swal.fire({
-      icon: 'warning',
+      title: _('erase'),
       text: _('confirmEraseBook'),
+      input: 'radio',
+      inputOptions: {
+        page: _('erasePage'),
+        section: _('eraseSection'),
+        book: _('eraseBook'),
+      },
+      inputValidator: (value) => {
+        if (!value) return _('cancel');
+        return undefined;
+      },
       showCancelButton: true,
-      showDenyButton: true,
-      confirmButtonText: _('erasePage'),
-      denyButtonText: _('eraseBook'),
       cancelButtonText: _('cancel'),
-      reverseButtons: false,
+      confirmButtonText: _('erase'),
       focusCancel: true,
     });
 
-    if (result.isConfirmed) {
-      await clearPageRemarks();
-      return;
-    }
+    if (!result.isConfirmed || !result.value) return;
 
-    if (result.isDenied) {
+    if (result.value === 'page') {
+      await clearPageRemarks();
+    } else if (result.value === 'section') {
+      await clearSectionRemarks();
+    } else if (result.value === 'book') {
       await clearAllRemarks();
     }
   };
@@ -1990,7 +2358,7 @@ function App() {
         return;
       }
 
-      if (action.type === 'erasePage' || action.type === 'eraseBook') {
+      if (action.type === 'erasePage' || action.type === 'eraseSection' || action.type === 'eraseBook') {
         // Re-add all erased remarks
         for (const r of action.remarks) {
           await fetchJson('api/remarks', {
@@ -2063,7 +2431,7 @@ function App() {
       return;
     }
 
-    if (action.type === 'erasePage' || action.type === 'eraseBook') {
+    if (action.type === 'erasePage' || action.type === 'eraseSection' || action.type === 'eraseBook') {
       // Re-erase all remarks
       for (const r of action.remarks) {
         await fetchJson(
@@ -2728,16 +3096,21 @@ function App() {
 
   // Native pointermove/pointerup listeners on the DOCUMENT to work around
   // browser quirks where pointer capture doesn't dispatch to the target element.
+  // Use refs so the listeners never need to be re-attached — re-attaching on
+  // every render creates a gap where pointerup events can be permanently lost.
+  const handlePointerMoveRef = useRef(handlePointerMove);
+  const handlePointerUpRef = useRef(handlePointerUp);
+  useEffect(() => { handlePointerMoveRef.current = handlePointerMove; }, [handlePointerMove]);
+  useEffect(() => { handlePointerUpRef.current = handlePointerUp; }, [handlePointerUp]);
+
   useEffect(() => {
     const onNativeMove = (e) => {
       if (!drawingRef.current && !moveAnnotationRef.current) return;
-      // console.count('[draw] document pointermove — drawing=' + drawingRef.current + ' move=' + !!moveAnnotationRef.current);
-      handlePointerMove(e);
+      handlePointerMoveRef.current(e);
     };
     const onNativeUp = (e) => {
       if (!drawingRef.current && !moveAnnotationRef.current) return;
-      // console.log('[draw] document pointerup — drawing=' + drawingRef.current);
-      handlePointerUp(e);
+      handlePointerUpRef.current(e);
     };
 
     document.addEventListener('pointermove', onNativeMove, true);
@@ -2748,7 +3121,7 @@ function App() {
       document.removeEventListener('pointerup', onNativeUp, true);
       document.removeEventListener('pointercancel', onNativeUp, true);
     };
-  }, [handlePointerMove, handlePointerUp]);
+  }, []); // empty deps — listeners attached once, never re-attached
 
   const commitTextAnnotation = async () => {
     const el = textInputRef.current;

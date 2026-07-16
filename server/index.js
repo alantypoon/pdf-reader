@@ -678,6 +678,9 @@ app.get('/api/page', asyncRoute(async (request, response) => {
 
 app.get('/api/remarks', requireValidUserId(true), asyncRoute(async (request, response) => {
   const userId = request.validatedUserId;
+  // Never cache annotation data — erased strokes must disappear immediately
+  response.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  response.setHeader('Pragma', 'no-cache');
   if (!annotationsCollection) {
     response.json({ remarks: [] });
     return;
@@ -696,6 +699,7 @@ app.post('/api/remarks', requireValidUserId(true), asyncRoute(async (request, re
     const userId = request.validatedUserId;
     const { subjectId, bookId, sectionId, pageId, langId, ...remark } = request.body || {};
     if (!annotationsCollection) {
+      console.error('[remarks] POST blocked — MongoDB not connected');
       response.status(500).json({ error: 'MongoDB not connected', remarks: [] });
       return;
     }
@@ -707,23 +711,31 @@ app.post('/api/remarks', requireValidUserId(true), asyncRoute(async (request, re
       pageId: Number(pageId),
       langId: normalizeAnnotationLangId(langId),
     };
-    const current = await annotationsCollection.findOne(identity);
-    const remarks = [...(current?.remarks || []), { ...remark, langId: identity.langId }];
-    await annotationsCollection.updateOne(
+    const points = Array.isArray(remark.points) ? remark.points.length : 0;
+    console.log(`[remarks] POST stroke — user=${userId.slice(0,6)} subject=${identity.subjectId} book=${identity.bookId} §${identity.sectionId} p${identity.pageId} lang=${identity.langId} mode=${remark.mode} points=${points} createdAt=${remark.createdAt}`);
+
+    // Use $push for atomic append — avoids race condition where concurrent
+    // POSTs overwrite each other (read-then-write with findOne + updateOne).
+    const result = await annotationsCollection.updateOne(
       identity,
       {
-        $set: { remarks, updatedAt: hkNow() },
+        $push: { remarks: { ...remark, langId: identity.langId } },
+        $set: { updatedAt: hkNow() },
         $setOnInsert: { ...identity, createdAt: hkNow() },
       },
       { upsert: true }
     );
-    response.json({ remarks: await listAnnotationRemarks({
+    console.log(`[remarks] POST result — matched=${result.matchedCount} modified=${result.modifiedCount} upserted=${result.upsertedCount}`);
+
+    const allRemarks = await listAnnotationRemarks({
       userId: identity.userId,
       subjectId: identity.subjectId,
       bookId: identity.bookId,
       sectionId: identity.sectionId,
       pageId: identity.pageId,
-    }) });
+    });
+    console.log(`[remarks] POST response — returning ${allRemarks.length} remarks for this page`);
+    response.json({ remarks: allRemarks });
   } catch (err) {
     console.error('[remarks] POST error:', err.message);
     response.status(500).json({ error: 'Failed to save remark', remarks: [] });
@@ -738,28 +750,36 @@ app.delete('/api/remarks', requireValidUserId(true), asyncRoute(async (request, 
     }
     const userId = request.validatedUserId;
     const { subjectId, bookId, sectionId, pageId, createdAt, langId } = request.query;
+    const resolvedLangId = langId != null ? normalizeAnnotationLangId(langId) : null;
+
+    // Build the identity query, only including fields that are present.
+    // sectionId: Number(undefined) → NaN which matches nothing in MongoDB.
     const identity = {
       userId,
       subjectId: String(subjectId || '').trim(),
       bookId: String(bookId || '').trim(),
-      sectionId: Number(sectionId),
     };
-    const resolvedLangId = langId != null ? normalizeAnnotationLangId(langId) : null;
+    if (sectionId != null && sectionId !== '') {
+      identity.sectionId = Number(sectionId);
+    }
+    const resolvedPageId = pageId != null && pageId !== '' ? Number(pageId) : null;
+
+    console.log(`[remarks] DELETE — user=${userId.slice(0,6)} subject=${identity.subjectId} book=${identity.bookId} section=${sectionId || '(all)'} page=${pageId || '(all)'} createdAt=${createdAt || '(all)'}`);
+
     if (createdAt != null) {
-      const pageIdentity = {
-        ...identity,
-        pageId: Number(pageId),
-      };
+      // Delete a single remark by createdAt
+      const pageIdentity = { ...identity };
+      if (resolvedPageId != null) pageIdentity.pageId = resolvedPageId;
       const pageQueries = resolvedLangId != null
         ? [{ ...pageIdentity, langId: resolvedLangId }]
         : await annotationsCollection.find(pageIdentity, { projection: { langId: 1 } }).toArray();
+      let deletedCount = 0;
       for (const query of pageQueries) {
         const scopedIdentity = resolvedLangId != null ? query : { ...pageIdentity, langId: query.langId };
         const current = await annotationsCollection.findOne(scopedIdentity);
         const remarks = (current?.remarks || []).filter((remark) => String(remark.createdAt || '') !== String(createdAt));
-        if ((current?.remarks || []).length === remarks.length) {
-          continue;
-        }
+        if ((current?.remarks || []).length === remarks.length) continue;
+        deletedCount++;
         if (remarks.length > 0) {
           await annotationsCollection.updateOne(scopedIdentity, {
             $set: { remarks, updatedAt: hkNow() },
@@ -768,29 +788,35 @@ app.delete('/api/remarks', requireValidUserId(true), asyncRoute(async (request, 
           await annotationsCollection.deleteOne(scopedIdentity);
         }
       }
+      console.log(`[remarks] DELETE result — removed ${deletedCount} remark(s)`);
       response.json({ remarks: await listAnnotationRemarks(pageIdentity) });
       return;
     }
-    if (pageId != null) {
-      identity.pageId = Number(pageId);
+
+    if (resolvedPageId != null) {
+      // Delete all remarks for a specific page
+      const pageIdentity = { ...identity, pageId: resolvedPageId };
       if (resolvedLangId != null) {
-        identity.langId = resolvedLangId;
-        await annotationsCollection.deleteOne(identity);
-        response.json({ remarks: await listAnnotationRemarks({
-          userId: identity.userId,
-          subjectId: identity.subjectId,
-          bookId: identity.bookId,
-          sectionId: identity.sectionId,
-          pageId: identity.pageId,
-        }) });
-        return;
+        pageIdentity.langId = resolvedLangId;
       }
-      await annotationsCollection.deleteMany(identity);
-      response.json({ remarks: [] });
+      console.log(`[remarks] DELETE page — query:`, JSON.stringify(pageIdentity));
+      const result = await annotationsCollection.deleteMany(pageIdentity);
+      console.log(`[remarks] DELETE page — deleted ${result.deletedCount} doc(s), acknowledged=${result.acknowledged}`);
+      if (result.deletedCount === 0) {
+        console.warn(`[remarks] DELETE page — WARNING: no documents matched!`);
+      }
+      response.json({ remarks: [], deletedCount: result.deletedCount });
       return;
     }
-    await annotationsCollection.deleteMany(identity);
-    response.json({ remarks: [] });
+
+    // Delete all remarks for the given scope (section or entire book)
+    console.log(`[remarks] DELETE scope — query:`, JSON.stringify(identity));
+    const result = await annotationsCollection.deleteMany(identity);
+    console.log(`[remarks] DELETE scope — deleted ${result.deletedCount} doc(s), acknowledged=${result.acknowledged}`);
+    if (result.deletedCount === 0) {
+      console.warn(`[remarks] DELETE scope — WARNING: no documents matched! Check identity fields match stored documents.`);
+    }
+    response.json({ remarks: [], deletedCount: result.deletedCount });
   } catch (err) {
     console.error('[remarks] DELETE error:', err);
     response.status(500).json({ error: 'Failed to erase remarks' });
