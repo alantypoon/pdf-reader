@@ -145,7 +145,7 @@ const T = {
     chapter: '章節',
     section: '部分',
     displayMode: '顯示模式',
-    paginated: '分頁',
+    paginated: '分頁模式',
     scroll: '捲動',
     thumbs: '縮圖',
     language: '語言',

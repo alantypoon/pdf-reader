@@ -1392,6 +1392,7 @@ button, input, select {
   height: 100%;
   overflow-y: auto;
   overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
 }
 
 .pdf-scroll-pages {
@@ -1402,6 +1403,7 @@ button, input, select {
   overscroll-behavior-x: contain;
   user-select: none;
   -webkit-user-select: none;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* touch-action is NOT inherited — children need explicit pan-y too */
@@ -1414,6 +1416,9 @@ button, input, select {
   background: white;
   border-radius: 0;
   box-shadow: none;
+  will-change: transform;
+  transform: translateZ(0);
+  backface-visibility: hidden;
 }
 
 .page-img {

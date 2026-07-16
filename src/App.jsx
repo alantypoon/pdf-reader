@@ -380,7 +380,6 @@ function App() {
   const [undoStack, setUndoStack] = useState([]);
   const [redoStack, setRedoStack] = useState([]);
   const [zoomLevel, setZoomLevel] = useState(Number(savedPrefs.zoomLevel || 1));
-  const [pinchZoomEnabled, setPinchZoomEnabled] = useState(false);
   const [fitMode, setFitMode] = useState(
     savedPrefs.fitMode === 'height' ? 'height' : 'width'
   );
@@ -456,15 +455,6 @@ function App() {
   const restoreLongPressRef = useRef(false);
   const dragRef = useRef({ dragging: false, startX: 0, startY: 0, posX: 0, posY: 0 });
   const pageViewRef = useRef({ key: '', startedAt: 0, loginLogged: false });
-  const touchScrollingRef = useRef(false);
-  const lastTouchScrollAtRef = useRef(0);
-  const momentumRef = useRef({ animating: false, vx: 0, vy: 0, target: null, lastTime: 0, rafId: null });
-  const wheelVelocityRef = useRef({ vx: 0, vy: 0, lastTime: 0, timeoutId: null });
-  const isIOSDevice = useRef((() => {
-    if (typeof navigator === 'undefined') return false;
-    return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-      (navigator.maxTouchPoints > 1 && /MacIntel/.test(navigator.platform));
-  })()).current;
 
   // Position the color picker popover relative to the color button
   useLayoutEffect(() => {
@@ -779,7 +769,14 @@ function App() {
     );
 
     const nextRemarks = responses.flatMap((data) => data.remarks || []);
-    setRemarks(nextRemarks);
+    // Merge server data with any local optimistic entries that haven't been
+    // confirmed yet — this prevents in-flight saves from being wiped when
+    // loadRemarksForCurrentScope fires (e.g. on scope change or clear).
+    setRemarks((prev) => {
+      const serverIds = new Set(nextRemarks.map((r) => r.createdAt));
+      const optimistic = prev.filter((r) => r._optimistic && !serverIds.has(r.createdAt));
+      return [...nextRemarks, ...optimistic];
+    });
     return nextRemarks;
   }, [userId, selectedBook, selectedChapter, selectedFile, selectedLanguage, selectedPage, visibleLanguages, sectionScopedAnnotations]);
 
@@ -1381,346 +1378,26 @@ function App() {
     }
   }, [annotationToolsOpen, tool]);
 
-  // ── Momentum / inertia scrolling ──────────────────────
-  const animateMomentum = useCallback(() => {
-    const m = momentumRef.current;
-    if (!m.animating || !m.target || !m.target.isConnected) {
-      m.animating = false;
-      m.rafId = null;
-      m.target = null;
-      return;
-    }
-
-    const now = performance.now();
-    const dt = Math.min(now - (m.lastTime || now), 50); // cap at 50ms to avoid huge jumps
-    m.lastTime = now;
-
-    if (dt > 0) {
-      // Apply displacement: dx = v * dt  (v is px/ms)
-      m.target.scrollBy({
-        left: m.vx * dt,
-        top: m.vy * dt,
-        behavior: 'auto',
-      });
-
-      // Frame-rate-independent friction: v *= 0.95^(dt / 16.67)
-      // At 60fps, 0.95 per frame gives ~1.5s to stop — feels natural
-      // On iOS, use lower friction (0.975) so momentum coasts longer
-      const frictionBase = isIOSDevice ? 0.975 : 0.95;
-      const friction = Math.pow(frictionBase, dt / 16.67);
-      m.vx *= friction;
-      m.vy *= friction;
-    }
-
-    const speed = Math.sqrt(m.vx * m.vx + m.vy * m.vy);
-    if (speed > 0.02 && m.target.isConnected) {
-      m.rafId = requestAnimationFrame(animateMomentum);
-    } else {
-      m.animating = false;
-      m.rafId = null;
-      m.target = null;
-    }
-  }, []);
-
-  const startMomentum = useCallback((vx, vy, target) => {
-    if (!target) return;
-    const m = momentumRef.current;
-    if (m.rafId) cancelAnimationFrame(m.rafId);
-
-    m.animating = true;
-    m.vx = vx;   // px/ms
-    m.vy = vy;
-    m.target = target;
-    m.lastTime = performance.now();
-    m.rafId = requestAnimationFrame(animateMomentum);
-  }, [animateMomentum]);
-
-  const cancelMomentum = useCallback(() => {
-    const m = momentumRef.current;
-    m.animating = false;
-    m.vx = 0;
-    m.vy = 0;
-    m.target = null;
-    if (m.rafId) {
-      cancelAnimationFrame(m.rafId);
-      m.rafId = null;
-    }
-  }, []);
-
-  const getScrollTargetForGesture = useCallback((event) => {
-    const stage = stageRef.current;
-    if (!stage) return null;
-
-    if (displayModeRef.current === 'pagination') {
-      // In pagination mode, scroll the .pdf-single-page container under the touch point
-      const source = event?.touches?.[0] || event?.changedTouches?.[0] || event;
-      const clientX = source?.clientX;
-      const clientY = source?.clientY;
-      if (Number.isFinite(clientX) && Number.isFinite(clientY)) {
-        const panes = stage.querySelectorAll('[data-annotation-language]');
-        for (const pane of panes) {
-          const rect = pane.getBoundingClientRect();
-          if (clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom) {
-            return pane.querySelector('.pdf-single-page') || stage;
-          }
-        }
-      }
-      return stage.querySelector('.pdf-single-page') || stage;
-    }
-
-    if (displayModeRef.current !== 'scrolling') {
-      return stage;
-    }
-
-    const source = event?.touches?.[0] || event?.changedTouches?.[0] || event;
-    const clientX = source?.clientX;
-    const clientY = source?.clientY;
-    const panes = stage.querySelectorAll('[data-annotation-language]');
-
-    if (Number.isFinite(clientX) && Number.isFinite(clientY)) {
-      for (const pane of panes) {
-        const rect = pane.getBoundingClientRect();
-        if (
-          clientX >= rect.left
-          && clientX <= rect.right
-          && clientY >= rect.top
-          && clientY <= rect.bottom
-        ) {
-          return pane.querySelector('.pdf-scroll-pages') || pane;
-        }
-      }
-    }
-
-    return stage.querySelector('.pdf-scroll-pages') || stage;
-  }, []);
-
-  // Pass through wheel events to scroll the PDF content.
-  // Listens on the stage (always mounted) so wheel scrolling works even when the
-  // annotation canvas has not yet rendered on the initial mount.
-  // In hand mode we let the browser handle native scroll; in annotation-tool modes
-  // we intercept wheel events and redirect them to the underlying scroll container.
-  // No momentum/inertia for mouse wheel — only touch gets momentum.
+  // Pass through wheel events to scroll the PDF content when annotation
+  // tools are active (hand mode lets the browser scroll natively).
   useEffect(() => {
     const stage = stageRef.current;
     if (!stage) return;
 
     const onWheel = (e) => {
-      // In hand mode, let the browser scroll natively — don't intercept.
+      // In hand mode, let the browser scroll natively.
       if (tool === 'hand') return;
 
-      // Skip wheel events synthesized from touch gestures — touch handler already scrolls.
-      if (touchScrollingRef.current) return;
-      if (Date.now() - lastTouchScrollAtRef.current < 250) return;
-
-      // Cancel any running touch momentum so it doesn't fight the user's new input
-      cancelMomentum();
-
-      const scrollTarget = getScrollTargetForGesture(e);
-      if (!scrollTarget) return;
+      const scrollContainer =
+        stage.querySelector('.pdf-scroll-pages') ||
+        stage.querySelector('.pdf-single-page');
+      if (!scrollContainer) return;
       e.preventDefault();
-      scrollTarget.scrollBy({ left: e.deltaX, top: e.deltaY, behavior: 'auto' });
+      scrollContainer.scrollBy({ left: e.deltaX, top: e.deltaY, behavior: 'auto' });
     };
     stage.addEventListener('wheel', onWheel, { passive: false });
-    return () => {
-      stage.removeEventListener('wheel', onWheel);
-    };
-  }, [getScrollTargetForGesture, cancelMomentum, tool]);
-
-  // In scrolling/pagination mode on touch devices: one finger draws, two fingers scroll.
-  // Momentum: on finger lift, scroll continues with captured velocity and decelerates.
-  // (Pinch-to-zoom is handled separately via gesturechange events for native feel.)
-  useEffect(() => {
-    if ((displayMode !== 'scrolling' && displayMode !== 'pagination') || tool === 'hand') return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    let touchStartX = 0;
-    let touchStartY = 0;
-    let touchActive = false;
-    let touchScrollTarget = null;
-    let pendingRaf = null;
-    let accumulatedDeltaX = 0;
-    let accumulatedDeltaY = 0;
-
-    // Velocity tracking for momentum on release
-    let velocityX = 0;
-    let velocityY = 0;
-    let lastVelocityTime = 0;
-    let lastVelocityX = 0;
-    let lastVelocityY = 0;
-
-    const getTouchMidpoint = (touches) => {
-      if (!touches || touches.length < 2) return null;
-      return {
-        x: (touches[0].clientX + touches[1].clientX) / 2,
-        y: (touches[0].clientY + touches[1].clientY) / 2,
-      };
-    };
-
-    const applyScroll = () => {
-      pendingRaf = null;
-      if (!touchActive) return;
-      const dx = accumulatedDeltaX;
-      const dy = accumulatedDeltaY;
-      accumulatedDeltaX = 0;
-      accumulatedDeltaY = 0;
-      if (dx === 0 && dy === 0) return;
-      touchScrollTarget?.scrollBy({ left: dx, top: dy, behavior: 'auto' });
-    };
-
-    const onTouchStart = (e) => {
-      // Cancel any running momentum when user touches again
-      cancelMomentum();
-
-      if (e.touches.length === 2) {
-        const midpoint = getTouchMidpoint(e.touches);
-        if (!midpoint) return;
-        e.preventDefault();
-        lastTouchScrollAtRef.current = Date.now();
-        touchStartX = midpoint.x;
-        touchStartY = midpoint.y;
-        accumulatedDeltaX = 0;
-        accumulatedDeltaY = 0;
-        touchActive = true;
-        touchScrollTarget = getScrollTargetForGesture(e);
-        touchScrollingRef.current = true;
-
-        // Reset velocity trackers for the new gesture
-        velocityX = 0;
-        velocityY = 0;
-        lastVelocityTime = 0;
-
-        if (drawingRef.current && currentStrokeRef.current) {
-          drawingRef.current = false;
-          currentStrokeRef.current = null;
-        }
-      } else {
-        touchActive = false;
-        touchScrollTarget = null;
-      }
-    };
-
-    const onTouchMove = (e) => {
-      if (!touchActive) return;
-      if (e.touches.length !== 2) {
-        touchActive = false;
-        touchScrollTarget = null;
-        return;
-      }
-      const midpoint = getTouchMidpoint(e.touches);
-      if (!midpoint) return;
-      e.preventDefault();
-      lastTouchScrollAtRef.current = Date.now();
-
-      // ── Track velocity for momentum ──
-      const now = performance.now();
-      const dt = now - lastVelocityTime;
-      if (dt > 0 && lastVelocityTime > 0) {
-        const instantVX = (midpoint.x - lastVelocityX) / dt;
-        const instantVY = (midpoint.y - lastVelocityY) / dt;
-        const alpha = 0.3;
-        velocityX = velocityX * (1 - alpha) + instantVX * alpha;
-        velocityY = velocityY * (1 - alpha) + instantVY * alpha;
-      }
-      lastVelocityTime = now;
-      lastVelocityX = midpoint.x;
-      lastVelocityY = midpoint.y;
-      // ── End velocity tracking ──
-
-      accumulatedDeltaX += touchStartX - midpoint.x;
-      accumulatedDeltaY += touchStartY - midpoint.y;
-      touchStartX = midpoint.x;
-      touchStartY = midpoint.y;
-
-      if (!pendingRaf) {
-        pendingRaf = requestAnimationFrame(applyScroll);
-      }
-    };
-
-    const onTouchEnd = () => {
-      touchActive = false;
-      touchScrollingRef.current = false;
-      lastTouchScrollAtRef.current = Date.now();
-      if (pendingRaf) {
-        cancelAnimationFrame(pendingRaf);
-        pendingRaf = null;
-      }
-      // Flush any leftover deltas
-      if (accumulatedDeltaX !== 0 || accumulatedDeltaY !== 0) {
-        touchScrollTarget?.scrollBy({ left: accumulatedDeltaX, top: accumulatedDeltaY, behavior: 'auto' });
-        accumulatedDeltaX = 0;
-        accumulatedDeltaY = 0;
-      }
-
-      // ── Launch momentum on release ──
-      // velocityX/Y tracks finger movement direction (px/ms).
-      // Our scroll deltas are (start - midpoint), i.e. scroll = -fingerMovement.
-      // Negate so momentum continues scrolling in the same direction as the gesture.
-      // On iOS, amplify initial velocity so the coasting feels more responsive.
-      const iosBoost = isIOSDevice ? 1.5 : 1.0;
-      const speed = Math.sqrt(velocityX * velocityX + velocityY * velocityY);
-      if (speed > 0.05 && touchScrollTarget && displayModeRef.current === 'scrolling') {
-        startMomentum(-velocityX * iosBoost, -velocityY * iosBoost, touchScrollTarget);
-      }
-      // ── End momentum ──
-
-      // Reset trackers
-      velocityX = 0;
-      velocityY = 0;
-      lastVelocityTime = 0;
-
-      touchScrollTarget = null;
-    };
-
-    canvas.addEventListener('touchstart', onTouchStart, { passive: false });
-    canvas.addEventListener('touchmove', onTouchMove, { passive: false });
-    canvas.addEventListener('touchend', onTouchEnd, { passive: true });
-    canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
-
-    return () => {
-      if (pendingRaf) {
-        cancelAnimationFrame(pendingRaf);
-        pendingRaf = null;
-      }
-      canvas.removeEventListener('touchstart', onTouchStart);
-      canvas.removeEventListener('touchmove', onTouchMove);
-      canvas.removeEventListener('touchend', onTouchEnd);
-      canvas.removeEventListener('touchcancel', onTouchEnd);
-    };
-  }, [displayMode, getScrollTargetForGesture, tool, cancelMomentum, startMomentum]);
-
-  // ── Pinch-to-zoom via iOS gesturechange events ──────────
-  // Safari fires these regardless of touch-action CSS, so native scrolling
-  // (touch-action: pan-y) and pinch zoom can coexist without conflict.
-  // Only changes zoom level — Safari handles scrolling natively, so there's
-  // no scroll-compensation jitter.  Pinch zooms from page centre.
-  useEffect(() => {
-    let gestureStartZoom = 1;
-
-    const onGestureStart = (e) => {
-      if (!pinchZoomEnabled) return;
-      e.preventDefault();
-      gestureStartZoom = zoomLevelRef.current;
-      setFitMode('none');
-    };
-
-    const onGestureChange = (e) => {
-      if (!pinchZoomEnabled) return;
-      e.preventDefault();
-      const newZoom = Math.min(5, Math.max(0.1, gestureStartZoom * e.scale));
-      setZoomLevel(Number(newZoom.toFixed(2)));
-    };
-
-    document.addEventListener('gesturestart', onGestureStart, { passive: false });
-    document.addEventListener('gesturechange', onGestureChange, { passive: false });
-    document.addEventListener('gestureend', onGestureStart, { passive: false });
-
-    return () => {
-      document.removeEventListener('gesturestart', onGestureStart);
-      document.removeEventListener('gesturechange', onGestureChange);
-      document.removeEventListener('gestureend', onGestureStart);
-    };
-  }, [pinchZoomEnabled]);
+    return () => stage.removeEventListener('wheel', onWheel);
+  }, [tool]);
 
   // Re-trigger canvas redraw when thumbnail images finish loading
   useEffect(() => {
@@ -2129,8 +1806,7 @@ function App() {
     };
 
     // Optimistic: add to local remarks immediately so the stroke/annotation
-    // appears instantly even if the backend is slow.  Scrolling no longer
-    // makes the stroke disappear while we wait for the server.
+    // appears instantly even if the backend is slow.
     const optimistic = { ...savedRemark, chapter: savedRemark.chapter || selectedChapter, _optimistic: true };
     setRemarks((prev) => [...prev, optimistic]);
 
@@ -2150,11 +1826,20 @@ function App() {
       });
       setUndoStack((prev) => [...prev, { type: 'add', remark: savedRemark }]);
       setRedoStack([]);
-      if (sectionScopedAnnotations) {
-        await loadRemarksForCurrentScope();
-        return;
-      }
-      setRemarks(data.remarks || []);
+      // Confirm the optimistic entry — remove _optimistic flag and merge any
+      // server-assigned fields (like _id) instead of replacing all remarks.
+      // A full reload (loadRemarksForCurrentScope) would wipe the optimistic
+      // entry if the server hasn't indexed it yet, causing the annotation to
+      // disappear briefly until the next refresh.
+      const savedAt = savedRemark.createdAt;
+      const serverSaved = Array.isArray(data.remarks)
+        ? data.remarks.find((r) => r.createdAt === savedAt)
+        : null;
+      setRemarks((prev) => prev.map((r) =>
+        r._optimistic && r.createdAt === savedAt
+          ? { ...r, ...serverSaved, _optimistic: false }
+          : r
+      ));
     } catch (err) {
       // Rollback: remove the optimistic remark on failure
       setRemarks((prev) => prev.filter((r) => !(r._optimistic && r.createdAt === savedRemark.createdAt)));
@@ -2251,10 +1936,10 @@ function App() {
         setUndoStack((prev) => [...prev, { type: 'delete', remark: removed }]);
         setRedoStack([]);
       }
-      if (sectionScopedAnnotations) {
-        return loadRemarksForCurrentScope();
-      }
-      setRemarks(data.remarks || []);
+      // Confirm the optimistic removal — the remark is already filtered out.
+      // Do NOT call loadRemarksForCurrentScope() or setRemarks(data.remarks)
+      // because the server may not have indexed the deletion yet, causing the
+      // erased annotation to reappear momentarily.
       return data.remarks || [];
     } catch (err) {
       // Rollback: restore the removed remark if the server call fails
@@ -2851,15 +2536,28 @@ function App() {
       return;
     }
 
-    // Multi-touch: if another pointer is already down, cancel any in-progress
-    // drawing and let both fingers scroll (don't draw).
+    // Multi-touch: if another pointer is already down, finish the current
+    // stroke (save it) before switching to scroll mode.  Without this,
+    // accidental second-finger touches on iPad would silently discard the
+    // in-progress stroke with no way to recover it.
     activePointersRef.current.add(event.pointerId);
     if (activePointersRef.current.size > 1) {
       // console.log('[draw] SKIP: multi-touch (' + activePointersRef.current.size + ' pointers)');
-      // Cancel in-progress stroke
       if (drawingRef.current && currentStrokeRef.current) {
+        const stroke = currentStrokeRef.current;
         drawingRef.current = false;
         currentStrokeRef.current = null;
+        // Save the partial stroke before discarding
+        const pageImageRects = getPageImageRects();
+        const isScrollMode = displayModeRef.current === 'scrolling';
+        const rectKey = isScrollMode ? `${stroke.langId}-${stroke.page || selectedPage}` : stroke.langId;
+        const imageRect = pageImageRects[rectKey];
+        const normalizedStroke = imageRect
+          ? normalizeAnnotationCoords(stroke, imageRect)
+          : stroke;
+        saveRemark(normalizedStroke).catch((err) =>
+          console.error('[draw] failed to save multi-touch-cancelled stroke:', err)
+        );
       }
       return;
     }
@@ -3021,7 +2719,11 @@ function App() {
     const normalizedStroke = imageRect
       ? normalizeAnnotationCoords(stroke, imageRect)
       : stroke;
-    await saveRemark(normalizedStroke);
+    try {
+      await saveRemark(normalizedStroke);
+    } catch (err) {
+      console.error('[draw] failed to save stroke:', err);
+    }
   };
 
   // Native pointermove/pointerup listeners on the DOCUMENT to work around
@@ -5558,17 +5260,6 @@ function App() {
                       aria-label={_('zoomIn')}
                     >+</button>
                   </div>
-                  {/* Pinch-to-zoom toggle — temporarily hidden */}
-                  {false && (
-                  <label className="tool-menu-pinch-toggle">
-                    <input
-                      type="checkbox"
-                      checked={pinchZoomEnabled}
-                      onChange={(e) => setPinchZoomEnabled(e.target.checked)}
-                    />
-                    <span>Pinch to zoom</span>
-                  </label>
-                  )}
                   <span className="tool-menu-sep" />
                   <button
                     className={`tool-menu-item ${fitMode === 'width' ? 'active' : ''}`}

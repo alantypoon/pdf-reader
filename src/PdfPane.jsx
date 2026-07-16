@@ -585,25 +585,40 @@ function PdfPane({
           const dist = Math.abs(node.offsetTop - top);
           if (dist < min) { min = dist; nearest = Number(node.dataset.page); }
         });
-        setRenderedPage(nearest);
-        lastScrolledFromSyncRef.current = true;
-        onPageChange(nearest);
+        // Only update React state when the page actually changes to avoid
+        // unnecessary re-renders that cause flickering during scroll.
+        if (nearest !== renderedPageRef.current) {
+          setRenderedPage(nearest);
+          lastScrolledFromSyncRef.current = true;
+          onPageChange(nearest);
+        }
         return nearest;
       };
 
+      let scrollRafId = null;
+      let pendingScrollSync = false;
       const onScroll = () => {
-        syncPageIndicator();
+        // Throttle scroll handling to once per animation frame to avoid
+        // layout thrashing and flickering on iOS/mobile devices.
+        if (!pendingScrollSync) {
+          pendingScrollSync = true;
+          scrollRafId = requestAnimationFrame(() => {
+            pendingScrollSync = false;
+            if (disposed || modeGenRef.current !== gen) return;
+            syncPageIndicator();
 
-        if (syncGroup && !syncingFromRemoteRef.current) {
-          const max = Math.max(1, mount.scrollHeight - mount.clientHeight);
-          const ratio = mount.scrollTop / max;
-          window.dispatchEvent(new CustomEvent('pdf-pane-scroll-sync', {
-            detail: {
-              group: syncGroup,
-              sender: syncId,
-              ratio
+            if (syncGroup && !syncingFromRemoteRef.current) {
+              const max = Math.max(1, mount.scrollHeight - mount.clientHeight);
+              const ratio = mount.scrollTop / max;
+              window.dispatchEvent(new CustomEvent('pdf-pane-scroll-sync', {
+                detail: {
+                  group: syncGroup,
+                  sender: syncId,
+                  ratio
+                }
+              }));
             }
-          }));
+          });
         }
       };
 
@@ -630,7 +645,10 @@ function PdfPane({
         });
       });
 
-      return () => mount.removeEventListener('scroll', onScroll);
+      return () => {
+        if (scrollRafId != null) cancelAnimationFrame(scrollRafId);
+        mount.removeEventListener('scroll', onScroll);
+      };
     };
 
     let cleanup = () => {};
