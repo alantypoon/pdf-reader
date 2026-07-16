@@ -1092,6 +1092,11 @@ button, input, select {
 /* Prevent native iOS scroll on the PDF scroll containers when using
    drawing/annotation tools — only the JS two-finger handler should scroll.
    In hand mode the canvas passes through touches, so native scroll is needed. */
+/* Canvas captures touch for annotation tools (non-hand mode). */
+.annotation-canvas {
+  touch-action: none;
+}
+
 .book-stage.scrolling:not(.tool-hand) .pdf-scroll,
 .book-stage.scrolling:not(.tool-hand) .pdf-scroll-pages,
 .book-stage.pagination:not(.tool-hand) .pdf-single-page {
@@ -1100,8 +1105,7 @@ button, input, select {
 }
 
 /* In hand mode, allow native touch panning on PDF containers.
-   Scroll mode: vertical-only (fit-to-height shouldn't drift sideways).
-   Pagination mode: both axes (user may need to pan a zoomed/wide page). */
+   Scroll mode: vertical-only.  Pagination mode: both axes. */
 .book-stage.tool-hand .pdf-scroll-pages {
   touch-action: pan-y;
 }
@@ -1113,11 +1117,6 @@ button, input, select {
 /* In hand mode, ensure pdf-content doesn't block touch events */
 .book-stage.tool-hand .pdf-content {
   overflow: visible;
-}
-
-/* Also block touch scrolling on the annotation canvas itself when tools active */
-.book-stage:not(.tool-hand) .annotation-canvas {
-  touch-action: none;
 }
 
 .book-stage.scrolling > .page-card {
@@ -2284,6 +2283,25 @@ button, input, select {
   height: 1px;
   background: #d7e0e8;
   margin: 4px 0;
+}
+
+/* ── Pinch-to-zoom toggle inside zoom popup ──────────── */
+.tool-menu-pinch-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 0.82rem;
+  color: #334155;
+  cursor: pointer;
+  user-select: none;
+}
+
+.tool-menu-pinch-toggle input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #667eea;
+  cursor: pointer;
 }
 
 .tool-menu-grid {

@@ -335,6 +335,7 @@ function App() {
   const displayModeRef = useRef(displayMode);
   const selectedPageRef = useRef(selectedPage);
   const selectedFileRef = useRef(selectedFile);
+  const zoomLevelRef = useRef(null);   // synced via useEffect below
   const currentChapterRef = useRef(null);  // synced via useEffect below
   const selectedChapterRef = useRef(selectedChapter);
   const maxNavigablePageRef = useRef(Infinity);
@@ -367,6 +368,7 @@ function App() {
   const [undoStack, setUndoStack] = useState([]);
   const [redoStack, setRedoStack] = useState([]);
   const [zoomLevel, setZoomLevel] = useState(Number(savedPrefs.zoomLevel || 1));
+  const [pinchZoomEnabled, setPinchZoomEnabled] = useState(false);
   const [fitMode, setFitMode] = useState(
     savedPrefs.fitMode === 'height' ? 'height' : 'width'
   );
@@ -1154,6 +1156,10 @@ function App() {
   }, [selectedPage]);
 
   useEffect(() => {
+    zoomLevelRef.current = zoomLevel;
+  }, [zoomLevel]);
+
+  useEffect(() => {
     selectedFileRef.current = selectedFile;
   }, [selectedFile]);
 
@@ -1491,6 +1497,7 @@ function App() {
 
   // In scrolling/pagination mode on touch devices: one finger draws, two fingers scroll.
   // Momentum: on finger lift, scroll continues with captured velocity and decelerates.
+  // (Pinch-to-zoom is handled separately via gesturechange events for native feel.)
   useEffect(() => {
     if ((displayMode !== 'scrolling' && displayMode !== 'pagination') || tool === 'hand') return;
     const canvas = canvasRef.current;
@@ -1578,10 +1585,8 @@ function App() {
       const now = performance.now();
       const dt = now - lastVelocityTime;
       if (dt > 0 && lastVelocityTime > 0) {
-        // Instantaneous velocity (px/ms) — finger moved from last pos to current
         const instantVX = (midpoint.x - lastVelocityX) / dt;
         const instantVY = (midpoint.y - lastVelocityY) / dt;
-        // Exponential moving average smooths jitter; α=0.3 responds quickly
         const alpha = 0.3;
         velocityX = velocityX * (1 - alpha) + instantVX * alpha;
         velocityY = velocityY * (1 - alpha) + instantVY * alpha;
@@ -1640,6 +1645,7 @@ function App() {
     canvas.addEventListener('touchmove', onTouchMove, { passive: false });
     canvas.addEventListener('touchend', onTouchEnd, { passive: true });
     canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
     return () => {
       if (pendingRaf) {
         cancelAnimationFrame(pendingRaf);
@@ -1651,6 +1657,39 @@ function App() {
       canvas.removeEventListener('touchcancel', onTouchEnd);
     };
   }, [displayMode, getScrollTargetForGesture, tool, cancelMomentum, startMomentum]);
+
+  // ── Pinch-to-zoom via iOS gesturechange events ──────────
+  // Safari fires these regardless of touch-action CSS, so native scrolling
+  // (touch-action: pan-y) and pinch zoom can coexist without conflict.
+  // Only changes zoom level — Safari handles scrolling natively, so there's
+  // no scroll-compensation jitter.  Pinch zooms from page centre.
+  useEffect(() => {
+    let gestureStartZoom = 1;
+
+    const onGestureStart = (e) => {
+      if (!pinchZoomEnabled) return;
+      e.preventDefault();
+      gestureStartZoom = zoomLevelRef.current;
+      setFitMode('none');
+    };
+
+    const onGestureChange = (e) => {
+      if (!pinchZoomEnabled) return;
+      e.preventDefault();
+      const newZoom = Math.min(5, Math.max(0.1, gestureStartZoom * e.scale));
+      setZoomLevel(Number(newZoom.toFixed(2)));
+    };
+
+    document.addEventListener('gesturestart', onGestureStart, { passive: false });
+    document.addEventListener('gesturechange', onGestureChange, { passive: false });
+    document.addEventListener('gestureend', onGestureStart, { passive: false });
+
+    return () => {
+      document.removeEventListener('gesturestart', onGestureStart);
+      document.removeEventListener('gesturechange', onGestureChange);
+      document.removeEventListener('gestureend', onGestureStart);
+    };
+  }, [pinchZoomEnabled]);
 
   // Re-trigger canvas redraw when thumbnail images finish loading
   useEffect(() => {
@@ -5340,9 +5379,6 @@ function App() {
             className="annotation-canvas"
             style={{
               pointerEvents: tool === 'hand' ? 'none' : 'auto',
-              touchAction: tool === 'hand'
-                ? (displayMode === 'scrolling' ? 'pan-y' : 'pan-x pan-y')
-                : 'none',
               cursor: tool === 'move' ? 'move' : tool === 'eraser' ? 'pointer' : tool === 'text' ? 'text' : tool === 'pen' || tool === 'highlight' ? 'crosshair' : 'default'
             }}
             onPointerDown={handlePointerDown}
@@ -5488,6 +5524,17 @@ function App() {
                       aria-label={_('zoomIn')}
                     >+</button>
                   </div>
+                  {/* Pinch-to-zoom toggle — temporarily hidden */}
+                  {false && (
+                  <label className="tool-menu-pinch-toggle">
+                    <input
+                      type="checkbox"
+                      checked={pinchZoomEnabled}
+                      onChange={(e) => setPinchZoomEnabled(e.target.checked)}
+                    />
+                    <span>Pinch to zoom</span>
+                  </label>
+                  )}
                   <span className="tool-menu-sep" />
                   <button
                     className={`tool-menu-item ${fitMode === 'width' ? 'active' : ''}`}
