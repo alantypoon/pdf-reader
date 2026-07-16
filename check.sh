@@ -6,7 +6,7 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SERVICE_LOG="/tmp/pdf-reader-service.log"
 MONGO_PORT=2700
-SERVER_PORT=3001
+SERVER_PORT=3007
 
 echo "=== pdf-reader health check ==="
 echo "  $(date)"

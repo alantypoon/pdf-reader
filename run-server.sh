@@ -7,17 +7,18 @@
 
 set -e
 cd "$(dirname "$0")"
-PORT=3001
+PORT=3007
 
-# ── Force-release the port (kill ALL processes on it) ──────
+# ── Force-release the port (kill only node processes) ─────
 echo "[run-server] Releasing port $PORT..."
 for i in 1 2 3; do
-  PIDS=$(lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true)
+  # Only kill node processes — ignore VS Code port forwarding helpers
+  PIDS=$(lsof -tiTCP:"$PORT" -sTCP:LISTEN -c node 2>/dev/null || true)
   if [ -z "$PIDS" ]; then
     echo "[run-server] Port $PORT is free"
     break
   fi
-  echo "[run-server] Killing PIDs $PIDS on port $PORT (attempt $i)"
+  echo "[run-server] Killing node PIDs $PIDS on port $PORT (attempt $i)"
   for pid in $PIDS; do
     kill -9 "$pid" 2>/dev/null || true
   done

@@ -20,7 +20,7 @@ console.warn = (...a) => _origWarn(_ts(), ...a);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const app = express();
-const port = 3001;
+const port = 3007;
 
 const DATA_PATH = process.env.DATA_PATH || path.resolve(__dirname, '../data');
 const DEFAULT_BOOK = process.env.DEFAULT_BOOK || 'biology-oup';
