@@ -80,17 +80,24 @@ function centerAnchoredScroll(container, oldScrollTop, oldScrollHeight, axis = '
 const _bilingualMaxHeights = new Map();  // syncGroup → running max (px)
 const BILINGUAL_REPOSITION_EVENT = 'pdf-bilingual-reposition';
 
+function isDebugMode() {
+  if (typeof window === 'undefined') return false;
+  try {
+    return new URLSearchParams(window.location.search).get('test') === '1';
+  } catch { return false; }
+}
+
+function debugLog(...args) {
+  if (isDebugMode()) console.log(...args);
+}
+
 /**
  * Dynamically inject / update a CSS rule that locks ALL .page-img elements
  * in the bilingual layout to the shared maxHeight with !important.
  * This runs once when the max is established — no per-element inline needed.
  */
 function updateBilingualPageHeightCSS(maxH) {
-  // debugger;
-  console.log(`[bilingual-css] updateBilingualPageHeightCSS called  maxH=${maxH}`);
-  // return;
-
-  // console.log(`[bilingual-css] updateBilingualPageHeightCSS called  maxH=${maxH}`);
+  debugLog(`[bilingual-css] updateBilingualPageHeightCSS called  maxH=${maxH}`);
   let styleEl = document.getElementById('bilingual-page-height-css');
   if (!styleEl) {
     styleEl = document.createElement('style');
@@ -104,14 +111,14 @@ function updateBilingualPageHeightCSS(maxH) {
     `  min-height: ${maxH}px !important;\n` +
     `}`;
   // console.log(`[bilingual-css] injected rule: .page-img { height:${maxH}px max-height:${maxH}px min-height:${maxH}px !important }`);
+    debugLog(`[bilingual-css] injected rule: .page-img { height:${maxH}px max-height:${maxH}px min-height:${maxH}px !important }`);
 
 }
 
 function repositionBilingualPages(mount, syncGroup) {
-// return;
-  console.log(`[bilingual-reposition] repositionBilingualPages called  syncGroup=${syncGroup}`);  
+  debugLog(`[bilingual-reposition] repositionBilingualPages called  syncGroup=${syncGroup}`);  
   const maxH = _bilingualMaxHeights.get(syncGroup) || 0;
-  if (!maxH) { console.log(`[bilingual-reposition] SKIP: maxH=${maxH} (zero/missing)`); return; }
+  if (!maxH) { debugLog(`[bilingual-reposition] SKIP: maxH=${maxH} (zero/missing)`); return; }
 
   // Dynamically inject/update the CSS rule locking all .page-img heights.
   updateBilingualPageHeightCSS(maxH);
@@ -132,7 +139,7 @@ function repositionBilingualPages(mount, syncGroup) {
   const headerEl = mount.closest('.page-card')?.querySelector('.page-card-header');
   const headerH = headerEl ? headerEl.getBoundingClientRect().height : 0;
 
-  console.log(
+  debugLog(
     `[bilingual-reposition] ──────────────────────────────────\n` +
     `  lang=${paneLang}  maxHeightOfAllPages=${maxH}  totalPages=${totalPages}\n` +
     `  mountRect   top=${Math.round(mountRect.top)}  height=${Math.round(mountRect.height)}\n` +
@@ -160,7 +167,7 @@ function repositionBilingualPages(mount, syncGroup) {
     }
     // Only log first/last and every 5th page to reduce noise
     if (pageIdx === 1 || pageIdx === totalPages || pageIdx % 5 === 0) {
-      console.log(
+      debugLog(
         `  pageY[${pageIdx}] = ${top}  (${pageIdx}×${maxH})  lang=${paneLang}  tag=${tag}  blank=${isBlank}  naturalH=${naturalH}`
       );
     }
@@ -177,15 +184,15 @@ function updateBilingualMaxHeight(syncGroup, localMax) {
   const current = _bilingualMaxHeights.get(syncGroup) || 0;
   const next = Math.max(current, Math.round(localMax));
   _bilingualMaxHeights.set(syncGroup, next);
-  console.log(`[bilingual-maxH] updateBilingualMaxHeight  syncGroup=${syncGroup}  localMax=${Math.round(localMax)}  current=${current}  next=${next}`);
+  debugLog(`[bilingual-maxH] updateBilingualMaxHeight  syncGroup=${syncGroup}  localMax=${Math.round(localMax)}  current=${current}  next=${next}`);
   return next;
 }
 
 function normalizeBilingualHeights(mount, syncGroup, reset = false) {
   const children = mount.querySelectorAll('[data-page]');
   const paneLang = mount.closest('[data-annotation-language]')?.dataset?.annotationLanguage || '?';
-  console.log(`[bilingual-measure] normalizeBilingualHeights called  lang=${paneLang}  syncGroup=${syncGroup}  reset=${reset}  children=${children.length}`);
-  if (!children.length) { console.log(`[bilingual-measure] SKIP: no children`); return; }
+  debugLog(`[bilingual-measure] normalizeBilingualHeights called  lang=${paneLang}  syncGroup=${syncGroup}  reset=${reset}  children=${children.length}`);
+  if (!children.length) { debugLog(`[bilingual-measure] SKIP: no children`); return; }
 
   // Measure local max from actual rendered heights
   let localMax = 0;
@@ -203,7 +210,7 @@ function normalizeBilingualHeights(mount, syncGroup, reset = false) {
   const prevMax = _bilingualMaxHeights.get(syncGroup) || 0;
   const newMax = updateBilingualMaxHeight(syncGroup, localMax);
 
-  console.log(
+  debugLog(
     `[bilingual-measure] lang=${paneLang}  localMax=${Math.round(localMax)}  localMin=${Math.round(minH)}  globalMax=${newMax}  (was ${prevMax})`
   );
 
@@ -997,7 +1004,7 @@ function PdfPane({
       if (group !== syncGroup) return;
       const maxH = _bilingualMaxHeights.get(syncGroup) || 0;
       if (maxH && mount) {
-        console.log(`[bilingual-listen] lang=${paneLanguage} received reposition event, maxH=${maxH}`);
+        debugLog(`[bilingual-listen] lang=${paneLanguage} received reposition event, maxH=${maxH}`);
         repositionBilingualPages(mount, syncGroup);
       }
     };

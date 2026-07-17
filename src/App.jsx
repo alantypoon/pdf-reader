@@ -537,10 +537,10 @@ function App() {
   }, [refreshFitForCurrentMode]);
 
   useEffect(() => {
-    console.log('[layout] sidebar collapse/expand/fullscreen changed — scheduling fit refresh in 2000ms');
+    if (isTestMode) console.log('[layout] sidebar collapse/expand/fullscreen changed — scheduling fit refresh in 2000ms');
     for (var i = 0; i < 3; i++) {
       const timer = setTimeout(() => {
-        console.log('[layout] firing fit refresh now: ' + i);
+        if (isTestMode) console.log('[layout] firing fit refresh now: ' + i);
         refreshFitForCurrentMode();
       }, 200 * i);
     }
