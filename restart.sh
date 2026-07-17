@@ -33,12 +33,12 @@ macos)
     echo "=== Restarting pdf-reader (launchd) ==="
 
     # Restart MongoDB first
-    if [[ -f "$MONGO_PLIST" ]]; then
-        echo "[1/2] Restarting MongoDB..."
-        launchctl unload "$MONGO_PLIST" 2>/dev/null || true
-        sleep 1
-        launchctl load "$MONGO_PLIST"
-    fi
+    # if [[ -f "$MONGO_PLIST" ]]; then
+    #     echo "[1/2] Restarting MongoDB..."
+    #     launchctl unload "$MONGO_PLIST" 2>/dev/null || true
+    #     sleep 1
+    #     launchctl load "$MONGO_PLIST"
+    # fi
 
     # Restart PDF Reader server
     echo "[2/2] Restarting PDF Reader server..."

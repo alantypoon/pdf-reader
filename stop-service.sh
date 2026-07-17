@@ -21,18 +21,18 @@ else
 fi
 
 # 2. Force-kill any remaining node process on the port
-echo "[2/2] Killing node processes on port $PORT..."
-for i in 1 2 3; do
-    PIDS=$(lsof -tiTCP:"$PORT" -sTCP:LISTEN -c node 2>/dev/null || true)
-    if [[ -z "$PIDS" ]]; then
-        echo "  ✓ Port $PORT is free"
-        break
-    fi
-    for pid in $PIDS; do
-        kill -9 "$pid" 2>/dev/null && echo "  ✓ Killed PID $pid" || true
-    done
-    sleep 1
-done
+# echo "[2/2] Killing node processes on port $PORT..."
+# for i in 1 2 3; do
+#     PIDS=$(lsof -tiTCP:"$PORT" -sTCP:LISTEN -c node 2>/dev/null || true)
+#     if [[ -z "$PIDS" ]]; then
+#         echo "  ✓ Port $PORT is free"
+#         break
+#     fi
+#     for pid in $PIDS; do
+#         kill -9 "$pid" 2>/dev/null && echo "  ✓ Killed PID $pid" || true
+#     done
+#     sleep 1
+# done
 
 echo ""
 echo "=== Service stopped ==="

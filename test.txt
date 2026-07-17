@@ -1,0 +1,57 @@
+21:21:08.490 index-D2evtCse.js:380 [layout] firing fit refresh now
+21:21:08.760 index-D2evtCse.js:380 [layout] sidebar collapse/expand/fullscreen changed — scheduling fit refresh in 2000ms
+21:21:08.763 index-D2evtCse.js:380 [layout] immediate fit refresh — sidebar/fullscreen/panel changed
+21:21:08.950 index-D2evtCse.js:380 [loadPages] chapter=1a file=1 languages=en,tc
+21:21:08.950 index-D2evtCse.js:380 [loadPages] fetching: api/page?chapter=1a&language=en&page=1&book=chemistry-aristo
+21:21:08.950 index-D2evtCse.js:380 [loadPages] fetching: api/page?chapter=1a&language=tc&page=1&book=chemistry-aristo
+21:21:08.963 index-D2evtCse.js:380 [loadPages]   en: images=22 url=N/A result=22 imgs
+21:21:08.972 index-D2evtCse.js:380 [loadPages]   tc: images=30 url=N/A result=30 imgs
+21:21:08.972 index-D2evtCse.js:380 [loadPages] setting pageSources: (2) ['en', 'tc']
+21:21:09.145 index-D2evtCse.js:118 [bilingual-measure] lang=en  localMax=546  localMin=546  globalMax=546  (was 0)
+21:21:09.146 index-D2evtCse.js:114 [bilingual-reposition] ──────────────────────────────────
+  lang=en  maxHeightOfAllPages=546  totalPages=30
+  mountRect   top=0  height=746
+  headerH=38 (absolute, should not offset content)
+  scrollH=16380 → newScrollH=?  scrollTop=1092
+21:21:09.146 index-D2evtCse.js:118   pageY[1] = 0  (1×546)  lang=en  tag=IMG  blank=false  naturalH=546
+21:21:09.146 index-D2evtCse.js:118   pageY[5] = 2184  (5×546)  lang=en  tag=IMG  blank=false  naturalH=546
+21:21:09.147 index-D2evtCse.js:118   pageY[10] = 4914  (10×546)  lang=en  tag=IMG  blank=false  naturalH=546
+21:21:09.147 index-D2evtCse.js:118   pageY[15] = 7644  (15×546)  lang=en  tag=IMG  blank=false  naturalH=546
+21:21:09.148 index-D2evtCse.js:118   pageY[20] = 10374  (20×546)  lang=en  tag=IMG  blank=false  naturalH=546
+21:21:09.148 index-D2evtCse.js:118   pageY[25] = 13104  (25×546)  lang=en  tag=DIV  blank=true  naturalH=546
+21:21:09.149 index-D2evtCse.js:118   pageY[30] = 15834  (30×546)  lang=en  tag=DIV  blank=true  naturalH=546
+21:21:09.149 index-D2evtCse.js:118 [bilingual-listen] lang=en received reposition event, maxH=546
+21:21:09.149 index-D2evtCse.js:114 [bilingual-reposition] ──────────────────────────────────
+  lang=en  maxHeightOfAllPages=546  totalPages=30
+  mountRect   top=0  height=746
+  headerH=38 (absolute, should not offset content)
+  scrollH=16380 → newScrollH=?  scrollTop=1092
+21:21:09.149 index-D2evtCse.js:118   pageY[1] = 0  (1×546)  lang=en  tag=IMG  blank=false  naturalH=546
+21:21:09.149 index-D2evtCse.js:118   pageY[5] = 2184  (5×546)  lang=en  tag=IMG  blank=false  naturalH=546
+21:21:09.149 index-D2evtCse.js:118   pageY[10] = 4914  (10×546)  lang=en  tag=IMG  blank=false  naturalH=546
+21:21:09.149 index-D2evtCse.js:118   pageY[15] = 7644  (15×546)  lang=en  tag=IMG  blank=false  naturalH=546
+21:21:09.149 index-D2evtCse.js:118   pageY[20] = 10374  (20×546)  lang=en  tag=IMG  blank=false  naturalH=546
+21:21:09.149 index-D2evtCse.js:118   pageY[25] = 13104  (25×546)  lang=en  tag=DIV  blank=true  naturalH=546
+21:21:09.149 index-D2evtCse.js:118   pageY[30] = 15834  (30×546)  lang=en  tag=DIV  blank=true  naturalH=546
+21:21:09.149 index-D2evtCse.js:118 [bilingual-listen] lang=tc received reposition event, maxH=546
+21:21:09.149 index-D2evtCse.js:114 [bilingual-reposition] ──────────────────────────────────
+  lang=tc  maxHeightOfAllPages=546  totalPages=30
+  mountRect   top=0  height=746
+  headerH=38 (absolute, should not offset content)
+  scrollH=16380 → newScrollH=?  scrollTop=1092
+21:21:09.149 index-D2evtCse.js:118   pageY[1] = 0  (1×546)  lang=tc  tag=IMG  blank=false  naturalH=546
+21:21:09.150 index-D2evtCse.js:118   pageY[5] = 2184  (5×546)  lang=tc  tag=IMG  blank=false  naturalH=546
+21:21:09.150 index-D2evtCse.js:118   pageY[10] = 4914  (10×546)  lang=tc  tag=IMG  blank=false  naturalH=546
+21:21:09.151 index-D2evtCse.js:118   pageY[15] = 7644  (15×546)  lang=tc  tag=IMG  blank=false  naturalH=546
+21:21:09.151 index-D2evtCse.js:118   pageY[20] = 10374  (20×546)  lang=tc  tag=IMG  blank=false  naturalH=546
+21:21:09.151 index-D2evtCse.js:118   pageY[25] = 13104  (25×546)  lang=tc  tag=IMG  blank=false  naturalH=546
+21:21:09.152 index-D2evtCse.js:118   pageY[30] = 15834  (30×546)  lang=tc  tag=IMG  blank=false  naturalH=546
+21:21:09.153 index-D2evtCse.js:118 [bilingual-measure] lang=tc  localMax=546  localMin=546  globalMax=546  (was 546)
+
+21:21:10.762 index-D2evtCse.js:380 [layout] firing fit refresh now
+
+<img alt="Page 5" data-page="5" data-src="/pdf-reader/data/chemistry-aristo/1a/en/contents/pages/1-5.png" class="page-img" style="width: 386px; height: auto; max-width: none; display: block; opacity: 1; position: absolute; top: 2184px; left: 0px;" src="/pdf-reader/data/chemistry-aristo/1a/en/contents/pages/1-5.png">
+
+<img alt="Page 5" data-page="5" data-src="/pdf-reader/data/chemistry-aristo/1a/tc/contents/pages/1-5.png" class="page-img" style="width: 386px; height: auto; max-width: none; display: block; opacity: 1; position: absolute; top: 2184px; left: 0px;" src="/pdf-reader/data/chemistry-aristo/1a/tc/contents/pages/1-5.png">
+
+https://www.edb.gov.hk/en/teacher/qualification-training-development/training/scholarship-for-eng-teacher/index.html

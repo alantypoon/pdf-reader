@@ -62,6 +62,163 @@ function centerAnchoredScroll(container, oldScrollTop, oldScrollHeight, axis = '
   return result;
 }
 
+/**
+ * Bilingual page-position normalization.
+ *
+ * pageY = (pageIndex) × maxHeight  —  position is fixed regardless of
+ * whether an image has loaded or what each page's natural height is.
+ *
+ * Each pane measures its local maxHeight, shares it via a module-level
+ * Map keyed by syncGroup, then positions every child at:
+ *     top: (data-page - 1) * maxHeight
+ * using absolute positioning.  The mount becomes a positioned container
+ * with explicit height = totalPages × maxHeight.
+ *
+ * Called once for PDFs (canvases are synchronous) and repeatedly for
+ * images (as each load event reveals the true dimensions).
+ */
+const _bilingualMaxHeights = new Map();  // syncGroup → running max (px)
+const BILINGUAL_REPOSITION_EVENT = 'pdf-bilingual-reposition';
+
+/**
+ * Dynamically inject / update a CSS rule that locks ALL .page-img elements
+ * in the bilingual layout to the shared maxHeight with !important.
+ * This runs once when the max is established — no per-element inline needed.
+ */
+function updateBilingualPageHeightCSS(maxH) {
+  // debugger;
+  console.log(`[bilingual-css] updateBilingualPageHeightCSS called  maxH=${maxH}`);
+  // return;
+
+  // console.log(`[bilingual-css] updateBilingualPageHeightCSS called  maxH=${maxH}`);
+  let styleEl = document.getElementById('bilingual-page-height-css');
+  if (!styleEl) {
+    styleEl = document.createElement('style');
+    styleEl.id = 'bilingual-page-height-css';
+    document.head.appendChild(styleEl);
+  }
+  styleEl.textContent =
+    `.book-stage.bilingual-layout .pdf-scroll-pages .page-img {\n` +
+    `  height: ${maxH}px !important;\n` +
+    `  max-height: ${maxH}px !important;\n` +
+    `  min-height: ${maxH}px !important;\n` +
+    `}`;
+  // console.log(`[bilingual-css] injected rule: .page-img { height:${maxH}px max-height:${maxH}px min-height:${maxH}px !important }`);
+
+}
+
+function repositionBilingualPages(mount, syncGroup) {
+// return;
+  console.log(`[bilingual-reposition] repositionBilingualPages called  syncGroup=${syncGroup}`);  
+  const maxH = _bilingualMaxHeights.get(syncGroup) || 0;
+  if (!maxH) { console.log(`[bilingual-reposition] SKIP: maxH=${maxH} (zero/missing)`); return; }
+
+  // Dynamically inject/update the CSS rule locking all .page-img heights.
+  updateBilingualPageHeightCSS(maxH);
+
+  const children = mount.querySelectorAll('[data-page]');
+  if (!children.length) return;
+
+  const totalPages = children.length;
+  const paneLang = mount.closest('[data-annotation-language]')?.dataset?.annotationLanguage || '?';
+  const oldScrollHeight = Math.max(1, mount.scrollHeight);
+  const oldScrollTop = mount.scrollTop;
+
+  // Make mount the containing block for absolute children.
+  mount.style.position = 'relative';
+  mount.style.display = 'block';
+
+  const mountRect = mount.getBoundingClientRect();
+  const headerEl = mount.closest('.page-card')?.querySelector('.page-card-header');
+  const headerH = headerEl ? headerEl.getBoundingClientRect().height : 0;
+
+  console.log(
+    `[bilingual-reposition] ──────────────────────────────────\n` +
+    `  lang=${paneLang}  maxHeightOfAllPages=${maxH}  totalPages=${totalPages}\n` +
+    `  mountRect   top=${Math.round(mountRect.top)}  height=${Math.round(mountRect.height)}\n` +
+    `  headerH=${Math.round(headerH)} (absolute, should not offset content)\n` +
+    `  scrollH=${oldScrollHeight} → newScrollH=?  scrollTop=${oldScrollTop}`
+  );
+
+  children.forEach((child) => {
+    const pageIdx = parseInt(child.dataset.page, 10) || 1;
+    const top = (pageIdx - 1) * maxH;
+    const tag = child.tagName;
+    const isBlank = child.dataset.blank === 'true';
+    const naturalH = Math.round(child.getBoundingClientRect().height);
+    child.style.position = 'absolute';
+    child.style.top = `${top}px`;
+    // Center horizontally: left:0 + right:0 + margin:0 auto with explicit width
+    child.style.left = '0';
+    child.style.right = '0';
+    child.style.marginLeft = 'auto';
+    child.style.marginRight = 'auto';
+    // .page-img elements get height from the injected CSS rule.
+    // Dummy divs need inline height since they are not .page-img.
+    if (isBlank) {
+      child.style.setProperty('height', `${maxH}px`, 'important');
+    }
+    // Only log first/last and every 5th page to reduce noise
+    if (pageIdx === 1 || pageIdx === totalPages || pageIdx % 5 === 0) {
+      console.log(
+        `  pageY[${pageIdx}] = ${top}  (${pageIdx}×${maxH})  lang=${paneLang}  tag=${tag}  blank=${isBlank}  naturalH=${naturalH}`
+      );
+    }
+  });
+
+  // Preserve relative scroll position after the layout switch
+  const newScrollHeight = Math.max(1, mount.scrollHeight);
+  if (newScrollHeight !== oldScrollHeight) {
+    mount.scrollTop = oldScrollTop * (newScrollHeight / oldScrollHeight);
+  }
+}
+
+function updateBilingualMaxHeight(syncGroup, localMax) {
+  const current = _bilingualMaxHeights.get(syncGroup) || 0;
+  const next = Math.max(current, Math.round(localMax));
+  _bilingualMaxHeights.set(syncGroup, next);
+  console.log(`[bilingual-maxH] updateBilingualMaxHeight  syncGroup=${syncGroup}  localMax=${Math.round(localMax)}  current=${current}  next=${next}`);
+  return next;
+}
+
+function normalizeBilingualHeights(mount, syncGroup, reset = false) {
+  const children = mount.querySelectorAll('[data-page]');
+  const paneLang = mount.closest('[data-annotation-language]')?.dataset?.annotationLanguage || '?';
+  console.log(`[bilingual-measure] normalizeBilingualHeights called  lang=${paneLang}  syncGroup=${syncGroup}  reset=${reset}  children=${children.length}`);
+  if (!children.length) { console.log(`[bilingual-measure] SKIP: no children`); return; }
+
+  // Measure local max from actual rendered heights
+  let localMax = 0;
+  let minH = Infinity;
+  children.forEach((child) => {
+    const h = child.getBoundingClientRect().height;
+    if (h > localMax) localMax = h;
+    if (h < minH) minH = h;
+  });
+
+  // Update shared max (both panes contribute to the same Map entry).
+  // When reset is true, discard previous max so the value can shrink
+  // (e.g. after fit-refresh or window resize to smaller dimensions).
+  if (reset) _bilingualMaxHeights.delete(syncGroup);
+  const prevMax = _bilingualMaxHeights.get(syncGroup) || 0;
+  const newMax = updateBilingualMaxHeight(syncGroup, localMax);
+
+  console.log(
+    `[bilingual-measure] lang=${paneLang}  localMax=${Math.round(localMax)}  localMin=${Math.round(minH)}  globalMax=${newMax}  (was ${prevMax})`
+  );
+
+  // Reposition if max changed
+  if (newMax !== prevMax || prevMax === 0) {
+    repositionBilingualPages(mount, syncGroup);
+    // If the shared max grew because of us, notify the OTHER pane to reposition
+    if (newMax !== prevMax) {
+      window.dispatchEvent(new CustomEvent(BILINGUAL_REPOSITION_EVENT, {
+        detail: { syncGroup }
+      }));
+    }
+  }
+}
+
 function PdfPane({
   source,
   images,
@@ -82,7 +239,8 @@ function PdfPane({
   onRenderScaleChange,
   onScrollCanvasesReady,
   language = 'en',
-  paneLanguage = 'en'
+  paneLanguage = 'en',
+  maxPagesInGroup = 0
 }) {
   const lang = uiLang(language);
   const _ = (key) => t(key, lang);
@@ -101,6 +259,7 @@ function PdfPane({
   const scrollRef = useRef(null);
   const contentRef = useRef(null);
   const thumbGridRef = useRef(null);
+  const blankRef = useRef(null);
   const currentPageRef = useRef(currentPage);
   const renderedPageRef = useRef(1);
   const syncingFromRemoteRef = useRef(false);
@@ -324,7 +483,10 @@ function PdfPane({
     const gen = modeGenRef.current;
     const draw = async () => {
       const pageNumber = Math.max(1, Math.min(currentPage, numPages || 1));
-      const page = await pdfDoc.getPage(pageNumber);
+      const isBlank = currentPage > (numPages || 0) && numPages > 0;
+      // Use first page as reference for blank page dimensions
+      const refPageNumber = isBlank ? 1 : pageNumber;
+      const page = await pdfDoc.getPage(refPageNumber);
       if (modeGenRef.current !== gen) return;
       const holder = canvasRef.current?.parentElement;
       if (!holder) return;
@@ -374,16 +536,21 @@ function PdfPane({
       if (oldScrollHeight !== holder.scrollHeight || oldScrollWidth !== holder.scrollWidth) {
         holder.scrollTo(centerAnchoredScroll(holder, oldScrollTop, oldScrollHeight, 'both', oldScrollLeft, oldScrollWidth));
       }
-      await page.render({ canvasContext: context, viewport }).promise;
+      if (isBlank) {
+        // Render a blank white page so both versions have matching dimensions
+        context.fillStyle = '#ffffff';
+        context.fillRect(0, 0, canvas.width, canvas.height);
+      } else {
+        await page.render({ canvasContext: context, viewport }).promise;
+      }
       if (modeGenRef.current !== gen) return;
       // Re-apply after render in case paint caused a layout shift
       if (oldScrollHeight !== holder.scrollHeight || oldScrollWidth !== holder.scrollWidth) {
         holder.scrollTo(centerAnchoredScroll(holder, oldScrollTop, oldScrollHeight, 'both', oldScrollLeft, oldScrollWidth));
       }
-      setRenderedPage(pageNumber);
-      if (pageNumber !== currentPage) {
-        onPageChange(pageNumber);
-      }
+      setRenderedPage(currentPage);
+      // Don't fire onPageChange for blank pages — the page number is intentionally
+      // beyond this version's count and the parent already knows about it.
     };
 
     draw();
@@ -417,8 +584,45 @@ function PdfPane({
   //     Using height:100% (percentage) can fail because of a circular
   //     dependency in the CSS chain (flex-basis:auto vs percentage heights).
   //     We measure the container and set explicit px, matching scrolling mode.
+  //     Also handles blank page divs (when currentPage > images.length in
+  //     bilingual mode) to ensure identical dimensions across both versions.
   useLayoutEffect(() => {
     if (!isImageMode || mode !== 'pagination') return;
+
+    // Handle blank page div dimensions
+    const isBlankPage = currentPage > images.length;
+    if (isBlankPage) {
+      const blank = blankRef.current;
+      const container = blank?.closest('.pdf-single-page');
+      if (!blank || !container) return;
+      if (fitMode === 'height') {
+        const h = container.clientHeight;
+        if (h > 0) {
+          blank.style.height = `${h * zoom}px`;
+          blank.style.width = 'auto';
+          blank.style.maxWidth = 'none';
+          blank.style.maxHeight = 'none';
+        }
+      } else if (fitMode === 'none') {
+        const w = container.clientWidth;
+        if (w > 0) {
+          blank.style.width = `${w * zoom}px`;
+          blank.style.height = 'auto';
+          blank.style.maxWidth = 'none';
+          blank.style.maxHeight = 'none';
+        }
+      } else {
+        const w = container.clientWidth;
+        if (w > 0) {
+          blank.style.width = `${w * zoom}px`;
+          blank.style.height = 'auto';
+          blank.style.maxWidth = '';
+          blank.style.maxHeight = 'none';
+        }
+      }
+      return;
+    }
+
     const img = imgRef.current;
     const container = img?.closest('.pdf-single-page');
     if (!img || !container) return;
@@ -448,7 +652,7 @@ function PdfPane({
         img.style.maxHeight = 'none';
       }
     }
-  }, [isImageMode, mode, zoom, fitMode, fitRefreshToken, imageLoadVersion, currentPage]);
+  }, [isImageMode, mode, zoom, fitMode, fitRefreshToken, imageLoadVersion, currentPage, images]);
 
   useEffect(() => {
     if (!isImageMode) return;
@@ -500,9 +704,18 @@ function PdfPane({
     mount.style.justifyItems = 'center';
     mount.style.overflowX = fitMode === 'none' ? 'auto' : 'hidden';
 
-    // Measure the base (unzoomed) width from .pdf-content before any zoom scaling.
-    const baseRect = contentRef.current ? contentRef.current.getBoundingClientRect() : mount.getBoundingClientRect();
-    const baseWidth = Math.max(180, baseRect.width);
+    // Measure the base (unzoomed) width. In bilingual mode, compute from
+    // the SHARED parent (.book-stage) divided by 2 grid columns so both
+    // panes get the EXACT same value — no 1px sub-pixel drift.
+    const isBilingual = maxPagesInGroup > 0;
+    let baseWidth;
+    if (isBilingual) {
+      const stage = mount.closest('.book-stage');
+      baseWidth = stage ? Math.max(180, Math.floor(stage.getBoundingClientRect().width / 2)) : 360;
+    } else {
+      const baseRect = contentRef.current ? contentRef.current.getBoundingClientRect() : mount.getBoundingClientRect();
+      baseWidth = Math.max(180, baseRect.width);
+    }
 
     if (contentRef.current) {
       contentRef.current.style.overflow = fitMode === 'none' ? 'visible' : 'hidden';
@@ -512,6 +725,13 @@ function PdfPane({
     // Constrain .pdf-scroll-pages to the base (viewport) width so its content overflows → scrollbar
     mount.style.width = `${baseWidth}px`;
 
+    // In bilingual mode, inject the CSS height rule BEFORE canvases enter
+    // the DOM so they render at the correct size from the start.
+    if (isBilingual) {
+      const estH = Math.round(baseWidth * zoom * Math.SQRT2);
+      updateBilingualPageHeightCSS(estH);
+    }
+
     const drawAll = async () => {
       let lastScale = zoom;
       const mountRect = mount.getBoundingClientRect();
@@ -520,42 +740,82 @@ function PdfPane({
       // measured width which is now explicitly constrained.
       const containerWidth = baseWidth;
       const fragment = document.createDocumentFragment();
+
+      // In bilingual mode, compute uniform page height from SHARED parameters
+      // (container width + zoom + standard A4 ratio √2) so BOTH language panes
+      // get the EXACT SAME integer value.  Computing from each pane's own first
+      // page can differ by 1-10px due to slight PDF dimension variations, and
+      // that error multiplies per page — causing growing vertical misalignment.
+      let uniformPageHeight = null;
+      if (isBilingual) {
+        if (fitMode === 'height') {
+          uniformPageHeight = Math.round(containerHeight * zoom);
+        } else {
+          uniformPageHeight = Math.round(containerWidth * zoom * Math.SQRT2);
+        }
+      }
+
+      const canvases = [];
       for (let i = 1; i <= numPages; i += 1) {
         if (disposed || modeGenRef.current !== gen) return;
         const page = await pdfDoc.getPage(i);
         if (disposed || modeGenRef.current !== gen) return;
         const viewportBase = page.getViewport({ scale: 1 });
-        if (fitMode === 'none') {
-          // Same baseline as fit-width but max-width CSS constraints are released
+
+        if (isBilingual) {
+          // Scale every page by height to match the shared uniform height.
+          // Width adjusts proportionally (may overflow container → scrollbar).
+          lastScale = Math.max(0.001, (uniformPageHeight / viewportBase.height));
+        } else if (fitMode === 'none') {
           lastScale = Math.max(0.001, (containerWidth / viewportBase.width) * zoom);
         } else {
           const fitDim = fitMode === 'height' ? containerHeight : containerWidth;
           const fitBase = fitMode === 'height' ? viewportBase.height : viewportBase.width;
           lastScale = Math.max(0.001, (fitDim / fitBase) * zoom);
         }
+
         const viewport = page.getViewport({ scale: lastScale });
+
         const canvas = document.createElement('canvas');
         const context = canvas.getContext('2d');
         const ratio = safeDevicePixelRatio(viewport.width, viewport.height);
         canvas.width = Math.floor(viewport.width * ratio);
         canvas.height = Math.floor(viewport.height * ratio);
-        // Always use explicit px so the canvas can be wider than the constrained
-        // scroll container, which produces a horizontal scrollbar when zoomed.
+
+        // In bilingual mode, force CSS height to the rounded uniform value so
+        // every page occupies exactly the same vertical space across both panes.
         canvas.style.width = `${viewport.width}px`;
-        canvas.style.height = `${viewport.height}px`;
+        canvas.style.height = isBilingual && uniformPageHeight
+          ? `${uniformPageHeight}px`
+          : `${viewport.height}px`;
         canvas.style.display = 'block';
         canvas.dataset.page = String(i);
-        // Debug: log scroll-mode canvas sizes when free-zooming
-        if (fitMode === 'none' && i === 1) {
-          console.log('[scroll-zoom] fitMode=' + fitMode + ' zoom=' + zoom +
-            ' lastScale=' + lastScale.toFixed(3) +
-            ' canvasW=' + viewport.width.toFixed(0) +
-            ' containerW=' + containerWidth);
-        }
+
         context.setTransform(ratio, 0, 0, ratio, 0, 0);
         await page.render({ canvasContext: context, viewport }).promise;
         if (disposed || modeGenRef.current !== gen) return;
-        fragment.appendChild(canvas);
+        canvases.push(canvas);
+      }
+
+      // Append all canvases
+      canvases.forEach((c) => fragment.appendChild(c));
+
+      // Pad shorter PDF with blank pages (all at uniform height) so both
+      // bilingual versions have identical total scroll height.
+      const pageH = uniformPageHeight || containerHeight;
+      if (maxPagesInGroup > 0 && numPages > 0 && numPages < maxPagesInGroup) {
+        const blankWidth = mount.getBoundingClientRect().width || baseWidth;
+        for (let p = numPages + 1; p <= maxPagesInGroup; p++) {
+          const blankPage = document.createElement('div');
+          blankPage.className = 'pdf-blank-page';
+          blankPage.style.width = `${blankWidth}px`;
+          blankPage.style.setProperty('height', `${pageH}px`, 'important');
+          blankPage.textContent = String(p);
+          blankPage.style.display = 'block';
+          blankPage.dataset.page = String(p);
+          blankPage.dataset.blank = 'true';
+          fragment.appendChild(blankPage);
+        }
       }
 
       if (disposed || modeGenRef.current !== gen) return;
@@ -567,6 +827,15 @@ function PdfPane({
       mount.innerHTML = '';
       mount.appendChild(fragment);
 
+      // Bilingual: after DOM settles, position every page at
+      // pageY = (pageIndex) × max(all EN+TC heights) via absolute positioning.
+      if (isBilingual) {
+        requestAnimationFrame(() => {
+          if (disposed || modeGenRef.current !== gen) return;
+          normalizeBilingualHeights(mount, syncGroup, true);
+        });
+      }
+
       if (typeof onRenderScaleChange === 'function') {
         onRenderScaleChange(lastScale);
       }
@@ -576,7 +845,7 @@ function PdfPane({
 
       const syncPageIndicator = () => {
         if (disposed || modeGenRef.current !== gen) return null;
-        const allNodes = [...mount.querySelectorAll('canvas[data-page]')];
+        const allNodes = [...mount.querySelectorAll('[data-page]')];
         if (!allNodes.length) return null;
         const top = mount.scrollTop;
         let nearest = Number(allNodes[0].dataset.page) || 1;
@@ -589,8 +858,12 @@ function PdfPane({
         // unnecessary re-renders that cause flickering during scroll.
         if (nearest !== renderedPageRef.current) {
           setRenderedPage(nearest);
-          lastScrolledFromSyncRef.current = true;
-          onPageChange(nearest);
+          // Suppress onPageChange when this scroll was triggered by a remote
+          // sync — the initiating pane already reported the correct page.
+          if (!syncingFromRemoteRef.current) {
+            lastScrolledFromSyncRef.current = true;
+            onPageChange(nearest);
+          }
         }
         return nearest;
       };
@@ -663,7 +936,7 @@ function PdfPane({
       }
       cleanup();
     };
-  }, [isImageMode, pdfDoc, numPages, mode, zoom, fitMode, fitRefreshToken, contentWidth]);
+  }, [isImageMode, pdfDoc, numPages, mode, zoom, fitMode, fitRefreshToken, contentWidth, maxPagesInGroup]);
 
   // ── Scroll to current page in scrolling mode (prev/next buttons) ─
   // Only jump when the page change came from a button click, not from
@@ -693,10 +966,17 @@ function PdfPane({
       const { group, sender, ratio } = event.detail || {};
       if (group !== syncGroup || sender === syncId) return;
       const max = Math.max(0, mount.scrollHeight - mount.clientHeight);
+      // Set both guards to prevent any scroll-back from the scroll-to-page
+      // useEffect or the syncPageIndicator onPageChange callback.
       syncingFromRemoteRef.current = true;
+      lastScrolledFromSyncRef.current = true;
       mount.scrollTop = ratio * max;
       requestAnimationFrame(() => {
         syncingFromRemoteRef.current = false;
+        // If no React state update consumed lastScrolledFromSyncRef
+        // (i.e. no page change occurred), reset it here so the next
+        // prev/next button click doesn't get wrongly suppressed.
+        lastScrolledFromSyncRef.current = false;
       });
     };
 
@@ -704,8 +984,31 @@ function PdfPane({
     return () => window.removeEventListener('pdf-pane-scroll-sync', onSync);
   }, [mode, syncGroup, syncId]);
 
+  // ── Bilingual reposition listener ───────────────────────
+  // When the OTHER pane measures a taller page and updates the shared
+  // maxHeight, reposition our pages at the new (pageIndex * maxH) too.
+  useEffect(() => {
+    if (!syncGroup || mode !== 'scrolling') return;
+    const mount = scrollRef.current;
+    if (!mount) return;
+
+    const onReposition = (event) => {
+      const { syncGroup: group } = event.detail || {};
+      if (group !== syncGroup) return;
+      const maxH = _bilingualMaxHeights.get(syncGroup) || 0;
+      if (maxH && mount) {
+        console.log(`[bilingual-listen] lang=${paneLanguage} received reposition event, maxH=${maxH}`);
+        repositionBilingualPages(mount, syncGroup);
+      }
+    };
+
+    window.addEventListener(BILINGUAL_REPOSITION_EVENT, onReposition);
+    return () => window.removeEventListener(BILINGUAL_REPOSITION_EVENT, onReposition);
+  }, [mode, syncGroup, paneLanguage]);
+
   // ── Image-mode scrolling: build <img> tags with progressive load ─
   const lastImagesRef = useRef(null);
+  const maxPagesInGroupRef = useRef(maxPagesInGroup);
 
   useEffect(() => {
     if (!isImageMode || mode !== 'scrolling') return;
@@ -723,10 +1026,21 @@ function PdfPane({
       onPageChange(p);
     };
 
-    // Skip rebuild if images array hasn't changed (prevents duplicates on mode switch)
-    if (lastImagesRef.current === images && mount.children.length === images.length) {
+    // Skip rebuild if images array hasn't changed AND maxPagesInGroup hasn't changed
+    if (lastImagesRef.current === images && maxPagesInGroupRef.current === maxPagesInGroup && mount.children.length === images.length) {
       // Still scroll to the current page (e.g. when switching from pagination to scrolling)
       scrollToPage(currentPage);
+      // Report render scale even when we skip the rebuild — otherwise the
+      // zoom percentage stays blank after switching pagination → scroll.
+      if (typeof onRenderScaleChange === 'function') {
+        const imgs = mount.querySelectorAll('img.page-img');
+        for (const img of imgs) {
+          if (img.naturalWidth > 0) {
+            const w = img.getBoundingClientRect().width;
+            if (w > 0) { onRenderScaleChange(w / img.naturalWidth); break; }
+          }
+        }
+      }
       // If some images haven't finished loading, their offsetTop may still be
       // based on the initial 120px min-height.  Re-scroll once everything loads.
       const unloaded = [...mount.querySelectorAll('img.page-img')].filter(
@@ -747,15 +1061,23 @@ function PdfPane({
       }
       return;
     }
-    lastImagesRef.current = images;
 
     mount.innerHTML = '';
     mount.style.justifyItems = 'center';
 
-    // Measure the base (unzoomed) width from .pdf-content before any zoom scaling.
-    // This is the grid-column width — the viewport through which the user scrolls.
-    const baseRect = contentRef.current ? contentRef.current.getBoundingClientRect() : { width: mount.getBoundingClientRect().width };
-    const baseWidth = Math.max(180, baseRect.width);
+    const isBilingual = maxPagesInGroup > 0;
+
+    // Measure the base (unzoomed) width. In bilingual mode, compute from
+    // the SHARED parent (.book-stage) divided by 2 grid columns so both
+    // panes get the EXACT same value — no 1px sub-pixel drift.
+    let baseWidth;
+    if (isBilingual) {
+      const stage = mount.closest('.book-stage');
+      baseWidth = stage ? Math.max(180, Math.floor(stage.getBoundingClientRect().width / 2)) : 360;
+    } else {
+      const baseRect = contentRef.current ? contentRef.current.getBoundingClientRect() : { width: mount.getBoundingClientRect().width };
+      baseWidth = Math.max(180, baseRect.width);
+    }
 
     // Apply zoom at the .pdf-content level so CSS width reflects the zoom percentage
     if (contentRef.current) {
@@ -764,9 +1086,17 @@ function PdfPane({
     // Constrain .pdf-scroll-pages to the base (viewport) width so its content overflows → scrollbar
     mount.style.width = `${baseWidth}px`;
 
-    // Create all img elements first (without src) so DOM order is fixed
-    // For height-fit mode the container height drives image size; otherwise width does.
+    // In bilingual mode, inject the CSS height rule BEFORE any images enter
+    // the DOM.  Uses the shared formula so both panes start at the same size.
+    // normalizeBilingualHeights will refine it to the actual measured max later.
+    if (isBilingual) {
+      const estH = Math.round(baseWidth * zoom * Math.SQRT2);
+      updateBilingualPageHeightCSS(estH);
+    }
+
+    // Create all img elements first (without src) so DOM order is fixed.
     const mountH = Math.max(180, mount.getBoundingClientRect().height);
+    let uniformImgHeight = null;
     const imgElements = images.map((url, idx) => {
       const pageNum = idx + 1;
       const img = document.createElement('img');
@@ -774,24 +1104,94 @@ function PdfPane({
       img.dataset.page = String(pageNum);
       img.dataset.src = url;
       img.className = 'page-img';
-      if (fitMode === 'height') {
+      // In bilingual mode every dimension is explicit — no auto, no min-height.
+      // Outside bilingual mode, use the existing fitMode-based sizing.
+      if (isBilingual) {
+        // width + height set below in the bilingual block
+      } else if (fitMode === 'height') {
         img.style.height = `${mountH * zoom}px`;
         img.style.width = 'auto';
       } else {
-        // Image width > scroll container width → horizontal scrollbar when zoomed
         img.style.width = `${baseWidth * zoom}px`;
         img.style.height = 'auto';
         img.style.maxWidth = 'none';
       }
       img.style.display = 'block';
-      img.style.minHeight = '120px';
-      img.style.opacity = '0'; // hidden until loaded (fades in via CSS transition)
+      if (!isBilingual) {
+        img.style.minHeight = '120px';
+      }
+      img.style.opacity = '0';
       return img;
     });
+
+    // In bilingual mode every image needs explicit width so the
+    // render-scale calculation (width / naturalWidth) produces the
+    // correct zoom percentage.  Height comes from the injected CSS rule.
+    if (isBilingual && imgElements.length > 0) {
+      if (fitMode === 'height') {
+        uniformImgHeight = Math.round(mountH * zoom);
+      } else {
+        uniformImgHeight = Math.round(baseWidth * zoom * Math.SQRT2);
+      }
+      const pageW = Math.round(baseWidth * zoom);
+      imgElements.forEach((img) => {
+        img.style.width = `${pageW}px`;
+      });
+    }
 
     const fragment = document.createDocumentFragment();
     imgElements.forEach((img) => fragment.appendChild(img));
     mount.appendChild(fragment);
+
+    // Update refs after rebuild
+    lastImagesRef.current = images;
+    maxPagesInGroupRef.current = maxPagesInGroup;
+
+    // Pad shorter image set with individual blank <div> pages.  Each shows
+    // its page number centred.  Height from uniformImgHeight, later locked
+    // by repositionBilingualPages to the final global max.
+    if (maxPagesInGroup > 0 && images.length > 0 && images.length < maxPagesInGroup) {
+      const pageH = uniformImgHeight || (() => {
+        if (fitMode === 'height') return Math.round(mountH * zoom);
+        return Math.round(baseWidth * zoom * Math.SQRT2);
+      })();
+      for (let p = images.length + 1; p <= maxPagesInGroup; p++) {
+        const blankPage = document.createElement('div');
+        blankPage.className = 'pdf-blank-page';
+        blankPage.style.height = `${pageH}px`;
+        blankPage.textContent = String(p);
+        blankPage.dataset.page = String(p);
+        blankPage.dataset.blank = 'true';
+        mount.appendChild(blankPage);
+      }
+    }
+
+    // Bilingual: position every page at pageY = (pageIndex) × maxHeight
+    // using absolute positioning.  Call immediately (all elements are in
+    // the DOM), then re-run immediately as EACH image loads (so pages
+    // centre without a visible flash on narrow stacked layouts), AND
+    // keep a 150ms debounced safety net for late-arriving layout changes.
+    if (isBilingual) {
+      normalizeBilingualHeights(mount, syncGroup, true);
+      let normalizeTimer = null;
+      const scheduleNormalize = () => {
+        if (normalizeTimer) clearTimeout(normalizeTimer);
+        normalizeTimer = setTimeout(() => {
+          if (disposed) return;
+          normalizeBilingualHeights(mount, syncGroup, true);
+        }, 150);
+      };
+      const onImageLoad = () => {
+        // Immediate call — centres pages as soon as the image paints.
+        // Use reset=false so we don't discard the shared max, just refine.
+        normalizeBilingualHeights(mount, syncGroup, false);
+        // Safety net: re-measure after any follow-up layout.
+        scheduleNormalize();
+      };
+      imgElements.forEach((img) => {
+        img.addEventListener('load', onImageLoad, { once: true });
+      });
+    }
 
     // Viewport-aware lazy loader — max 2 concurrent, preload 3 pages around current page
     const PRELOAD_WINDOW = 3;
@@ -837,6 +1237,22 @@ function PdfPane({
     // Initial load around the current page
     loadVisibleRange(currentPage);
 
+    // After images have had a chance to load (cached images decode
+    // synchronously), report the render scale so the zoom percentage
+    // appears immediately after switching modes — no resize needed.
+    if (typeof onRenderScaleChange === 'function') {
+      const report = () => {
+        const imgs = mount.querySelectorAll('img.page-img');
+        for (const img of imgs) {
+          if (img.naturalWidth > 0) {
+            const w = img.getBoundingClientRect().width;
+            if (w > 0) { onRenderScaleChange(w / img.naturalWidth); return; }
+          }
+        }
+      };
+      setTimeout(report, 0);
+    }
+
     // After the current-page image loads (or is already cached), scroll into position
     const scheduleScrollToCurrent = () => {
       const currentImg = imgElements[currentPage - 1];
@@ -858,7 +1274,7 @@ function PdfPane({
     requestAnimationFrame(() => { scheduleScrollToCurrent(); });
 
     const onScroll = () => {
-      const nodes = [...mount.querySelectorAll('img[data-page]')];
+      const nodes = [...mount.querySelectorAll('[data-page]')];
       const top = mount.scrollTop;
       let nearest = 1;
       let min = Infinity;
@@ -878,7 +1294,7 @@ function PdfPane({
       }
 
       const cp = currentPageRef.current;
-      if (nearest !== cp) {
+      if (nearest !== cp && !syncingFromRemoteRef.current) {
         lastScrolledFromSyncRef.current = true;
         onPageChange(nearest);
       }
@@ -898,7 +1314,7 @@ function PdfPane({
       disposed = true;
       mount.removeEventListener('scroll', onScroll);
     };
-  }, [isImageMode, images, mode, syncGroup, syncId]);
+  }, [isImageMode, images, mode, syncGroup, syncId, maxPagesInGroup]);
 
   // ── Apply zoom to image-mode scrolling via .pdf-content width ─
   useEffect(() => {
@@ -926,35 +1342,74 @@ function PdfPane({
     // Constrain .pdf-scroll-pages to the base width so content overflows → scrollbar
     mount.style.width = `${baseWidth}px`;
 
-    // Size images wider than the scroll container to create horizontal overflow.
-    // For height-fit mode use container height to drive image size instead.
-    const imgs = mount.querySelectorAll('img.page-img');
-    if (fitMode === 'height') {
-      const mountH = Math.max(180, mount.getBoundingClientRect().height);
-      imgs.forEach((img) => {
-        img.style.height = `${mountH * zoom}px`;
-        img.style.width = 'auto';
-        img.style.maxWidth = '';
-      });
+    // In bilingual mode, recalculate max page height on every resize.
+    // The injected CSS rule and absolute positioning must reflect the new
+    // container width, otherwise page heights become stale.
+    if (maxPagesInGroup > 0) {
+      // Use the SHARED parent width so both panes stay in sync
+      const stage = mount.closest('.book-stage');
+      const sharedW = stage ? Math.max(180, Math.floor(stage.getBoundingClientRect().width / 2)) : 360;
+      const estH = fitMode === 'height'
+        ? Math.round(Math.max(180, mount.getBoundingClientRect().height) * zoom)
+        : Math.round(sharedW * zoom * Math.SQRT2);
+      updateBilingualPageHeightCSS(estH);
+      // Update image widths to match the new container width
+      const pageW = Math.round(sharedW * zoom);
+      const imgs = mount.querySelectorAll('img.page-img');
+      imgs.forEach((img) => { img.style.width = `${pageW}px`; });
+      // Re-measure and reposition — image dimensions changed.
+      // reset=true allows the shared max to shrink if needed.
+      normalizeBilingualHeights(mount, syncGroup, true);
     } else {
-      imgs.forEach((img) => {
-        img.style.width = `${baseWidth * zoom}px`;
-        img.style.height = 'auto';
-        img.style.maxWidth = 'none';
-      });
+      // Size images wider than the scroll container to create horizontal overflow.
+      // For height-fit mode use container height to drive image size instead.
+      const imgs = mount.querySelectorAll('img.page-img');
+      if (fitMode === 'height') {
+        const mountH = Math.max(180, mount.getBoundingClientRect().height);
+        imgs.forEach((img) => {
+          img.style.height = `${mountH * zoom}px`;
+          img.style.width = 'auto';
+          img.style.maxWidth = '';
+        });
+      } else {
+        imgs.forEach((img) => {
+          img.style.width = `${baseWidth * zoom}px`;
+          img.style.height = 'auto';
+          img.style.maxWidth = 'none';
+        });
+      }
     }
 
     // Report the render scale for the zoom percentage display.
-    // Only report when we can measure actual rendered dimensions — never
-    // emit a fallback guess (e.g. zoom=1.0) that would briefly flash 100%.
+    // Scans ALL images (not just the first) because the lazy loader may
+    // only have loaded pages near currentPage, leaving page 1 unloaded.
     if (typeof onRenderScaleChange === 'function') {
-      const firstImg = mount.querySelector('img.page-img');
-      if (firstImg && firstImg.naturalWidth > 0) {
-        const displayedWidth = firstImg.getBoundingClientRect().width;
-        if (displayedWidth > 0) {
-          onRenderScaleChange(displayedWidth / firstImg.naturalWidth);
+      let reported = false;
+      const reportScale = () => {
+        if (reported) return;
+        const imgs = mount.querySelectorAll('img.page-img');
+        for (const img of imgs) {
+          if (!img.naturalWidth) continue;
+          const w = img.getBoundingClientRect().width;
+          if (w > 0) {
+            reported = true;
+            onRenderScaleChange(w / img.naturalWidth);
+            return;
+          }
         }
+      };
+      reportScale();  // try immediately (some images may be cached)
+      // If no image is loaded yet, listen on ALL of them
+      if (!reported) {
+        const imgs = mount.querySelectorAll('img.page-img');
+        imgs.forEach((img) => {
+          img.addEventListener('load', reportScale, { once: true });
+        });
       }
+      // Fallback: retry after 2s in case load events were missed
+      const fallbackTimer = setTimeout(() => {
+        if (!reported) reportScale();
+      }, 2000);
     }
     // After fit/zoom changes, page boundaries shift. Restore the same relative
     // scroll position (both axes) so zoom is anchored at the screen center.
@@ -1083,7 +1538,8 @@ function PdfPane({
             </div>
           ) : isImageMode && mode === 'pagination' ? (
             (() => {
-              const imgSrc = images[Math.max(0, Math.min(currentPage - 1, images.length - 1))] || '';
+              const isBlankPage = currentPage > images.length;
+              const imgSrc = !isBlankPage ? images[currentPage - 1] || '' : '';
               const imageStyle = fitMode === 'height'
                 ? {
                     width: 'auto',
@@ -1105,7 +1561,15 @@ function PdfPane({
               className="pdf-single-page"
               style={paginationPaneStyle}
             >
-              {imgSrc ? (
+              {isBlankPage ? (
+                <div
+                  ref={blankRef}
+                  className="page-img pdf-blank-page"
+                  style={{ ...imageStyle, minHeight: '120px', background: '#fff' }}
+                  data-page={currentPage}
+                  data-blank="true"
+                />
+              ) : imgSrc ? (
                 <img
                   ref={imgRef}
                   src={withTimestamp(imgSrc)}

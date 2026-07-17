@@ -190,10 +190,14 @@ function FloatingAudioPlayer({ url, name, onClose }) {
   const playerRef = useRef(null);
   const dragState = useRef({ dragging: false, startX: 0, startY: 0 });
   const [position, setPosition] = useState(() => {
-    // Start at the center of the viewport
     const w = window.innerWidth;
     const h = window.innerHeight;
-    return { x: Math.max(0, (w - 350) / 2), y: Math.max(0, (h - 80) / 2) };
+    const playerW = 350;
+    // Always keep at least 10px from the left edge so the player never
+    // appears at left:0 even on very narrow screens.
+    const x = Math.max(10, Math.round((w - playerW) / 2));
+    const y = Math.max(10, Math.round((h - 80) / 2));
+    return { x, y };
   });
 
   const startDrag = useCallback((clientX, clientY) => {
@@ -534,11 +538,13 @@ function App() {
 
   useEffect(() => {
     console.log('[layout] sidebar collapse/expand/fullscreen changed — scheduling fit refresh in 2000ms');
-    const timer = setTimeout(() => {
-      console.log('[layout] firing fit refresh now');
-      refreshFitForCurrentMode();
-    }, 2000);
-    return () => clearTimeout(timer);
+    for (var i = 0; i < 3; i++) {
+      const timer = setTimeout(() => {
+        console.log('[layout] firing fit refresh now: ' + i);
+        refreshFitForCurrentMode();
+      }, 200 * i);
+    }
+    // return () => clearTimeout(timer);
   }, [isFullscreen, sidebarCollapsed, sidebarHidden, panelVisible, refreshFitForCurrentMode]);
 
   const preferredAiDrawerLanguage = useMemo(() => {
@@ -3894,6 +3900,12 @@ function App() {
   }, [isNarrowScreen]);
 
   const isBilingualView = selectedLanguage === 'bilingual' && visibleLanguages.length > 1;
+  const maxPagesInGroup = useMemo(() => {
+    const counts = visibleLanguages
+      .map((language) => Number(pageCounts[language] || 0))
+      .filter((value) => value > 0);
+    return counts.length ? Math.max(...counts) : 0;
+  }, [visibleLanguages, pageCounts]);
   const displayZoomPercent = useMemo(() => {
     const scales = visibleLanguages
       .map((language) => renderScaleByLanguage[language])
@@ -3909,7 +3921,7 @@ function App() {
     const counts = visibleLanguages
       .map((language) => Number(pageCounts[language] || 0))
       .filter((value) => value > 0);
-    return counts.length ? Math.min(...counts) : Number.POSITIVE_INFINITY;
+    return counts.length ? Math.max(...counts) : Number.POSITIVE_INFINITY;
   }, [visibleLanguages, pageCounts]);
 
   useEffect(() => {
@@ -5445,6 +5457,7 @@ function App() {
                 }}
                 onScrollCanvasesReady={() => setRedrawTick((t) => t + 1)}
                 language={selectedLanguage}
+                maxPagesInGroup={isBilingualView ? maxPagesInGroup : 0}
               />
             );
           })}

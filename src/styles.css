@@ -8,6 +8,16 @@
   box-sizing: border-box;
 }
 
+/* ── Prevent text selection on all images and divs ─────── */
+.no-select,
+img,
+div {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
+
 html, body {
   margin: 0;
   padding: 0;
@@ -1082,6 +1092,23 @@ button, input, select {
   align-items: stretch;
 }
 
+/* Blank placeholder pages for bilingual padding (shorter PDF padded to match taller).
+   Page number is shown as direct textContent, centred with flexbox. */
+.pdf-blank-page {
+  background: #f5f5f5;
+  border: 1px dashed #ccc;
+  box-sizing: border-box;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2rem;
+  color: #ccc;
+  pointer-events: none;
+  user-select: none;
+  width: 100% !important;
+}
+
 .book-stage.scrolling {
   grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
   height: calc(100dvh - var(--bottom-toolbar-offset, 0px));
@@ -1406,6 +1433,20 @@ button, input, select {
   -webkit-overflow-scrolling: touch;
 }
 
+/* In bilingual mode, pages are positioned absolutely at fixed Y coordinates
+   (pageY = pageIndex × maxHeight) so both language panes stay pixel-aligned
+   regardless of individual page dimensions or image load state. */
+.book-stage.bilingual-layout .pdf-scroll-pages {
+  position: relative;
+  /* explicit height is set via JS (totalPages × maxHeight) */
+}
+
+/* Page border — makes individual page boundaries clearly visible. */
+.book-stage.bilingual-layout .pdf-scroll-pages > * {
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  box-sizing: border-box;
+}
+
 /* touch-action is NOT inherited — children need explicit pan-y too */
 .pdf-scroll-pages > * {
   touch-action: pan-y;
@@ -1429,8 +1470,6 @@ button, input, select {
 
 /* Page image — subtle placeholder background for loading / broken states */
 .page-img {
-  /* Light tinted background shows through while image loads or on error.
-     A successfully loaded PDF page (white) will cover it seamlessly. */
   background-color: #f4f7fa;
   transition: opacity 0.25s ease;
 }
@@ -1458,6 +1497,16 @@ button, input, select {
 .pdf-scroll-pages .page-img {
   margin: 0 auto;
   max-width: 100%;
+}
+
+/* In bilingual scrolling mode, page images are forced to a uniform height
+   for perfect alignment between language versions. object-fit: contain
+   preserves the natural aspect ratio within the uniform box.
+   object-position: top ensures content aligns at the box origin so both
+   language panes show the same content at the same scroll position. */
+.book-stage.bilingual-layout .pdf-scroll-pages .page-img {
+  object-fit: contain;
+  object-position: top;
 }
 
 .pdf-single-page canvas,
