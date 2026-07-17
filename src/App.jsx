@@ -913,16 +913,8 @@ function App() {
   }, [currentChapter, selectedChapter, selectedLanguage]);
 
   const bookAutocompleteOptions = useMemo(() => {
-    if (selectedBook !== 'biology-oup') {
-      return structure;
-    }
-    return (structure || []).map((item) => ({
-      ...item,
-      name: /^e\d+$/i.test(String(item.id || '')) ? item.name : '',
-      nameEn: /^e\d+$/i.test(String(item.id || '')) ? item.nameEn : '',
-      nameZh: /^e\d+$/i.test(String(item.id || '')) ? item.nameZh : '',
-    }));
-  }, [selectedBook, structure]);
+    return structure;
+  }, [structure]);
 
   /** Normalize a section/page identifier based on the book's PDF mode.
    *  In "one PDF for all sections" mode the identifier is the book ID (string),

@@ -59,10 +59,6 @@ function getBookSeparator() {
 function getBookPrimaryLabel(item, subjectId, language) {
   if (!item) return '';
   const id = String(item.id || '').trim();
-  const normalizedSubjectId = String(subjectId || '').trim().toLowerCase();
-  if (normalizedSubjectId === 'biology-oup' && !/^e\d+$/i.test(id)) {
-    return id.toUpperCase();
-  }
   const fallbackName = stripLeadingId(item.name, id);
   const nameEn = stripLeadingId(item.nameEn, id) || fallbackName;
   const nameZh = stripLeadingId(item.nameZh, id);
