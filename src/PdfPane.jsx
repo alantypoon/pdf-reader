@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.js?url';
 import { t, uiLang } from './i18n';
+import { isDebugScrollingPersistence } from './debug';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
@@ -91,6 +92,28 @@ function centerAnchoredScroll(container, oldScrollTop, oldScrollHeight, axis = '
     result.left = Math.max(0, Math.min(newLeft, maxScrollLeft));
   }
   return result;
+}
+
+/**
+ * Scroll-position persistence across page reloads.
+ * Keyed by syncGroup (chapter-section-bilingual) + language so each
+ * language pane remembers its own scrollTop / scrollLeft independently.
+ */
+const SCROLL_CACHE_KEY = 'pdfReaderScrollCache';
+
+function loadScrollCache() {
+  if (typeof window === 'undefined') return {};
+  try { return JSON.parse(window.localStorage.getItem(SCROLL_CACHE_KEY) || '{}'); } catch { return {}; }
+}
+
+function saveScrollCacheEntry(key, top, left) {
+  if (typeof window === 'undefined') return;
+  try {
+    const cache = loadScrollCache();
+    cache[key] = { t: Math.round(top || 0), l: Math.round(left || 0) };
+    window.localStorage.setItem(SCROLL_CACHE_KEY, JSON.stringify(cache));
+    if (isDebugScrollingPersistence()) console.log(`[scroll-persist] SAVE  key=${key}  top=${cache[key].t}  left=${cache[key].l}`);
+  } catch { /* quota exceeded — silently ignore */ }
 }
 
 /**
@@ -303,6 +326,7 @@ function PdfPane({
   const syncingFromRemoteRef = useRef(false);
   const modeGenRef = useRef(0);
   const scrollRestoredRef = useRef(false);
+  const isInitialLoadRef = useRef(true);  // true until first content load completes
 
   // Keep the refs in sync so the scrolling effect always sees the latest page
   useEffect(() => {
@@ -765,6 +789,14 @@ function PdfPane({
     const mount = scrollRef.current;
     if (!mount) return;
 
+    // If there is a saved scroll position, mark scrollRestoredRef now
+    // so the scroll-to-page useEffect (which runs synchronously after
+    // render) skips its scroll-to-currentPage call.
+    const storedPos = getScrollPosition(source);
+    if (storedPos && typeof storedPos.scrollTop === 'number') {
+      scrollRestoredRef.current = true;
+    }
+
     let disposed = false;
     let pageRefreshTimer = null;
     const gen = modeGenRef.current;
@@ -949,6 +981,15 @@ function PdfPane({
 
       let scrollRafId = null;
       let pendingScrollSync = false;
+      let saveScrollTimer = null;
+      const scrollCacheKey = `scroll-${syncGroup || 'default'}-${paneLanguage}`;
+      const scheduleSaveScroll = () => {
+        if (saveScrollTimer) clearTimeout(saveScrollTimer);
+        saveScrollTimer = setTimeout(() => {
+          if (disposed || modeGenRef.current !== gen) return;
+          saveScrollCacheEntry(scrollCacheKey, mount.scrollTop, mount.scrollLeft);
+        }, 1000);
+      };
       const onScroll = () => {
         // Throttle scroll handling to once per animation frame to avoid
         // layout thrashing and flickering on iOS/mobile devices.
@@ -972,6 +1013,7 @@ function PdfPane({
             }
           });
         }
+        scheduleSaveScroll();
       };
 
       mount.addEventListener('scroll', onScroll, { passive: true });
@@ -988,6 +1030,20 @@ function PdfPane({
           mount.scrollTo(centerAnchoredScroll(mount, savedScrollTop, savedScrollHeight, 'both', savedScrollLeft, savedScrollWidth));
         }
 
+        // On initial load, override with the saved scroll position from a
+        // previous session (stored in localStorage).
+        if (isInitialLoadRef.current) {
+          const saved = loadScrollCache()[scrollCacheKey];
+          if (saved && typeof saved.t === 'number') {
+            if (isDebugScrollingPersistence()) console.log(`[scroll-persist] RESTORE key=${scrollCacheKey}  top=${saved.t}  left=${saved.l}`);
+            mount.scrollTo({ left: saved.l, top: saved.t, behavior: 'instant' });
+            scrollRestoredRef.current = true;
+          } else {
+            if (isDebugScrollingPersistence()) console.log(`[scroll-persist] RESTORE key=${scrollCacheKey}  (no saved position — using default)`);
+          }
+          isInitialLoadRef.current = false;
+        }
+
         // After restoring scroll (or even if heights matched), fire the
         // scroll handler once so the parent knows which page is visible.
         // Use a microtask to let the scrollTo layout settle first.
@@ -999,6 +1055,7 @@ function PdfPane({
 
       return () => {
         if (scrollRafId != null) cancelAnimationFrame(scrollRafId);
+        if (saveScrollTimer) clearTimeout(saveScrollTimer);
         mount.removeEventListener('scroll', onScroll);
       };
     };
@@ -1026,13 +1083,14 @@ function PdfPane({
     const mount = scrollRef.current;
     if (!mount || !mount.children.length) return;
     // Skip if the page change was triggered by our own scroll sync,
-    // or if we just restored a saved scroll position from localStorage.
+    // or if a saved scroll position exists in localStorage (the
+    // image/PDF build effect will restore it after content loads).
     if (lastScrolledFromSyncRef.current) {
       lastScrolledFromSyncRef.current = false;
       return;
     }
-    if (scrollRestoredRef.current) {
-      scrollRestoredRef.current = false;
+    const storedPos = getScrollPosition(source);
+    if (storedPos && typeof storedPos.scrollTop === 'number') {
       return;
     }
     const target = mount.querySelector(`[data-page="${currentPage}"]`);
@@ -1179,6 +1237,15 @@ function PdfPane({
     if (!isImageMode || mode !== 'scrolling') return;
     const mount = scrollRef.current;
     if (!mount) return;
+
+    // If there is a saved scroll position for this source, mark it
+    // NOW (synchronously) so the scroll-to-page useEffect skips its
+    // scroll-to-currentPage call, which would otherwise overwrite the
+    // saved position before the RAF restore has a chance to run.
+    const storedPos = getScrollPosition(source);
+    if (storedPos && typeof storedPos.scrollTop === 'number') {
+      scrollRestoredRef.current = true;
+    }
 
     // Helper: scroll so the current page is visible and update parent state
     const scrollToPage = (pageNum) => {
@@ -1426,7 +1493,7 @@ function PdfPane({
 
       const storedPos = getScrollPosition(source);
       console.log('[scroll-restore:img-scrolling]', { source, hasStored: !!storedPos, storedPos });
-      if (storedPos && storedPos.scrollTop > 0) {
+      if (storedPos && typeof storedPos.scrollTop === 'number') {
         scrollRestoredRef.current = true;
         mount.scrollTop = storedPos.scrollTop;
         mount.scrollLeft = storedPos.scrollLeft || 0;
@@ -1450,6 +1517,14 @@ function PdfPane({
             img.addEventListener('error', onAnyLoaded, { once: true });
           });
         }
+        // Safety net: after 2s re-apply the saved position in case
+        // some load events were missed or bilingual normalization
+        // shifted the scroll position after the restore.
+        setTimeout(() => {
+          if (disposed) return;
+          mount.scrollTop = storedPos.scrollTop;
+          mount.scrollLeft = storedPos.scrollLeft || 0;
+        }, 2000);
         return;
       }
 
@@ -1504,11 +1579,46 @@ function PdfPane({
       }
     };
 
-    mount.addEventListener('scroll', onScroll, { passive: true });
+    // ── Scroll-position persistence (debounced 1s) ──────
+    let saveScrollTimer = null;
+    const scrollCacheKey = `scroll-${syncGroup || 'default'}-${paneLanguage}`;
+    const scheduleSaveScroll = () => {
+      if (saveScrollTimer) clearTimeout(saveScrollTimer);
+      saveScrollTimer = setTimeout(() => {
+        if (disposed) return;
+        saveScrollCacheEntry(scrollCacheKey, mount.scrollTop, mount.scrollLeft);
+      }, 1000);
+    };
+    const onScrollWithSave = () => {
+      onScroll();
+      scheduleSaveScroll();
+    };
+
+    mount.addEventListener('scroll', onScrollWithSave, { passive: true });
+
+    // Restore saved scroll position from a previous session
+    if (isInitialLoadRef.current) {
+      const saved = loadScrollCache()[scrollCacheKey];
+      if (saved && typeof saved.t === 'number') {
+        if (isDebugScrollingPersistence()) console.log(`[scroll-persist] RESTORE key=${scrollCacheKey}  top=${saved.t}  left=${saved.l}`);
+        requestAnimationFrame(() => {
+          if (disposed) return;
+          requestAnimationFrame(() => {
+            if (disposed) return;
+            mount.scrollTo({ left: saved.l, top: saved.t, behavior: 'instant' });
+            scrollRestoredRef.current = true;
+          });
+        });
+      } else {
+        if (isDebugScrollingPersistence()) console.log(`[scroll-persist] RESTORE key=${scrollCacheKey}  (no saved position — using default)`);
+      }
+      isInitialLoadRef.current = false;
+    }
 
     return () => {
       disposed = true;
-      mount.removeEventListener('scroll', onScroll);
+      if (saveScrollTimer) clearTimeout(saveScrollTimer);
+      mount.removeEventListener('scroll', onScrollWithSave);
     };
   }, [isImageMode, images, mode, syncGroup, syncId, maxPagesInGroup]);
 

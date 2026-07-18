@@ -11,6 +11,7 @@ import StepperSelect from './StepperSelect';
 import AutocompleteDropdown from './components/AutocompleteDropdown';
 import MathText from './components/MathText';
 import { t, uiLang } from './i18n';
+import { isDebugScrollingPersistence } from './debug';
 
 const PREFERENCES_KEY = 'pdfReaderPreferences';
 const DEFAULT_ANNOTATION_COLOR = '#9acd32';
@@ -1291,6 +1292,7 @@ function App() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const prefs = {
+      selectedBook,
       displayMode,
       selectedLanguage,
       sidebarCollapsed,
@@ -1303,9 +1305,10 @@ function App() {
       panelPos,
       panelVisible
     };
-    console.log('[zoom-save] writing to localStorage:', { zoomLevel, fitMode });
+    if (isDebugScrollingPersistence()) console.log('[scroll-persist] SAVE zoom to localStorage:', { zoomLevel, fitMode });
     window.localStorage.setItem(PREFERENCES_KEY, JSON.stringify(prefs));
   }, [
+    selectedBook,
     displayMode,
     selectedLanguage,
     sidebarCollapsed,
