@@ -2247,39 +2247,67 @@ app.post('/api/ai-generate', async (request, response) => {
 
 app.get('/api/search', async (request, response) => {
   try {
-    const { q, subjectId, bookId, sectionId, pageId, includeAnnotations } = request.query;
+    const { q, bookId, sectionId, pageId, includeAnnotations, offset, limit } = request.query;
     if (!q || !String(q).trim()) {
-      return response.json({ results: [] });
+      return response.json({ results: [], hasMore: false });
     }
     if (!aiGenerations) {
-      return response.json({ results: [] });
+      return response.json({ results: [], hasMore: false });
     }
+
+    const pageSize = Math.min(Math.max(1, Number(limit) || 50), 200);
+    const skip = Math.max(0, Number(offset) || 0);
 
     const escaped = String(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const regex = { $regex: escaped, $options: 'i' };
 
     const scopeFilter = {};
-    if (subjectId && String(subjectId).trim()) scopeFilter.subjectId = String(subjectId).trim();
+    // Express may parse ?subjectId=a&subjectId=b as an array, or
+    // ?subjectId=a,b as a string (depending on qs settings).  Normalise
+    // both forms into an array of trimmed, non-empty strings.
+    const rawSubjectId = request.query.subjectId;
+    if (rawSubjectId) {
+      let ids = [];
+      if (Array.isArray(rawSubjectId)) {
+        ids = rawSubjectId.map((s) => String(s).trim()).filter(Boolean);
+      } else {
+        ids = String(rawSubjectId).split(',').map((s) => s.trim()).filter(Boolean);
+      }
+      if (ids.length === 1) {
+        scopeFilter.subjectId = ids[0];
+      } else if (ids.length > 1) {
+        scopeFilter.subjectId = { $in: ids };
+      }
+      console.log(`[search] subjectId filter: raw=${JSON.stringify(rawSubjectId)} → ids=${JSON.stringify(ids)}`);
+    }
     if (bookId && String(bookId).trim()) scopeFilter.bookId = String(bookId).trim();
     if (sectionId != null) scopeFilter.sectionId = Number(sectionId);
     if (pageId != null) scopeFilter.pageId = Number(pageId);
 
-    // Search ai-generations (summary + raw)
-    const aiFilter = { ...scopeFilter, $or: [
-      { 'en.summary': regex },
-      { 'zh.summary': regex },
-      { 'en.raw': regex },
-      { 'zh.raw': regex },
-    ]};
+    // ── Query ai-generations ───────────────────────────────
+    const aiBaseFilter = {
+      ...scopeFilter,
+      $or: [
+        { 'en.summary': regex },
+        { 'zh.summary': regex },
+        { 'en.raw': regex },
+        { 'zh.raw': regex },
+      ]
+    };
 
+    // Fetch one extra to detect whether more pages exist
     const aiDocs = await aiGenerations
-      .find(aiFilter)
+      .find(aiBaseFilter)
       .project({
         subjectId: 1, bookId: 1, sectionId: 1, pageId: 1,
         'en.summary': 1, 'zh.summary': 1, updatedAt: 1
       })
-      .limit(50)
+      .skip(skip)
+      .limit(pageSize + 1)
       .toArray();
+
+    const hasMoreAi = aiDocs.length > pageSize;
+    if (hasMoreAi) aiDocs.pop(); // remove the extra sentinel
 
     const results = aiDocs.map((doc) => {
       const enText = Array.isArray(doc?.en?.summary) ? doc.en.summary.join(' ') : (typeof doc?.en?.summary === 'string' ? doc.en.summary : '');
@@ -2298,17 +2326,23 @@ app.get('/api/search', async (request, response) => {
       };
     });
 
+    let hasMoreAnno = false;
+
     // Optionally search annotations collection
     if (includeAnnotations === '1' && annotationsCollection) {
-      const annoFilter = { ...scopeFilter, 'remarks.text': regex };
+      const annoBaseFilter = { ...scopeFilter, 'remarks.text': regex };
       const annoDocs = await annotationsCollection
-        .find(annoFilter)
+        .find(annoBaseFilter)
         .project({
           subjectId: 1, bookId: 1, sectionId: 1, pageId: 1, langId: 1,
           remarks: 1
         })
-        .limit(50)
+        .skip(skip)
+        .limit(pageSize + 1)
         .toArray();
+
+      hasMoreAnno = annoDocs.length > pageSize;
+      if (hasMoreAnno) annoDocs.pop();
 
       for (const doc of annoDocs) {
         const matchingRemark = (doc.remarks || []).find(
@@ -2331,7 +2365,9 @@ app.get('/api/search', async (request, response) => {
       }
     }
 
-    response.json({ results });
+    const hasMore = hasMoreAi || hasMoreAnno;
+    console.log(`[search] query="${String(q)}" offset=${skip} aiResults=${aiDocs.length} annoResults=${results.filter(r => r.source === 'annotation').length} total=${results.length} hasMore=${hasMore}`);
+    response.json({ results, hasMore });
   } catch (err) {
     console.error('[search] error:', err);
     response.status(500).json({ error: err.message });

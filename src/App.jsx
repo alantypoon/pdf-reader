@@ -454,13 +454,25 @@ function App() {
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
   const [colorPickerPos, setColorPickerPos] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchScope, setSearchScope] = useState('book');
+  const [searchScopePage, setSearchScopePage] = useState(false);
+  const [searchScopeSection, setSearchScopeSection] = useState(false);
+  // When page or section scope is active, subject filters are irrelevant
+  // (search is already constrained to the current book's content).
+  const searchSubjectsDisabled = searchScopePage || searchScopeSection;
   const [searchResults, setSearchResults] = useState([]);
   const [searchLoading, setSearchLoading] = useState(false);
+  const [searchLoadingMore, setSearchLoadingMore] = useState(false);
+  const [searchOffset, setSearchOffset] = useState(0);
+  const [searchHasMore, setSearchHasMore] = useState(false);
+  const searchVersionRef = useRef(0);  // bumped on new query; stable across page loads
   const [jumpNotice, setJumpNotice] = useState('');
   const [toolbarScale, setToolbarScale] = useState(1);
   const [toolbarTight, setToolbarTight] = useState(false);
   const [includeAnnotations, setIncludeAnnotations] = useState(false);
+  const [searchSubjects, setSearchSubjects] = useState(() => {
+    // Default: all 4 subjects selected
+    return ['physics-oup', 'chemistry-aristo', 'chemistry-winter', 'biology-oup'];
+  });
   const [panelVisible, setPanelVisible] = useState(savedPrefs.panelVisible !== false);
   const [isFullscreen, setIsFullscreen] = useState(() => {
     if (typeof document === 'undefined') return false;
@@ -4672,38 +4684,96 @@ function App() {
     handleCopyToClipboard();
   }, [handleCopyToClipboard]);
 
-  // ── Debounced search ────────────────────────────────────
+  // ── Debounced search with infinite-scroll pagination ────
+  // When searchQuery / scope / subjects change → fresh search (offset=0).
+  // When searchOffset increases → load-more (append results).
+
+  // Reset offset to 0 whenever the query or filters change (not on offset change).
+  useEffect(() => {
+    setSearchOffset(0);
+    setSearchHasMore(false);
+  }, [searchQuery, searchScopePage, searchScopeSection, selectedBook, selectedChapter, selectedFile, selectedPage, includeAnnotations, searchSubjects]);
+
   useEffect(() => {
     if (!searchQuery.trim()) {
       setSearchResults([]);
+      setSearchHasMore(false);
+      setSearchOffset(0);
       return;
     }
-    const timer = setTimeout(async () => {
+    const isFirstPage = searchOffset === 0;
+    if (isFirstPage) {
       setSearchLoading(true);
+      setSearchResults([]);
+      setSearchHasMore(false);
+    } else {
+      setSearchLoadingMore(true);
+    }
+
+    const version = ++searchVersionRef.current;
+
+    const timer = setTimeout(async () => {
       try {
         const params = new URLSearchParams({ q: searchQuery.trim() });
-        if (searchScope !== 'all' && selectedBook) params.set('subjectId', selectedBook);
-        if (searchScope === 'book' || searchScope === 'section' || searchScope === 'page') {
+        params.set('limit', '50');
+        params.set('offset', String(searchOffset));
+        if (searchScopePage || searchScopeSection) {
+          if (selectedBook) params.set('subjectId', selectedBook);
           if (selectedChapter) params.set('bookId', selectedChapter);
-        }
-        if (searchScope === 'section' || searchScope === 'page') {
           if (selectedFile) params.set('sectionId', selectedFile);
-        }
-        if (searchScope === 'page') {
-          if (selectedPage) params.set('pageId', selectedPage);
+          if (searchScopePage && selectedPage) params.set('pageId', selectedPage);
+        } else {
+          const allSubjects = ['physics-oup', 'chemistry-aristo', 'chemistry-winter', 'biology-oup'];
+          const selectedSet = new Set(searchSubjects);
+          const allSelected = allSubjects.every((id) => selectedSet.has(id));
+          if (!allSelected && searchSubjects.length > 0) {
+            searchSubjects.forEach((id) => params.append('subjectId', id));
+          }
         }
         if (includeAnnotations) params.set('includeAnnotations', '1');
         const data = await fetchJson(`api/search?${params.toString()}`);
-        setSearchResults(data.results || []);
+
+        // Discard stale responses (e.g. a new query was typed while this was in-flight)
+        if (version !== searchVersionRef.current) return;
+
+        if (isFirstPage) {
+          setSearchResults(data.results || []);
+        } else {
+          setSearchResults((prev) => [...prev, ...(data.results || [])]);
+        }
+        setSearchHasMore(!!data.hasMore);
       } catch (err) {
+        if (version !== searchVersionRef.current) return;
         console.error('[search] error:', err);
-        setSearchResults([]);
+        if (isFirstPage) setSearchResults([]);
       } finally {
-        setSearchLoading(false);
+        if (version === searchVersionRef.current) {
+          setSearchLoading(false);
+          setSearchLoadingMore(false);
+        }
       }
-    }, 300);
+    }, isFirstPage ? 300 : 0); // debounce only for fresh searches; load-more is immediate
+
     return () => clearTimeout(timer);
-  }, [searchQuery, searchScope, selectedBook, selectedChapter, selectedFile, selectedPage, includeAnnotations]);
+  }, [searchQuery, searchScopePage, searchScopeSection, selectedBook, selectedChapter, selectedFile, selectedPage, includeAnnotations, searchSubjects, searchOffset]);
+
+  // ── Load more when IntersectionObserver fires ────────────
+  const loadMoreSentinelRef = useRef(null);
+  useEffect(() => {
+    const sentinel = loadMoreSentinelRef.current;
+    if (!sentinel || !searchHasMore || searchLoading || searchLoadingMore) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && searchHasMore && !searchLoadingMore) {
+          setSearchOffset((prev) => prev + 50);
+        }
+      },
+      { rootMargin: '200px' }
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [searchHasMore, searchLoading, searchLoadingMore]);
 
   // Derive modal content type
   const modalType = useMemo(() => {
@@ -6172,17 +6242,28 @@ function App() {
                   onChange={(e) => setSearchQuery(e.target.value)}
                 />
                 <div className="search-scope-row">
-                  <select
-                    className="search-scope-select"
-                    value={searchScope}
-                    onChange={(e) => setSearchScope(e.target.value)}
-                  >
-                    <option value="page">{_('searchScopePage')}</option>
-                    <option value="section">{_('searchScopeSection')}</option>
-                    <option value="book">{_('searchScopeBook')}</option>
-                    <option value="subject">{_('searchScopeSubject')}</option>
-                    <option value="all">{_('searchScopeAll')}</option>
-                  </select>
+                  <label className="search-checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={searchScopePage}
+                      onChange={(e) => {
+                        setSearchScopePage(e.target.checked);
+                        if (e.target.checked) setSearchScopeSection(false);
+                      }}
+                    />
+                    <span>{_('searchScopePage')}</span>
+                  </label>
+                  <label className="search-checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={searchScopeSection}
+                      onChange={(e) => {
+                        setSearchScopeSection(e.target.checked);
+                        if (e.target.checked) setSearchScopePage(false);
+                      }}
+                    />
+                    <span>{_('searchScopeSection')}</span>
+                  </label>
                   <label className="search-checkbox-label">
                     <input
                       type="checkbox"
@@ -6192,6 +6273,26 @@ function App() {
                     <span>{_('searchIncludeAnnotations')}</span>
                   </label>
                 </div>
+                <div className="search-subject-filters">
+                  <span className="search-filter-label">{_('searchFilterSubjects')}</span>
+                  {subjectToggleOptions.map((subj) => (
+                    <label key={subj.id} className="search-checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={searchSubjects.includes(subj.id)}
+                        disabled={searchSubjectsDisabled}
+                        onChange={(e) => {
+                          setSearchSubjects((prev) =>
+                            e.target.checked
+                              ? [...prev, subj.id]
+                              : prev.filter((id) => id !== subj.id)
+                          );
+                        }}
+                      />
+                      <span style={searchSubjectsDisabled ? { opacity: 0.5 } : undefined}>{subj.label}</span>
+                    </label>
+                  ))}
+                </div>
               </div>
               {searchLoading && (
                 <div className="ai-loading">
@@ -6200,46 +6301,63 @@ function App() {
                 </div>
               )}
               {!searchLoading && searchResults.length > 0 && (
-                <div className="search-results">
-                  <p className="search-results-count">{_('searchResultsCount').replace('{count}', searchResults.length)}</p>
-                  {searchResults.map((result, idx) => (
-                    <button
-                      key={result._id || idx}
-                      className="search-result-item"
-                      onClick={() => {
-                        // Navigate to the result's page
-                        const subjectChanged = result.subjectId && result.subjectId !== selectedBook;
-                        if (subjectChanged) {
-                          setSelectedBook(result.subjectId);
-                        }
-                        setSelectedChapter(result.bookId);
-                        setSelectedFile(result.sectionId);
-                        if (result.pageId) setSelectedPage(Number(result.pageId));
-                        // Keep drawer open so user can try another result
-                      }}
-                    >
-                      <div className="search-result-breadcrumb">
-                        <span>{getSubjectLabel(result.subjectId, selectedLanguage)}</span>
-                        <span className="breadcrumb-sep">›</span>
-                        <span>{String(result.bookId || '').toUpperCase()}</span>
-                        <span className="breadcrumb-sep">›</span>
-                        <span>§{result.sectionId}</span>
-                        {result.pageId != null && (
-                          <>
-                            <span className="breadcrumb-sep">›</span>
-                            <span>p.{result.pageId}</span>
-                          </>
+                <>
+                  <div className="search-results">
+                    {searchResults.map((result, idx) => (
+                      <button
+                        key={result._id || `${result.source}-${result.subjectId}-${result.bookId}-${result.sectionId}-${result.pageId}-${idx}`}
+                        className="search-result-item"
+                        onClick={() => {
+                          // Navigate to the result's page
+                          const subjectChanged = result.subjectId && result.subjectId !== selectedBook;
+                          if (subjectChanged) {
+                            setSelectedBook(result.subjectId);
+                          }
+                          setSelectedChapter(result.bookId);
+                          setSelectedFile(result.sectionId);
+                          if (result.pageId) setSelectedPage(Number(result.pageId));
+                          // Keep drawer open so user can try another result
+                        }}
+                      >
+                        <div className="search-result-breadcrumb">
+                          <span>{getSubjectLabel(result.subjectId, selectedLanguage)}</span>
+                          <span className="breadcrumb-sep">›</span>
+                          <span>{String(result.bookId || '').toUpperCase()}</span>
+                          <span className="breadcrumb-sep">›</span>
+                          <span>§{result.sectionId}</span>
+                          {result.pageId != null && (
+                            <>
+                              <span className="breadcrumb-sep">›</span>
+                              <span>p.{result.pageId}</span>
+                            </>
+                          )}
+                          {result.source === 'annotation' && (
+                            <span className="search-result-badge">{_('searchAnnotationBadge')}</span>
+                          )}
+                        </div>
+                        {result.snippet && (
+                          <p className="search-result-snippet">{result.snippet}</p>
                         )}
-                        {result.source === 'annotation' && (
-                          <span className="search-result-badge">{_('searchAnnotationBadge')}</span>
-                        )}
+                      </button>
+                    ))}
+                    {/* Sentinel element for IntersectionObserver — triggers load-more */}
+                    <div ref={loadMoreSentinelRef} className="search-sentinel" />
+                    {searchLoadingMore && (
+                      <div className="search-loading-more">
+                        <div className="ai-spinner" />
                       </div>
-                      {result.snippet && (
-                        <p className="search-result-snippet">{result.snippet}</p>
-                      )}
-                    </button>
-                  ))}
-                </div>
+                    )}
+                    {!searchHasMore && searchResults.length >= 50 && (
+                      <p className="search-no-results" style={{ padding: '12px 0', fontSize: '0.85rem' }}>
+                        {_('searchNoResults')}
+                      </p>
+                    )}
+                  </div>
+                  {/* Fixed bottom bar — always visible, never scrolls away */}
+                  <div className="search-results-bar">
+                    <span className="search-results-count">{_('searchResultsCount').replace('{count}', searchResults.length)}</span>
+                  </div>
+                </>
               )}
               {!searchLoading && searchQuery.trim() && searchResults.length === 0 && (
                 <p className="search-no-results">{_('searchNoResults')}</p>
