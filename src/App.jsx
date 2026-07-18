@@ -11,7 +11,7 @@ import StepperSelect from './StepperSelect';
 import AutocompleteDropdown from './components/AutocompleteDropdown';
 import MathText from './components/MathText';
 import { t, uiLang } from './i18n';
-import { isDebugScrollingPersistence, isDebugZooming } from './debug';
+import { isDebugScrollingMomentum, isDebugScrollingPersistence, isDebugZooming } from './debug';
 
 const PREFERENCES_KEY = 'pdfReaderPreferences';
 const DEFAULT_ANNOTATION_COLOR = '#9acd32';
@@ -56,14 +56,30 @@ const POPULAR_COLORS = [
   '#95a5a6', // Gray
 ];
 
+// Module-level cache so repeated calls during re-renders don't hit
+// localStorage or log — both of which block the main thread and kill
+// momentum scrolling, especially in bilingual mode where each App
+// re-render would otherwise trigger a synchronous disk read.
+let _cachedPreferences = null;
+let _cachedPreferencesKey = null;
+
 function loadPreferences() {
   if (typeof window === 'undefined') {
     return {};
   }
   try {
+    // Use the raw value as a cheap cache key — if localStorage hasn't
+    // changed, return the previously parsed object without any I/O.
     const raw = window.localStorage.getItem(PREFERENCES_KEY);
+    if (_cachedPreferences && raw === _cachedPreferencesKey) {
+      return _cachedPreferences;
+    }
+    _cachedPreferencesKey = raw;
     const prefs = raw ? JSON.parse(raw) : {};
-    console.log('[prefs-load] raw localStorage:', { key: PREFERENCES_KEY, zoomLevel: prefs.zoomLevel, fitMode: prefs.fitMode, rawLength: raw ? raw.length : 0 });
+    _cachedPreferences = prefs;
+    if (isDebugScrollingPersistence()) {
+      console.log('[prefs-load] raw localStorage:', { key: PREFERENCES_KEY, zoomLevel: prefs.zoomLevel, fitMode: prefs.fitMode, rawLength: raw ? raw.length : 0 });
+    }
     return prefs;
   } catch {
     return {};
@@ -405,7 +421,14 @@ function App() {
   const [fitMode, setFitMode] = useState(
     savedPrefs.fitMode === 'height' ? 'height' : savedPrefs.fitMode === 'none' ? 'none' : 'width'
   );
-  console.log('[zoom-restore] loaded from localStorage:', { zoomLevel: savedPrefs.zoomLevel, fitMode: savedPrefs.fitMode });
+  // Log zoom/fit restoration exactly once on mount (not on every re-render).
+  useEffect(() => {
+    if (isDebugScrollingPersistence()) {
+      console.log('[zoom-restore] loaded from localStorage:', { zoomLevel: savedPrefs.zoomLevel, fitMode: savedPrefs.fitMode });
+    }
+    // savedPrefs is stable — only run on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [renderScaleByLanguage, setRenderScaleByLanguage] = useState({});
   const [pageCounts, setPageCounts] = useState({});
   const [redrawTick, setRedrawTick] = useState(0);
@@ -1306,7 +1329,12 @@ function App() {
       panelVisible
     };
     if (isDebugScrollingPersistence()) console.log('[scroll-persist] SAVE zoom to localStorage:', { zoomLevel, fitMode });
-    window.localStorage.setItem(PREFERENCES_KEY, JSON.stringify(prefs));
+    const raw = JSON.stringify(prefs);
+    window.localStorage.setItem(PREFERENCES_KEY, raw);
+    // Invalidate the module-level cache so the next loadPreferences() call
+    // (if any) picks up the fresh data instead of returning stale cache.
+    _cachedPreferences = prefs;
+    _cachedPreferencesKey = raw;
   }, [
     selectedBook,
     displayMode,
@@ -1428,9 +1456,13 @@ function App() {
   }, [annotationToolsOpen, tool]);
 
   // ── Momentum / inertia scrolling ──────────────────────
+  const momentumDebugLastLogRef = useRef(0);
   const animateMomentum = useCallback(() => {
     const m = momentumRef.current;
     if (!m.animating || !m.target || !m.target.isConnected) {
+      if (isDebugScrollingMomentum() && m.animating) {
+        console.log('[momentum] animate: STOPPED — target disconnected or animating=false', { targetConnected: m.target?.isConnected });
+      }
       m.animating = false;
       m.rafId = null;
       m.target = null;
@@ -1455,9 +1487,28 @@ function App() {
     }
 
     const speed = Math.sqrt(m.vx * m.vx + m.vy * m.vy);
+
+    // Throttled debug log: at most once every 100ms
+    if (isDebugScrollingMomentum() && now - momentumDebugLastLogRef.current > 100) {
+      momentumDebugLastLogRef.current = now;
+      const frictionBase = isIOSDevice ? 0.975 : 0.95;
+      const friction = Math.pow(frictionBase, dt / 16.67);
+      console.log('[momentum] animate: decelerating', {
+        vx: m.vx.toFixed(4),
+        vy: m.vy.toFixed(4),
+        speed: speed.toFixed(4),
+        dt: dt.toFixed(1),
+        friction: friction.toFixed(4),
+        iosDevice: isIOSDevice,
+      });
+    }
+
     if (speed > 0.02 && m.target.isConnected) {
       m.rafId = requestAnimationFrame(animateMomentum);
     } else {
+      if (isDebugScrollingMomentum()) {
+        console.log('[momentum] animate: END — speed below threshold', { finalSpeed: speed.toFixed(4) });
+      }
       m.animating = false;
       m.rafId = null;
       m.target = null;
@@ -1465,9 +1516,23 @@ function App() {
   }, []);
 
   const startMomentum = useCallback((vx, vy, target) => {
-    if (!target) return;
+    if (!target) {
+      if (isDebugScrollingMomentum()) console.log('[momentum] start: SKIPPED — no target');
+      return;
+    }
     const m = momentumRef.current;
     if (m.rafId) cancelAnimationFrame(m.rafId);
+
+    const speed = Math.sqrt(vx * vx + vy * vy);
+    if (isDebugScrollingMomentum()) {
+      console.log('[momentum] start: initial velocity', {
+        vx: vx.toFixed(4),
+        vy: vy.toFixed(4),
+        speed: speed.toFixed(4),
+        target: m.target?.className || target?.className || 'unknown',
+        iosDevice: isIOSDevice,
+      });
+    }
 
     m.animating = true;
     m.vx = vx;
@@ -1479,6 +1544,14 @@ function App() {
 
   const cancelMomentum = useCallback(() => {
     const m = momentumRef.current;
+    if (isDebugScrollingMomentum() && m.animating) {
+      const speed = Math.sqrt(m.vx * m.vx + m.vy * m.vy);
+      console.log('[momentum] cancel: interrupted', {
+        vx: m.vx.toFixed(4),
+        vy: m.vy.toFixed(4),
+        speed: speed.toFixed(4),
+      });
+    }
     m.animating = false;
     m.vx = 0;
     m.vy = 0;
@@ -1550,9 +1623,34 @@ function App() {
 
   // In scrolling/pagination mode on touch devices: one finger draws, two fingers scroll.
   useEffect(() => {
-    if ((displayMode !== 'scrolling' && displayMode !== 'pagination') || tool === 'hand') return;
+    const disabled = (displayMode !== 'scrolling' && displayMode !== 'pagination') || tool === 'hand';
+    if (isDebugScrollingMomentum()) {
+      console.log('[momentum] effect init', {
+        displayMode,
+        tool,
+        disabled,
+        disabledReason: disabled
+          ? (tool === 'hand' ? 'tool is hand' : `displayMode is "${displayMode}" (expected scrolling or pagination)`)
+          : null,
+      });
+    }
+    if (disabled) return;
+
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas) {
+      if (isDebugScrollingMomentum()) console.log('[momentum] effect init: SKIPPED — canvasRef.current is null');
+      return;
+    }
+
+    if (isDebugScrollingMomentum()) {
+      const cs = getComputedStyle(canvas);
+      console.log('[momentum] effect init: READY — canvas found', {
+        canvasWidth: canvas.offsetWidth,
+        canvasHeight: canvas.offsetHeight,
+        touchAction: cs.touchAction,
+        pointerEvents: cs.pointerEvents,
+      });
+    }
 
     let touchStartX = 0;
     let touchStartY = 0;
@@ -1587,7 +1685,18 @@ function App() {
       touchScrollTarget?.scrollBy({ left: dx, top: dy, behavior: 'auto' });
     };
 
+    let touchDebugLastLog = 0;
+
     const onTouchStart = (e) => {
+      // Log ALL touch-starts on the canvas to diagnose whether events reach us at all
+      if (isDebugScrollingMomentum()) {
+        console.log('[momentum] touch-start: RAW event', {
+          touchCount: e.touches.length,
+          targetTag: e.target?.tagName,
+          targetClass: e.target?.className?.slice?.(0, 60) || 'none',
+        });
+      }
+
       cancelMomentum();
 
       if (e.touches.length === 2) {
@@ -1602,6 +1711,15 @@ function App() {
         touchActive = true;
         touchScrollTarget = getScrollTargetForGesture(e);
         touchScrollingRef.current = true;
+
+        if (isDebugScrollingMomentum()) {
+          console.log('[momentum] touch-start: 2-finger scroll begin', {
+            midpointX: midpoint.x.toFixed(1),
+            midpointY: midpoint.y.toFixed(1),
+            displayMode: displayModeRef.current,
+            scrollTargetClass: touchScrollTarget?.className || 'null',
+          });
+        }
 
         velocityX = 0;
         velocityY = 0;
@@ -1632,6 +1750,7 @@ function App() {
     const onTouchMove = (e) => {
       if (!touchActive) return;
       if (e.touches.length !== 2) {
+        if (isDebugScrollingMomentum()) console.log('[momentum] touch-move: touch count changed, deactivating', { touchCount: e.touches.length });
         touchActive = false;
         touchScrollTarget = null;
         return;
@@ -1649,6 +1768,18 @@ function App() {
         const alpha = 0.3;
         velocityX = velocityX * (1 - alpha) + instantVX * alpha;
         velocityY = velocityY * (1 - alpha) + instantVY * alpha;
+
+        // Throttled debug log: at most once every 150ms
+        if (isDebugScrollingMomentum() && now - touchDebugLastLog > 150) {
+          touchDebugLastLog = now;
+          console.log('[momentum] touch-move: velocity tracking', {
+            instantVX: instantVX.toFixed(4),
+            instantVY: instantVY.toFixed(4),
+            smoothedVX: velocityX.toFixed(4),
+            smoothedVY: velocityY.toFixed(4),
+            dt: dt.toFixed(1),
+          });
+        }
       }
       lastVelocityTime = now;
       lastVelocityX = midpoint.x;
@@ -1680,8 +1811,29 @@ function App() {
 
       const iosBoost = isIOSDevice ? 1.5 : 1.0;
       const speed = Math.sqrt(velocityX * velocityX + velocityY * velocityY);
-      if (speed > 0.05 && touchScrollTarget && displayModeRef.current === 'scrolling') {
-        startMomentum(-velocityX * iosBoost, -velocityY * iosBoost, touchScrollTarget);
+      const boostedVX = -velocityX * iosBoost;
+      const boostedVY = -velocityY * iosBoost;
+      const willStartMomentum = speed > 0.05 && touchScrollTarget && displayModeRef.current === 'scrolling';
+
+      if (isDebugScrollingMomentum()) {
+        console.log('[momentum] touch-end: final velocity', {
+          rawVX: velocityX.toFixed(4),
+          rawVY: velocityY.toFixed(4),
+          rawSpeed: speed.toFixed(4),
+          boostedVX: boostedVX.toFixed(4),
+          boostedVY: boostedVY.toFixed(4),
+          iosBoost,
+          willStartMomentum,
+          displayMode: displayModeRef.current,
+          hasTarget: !!touchScrollTarget,
+          skipReason: !willStartMomentum
+            ? (speed <= 0.05 ? 'speed too low' : !touchScrollTarget ? 'no scroll target' : displayModeRef.current !== 'scrolling' ? `displayMode is ${displayModeRef.current}, not scrolling` : 'unknown')
+            : null,
+        });
+      }
+
+      if (willStartMomentum) {
+        startMomentum(boostedVX, boostedVY, touchScrollTarget);
       }
 
       velocityX = 0;
@@ -5435,7 +5587,7 @@ function App() {
             </div>
           ) : (
             <>
-            {visibleLanguages.map((language) => {
+            {visibleLanguages.map((language, idx) => {
             const src = pageSources[language];
             const isImages = Array.isArray(src);
             return (
@@ -5444,8 +5596,9 @@ function App() {
                 paneLanguage={language}
                 source={isImages ? `img:${selectedBook}:${selectedChapter}:${selectedFile}:${language}` : (src || '')}
                 images={isImages ? src : null}
-                title={`${getSubjectLabel(selectedBook, language)} · ${currentBookHeaderName}`}
-                section={`${currentSectionHeaderId} - ${getSectionHeaderNameForLang(language)}`}
+                title={`${selectedChapter} · ${selectedFile} · ${selectedPage}`}
+                section={null}
+                hideHeader={isBilingualView && idx === (isPortrait ? 1 : 0)}
                 mode={displayMode}
                 currentPage={selectedPage}
                 onPageChange={setSelectedPage}

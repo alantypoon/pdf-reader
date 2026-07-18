@@ -1434,11 +1434,11 @@ button, input, select {
 }
 
 /* In bilingual mode, pages are positioned absolutely at fixed Y coordinates
-   (pageY = pageIndex × maxHeight) so both language panes stay pixel-aligned
-   regardless of individual page dimensions or image load state. */
+   (pageY = pageIndex × maxHeight) so both language panes stay pixel-aligned.
+   The inner .bilingual-position-wrapper (created by JS) handles absolute positioning;
+   the scroll container stays position:static for iOS -webkit-overflow-scrolling: touch. */
 .book-stage.bilingual-layout .pdf-scroll-pages {
-  position: relative;
-  /* explicit height is set via JS (totalPages × maxHeight) */
+  /* position is managed by JS — keep it static for iOS momentum */
 }
 
 /* Page border — makes individual page boundaries clearly visible. */
