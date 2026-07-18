@@ -11,7 +11,7 @@ import StepperSelect from './StepperSelect';
 import AutocompleteDropdown from './components/AutocompleteDropdown';
 import MathText from './components/MathText';
 import { t, uiLang } from './i18n';
-import { isDebugScrollingPersistence } from './debug';
+import { isDebugScrollingPersistence, isDebugZooming } from './debug';
 
 const PREFERENCES_KEY = 'pdfReaderPreferences';
 const DEFAULT_ANNOTATION_COLOR = '#9acd32';
@@ -1732,15 +1732,17 @@ function App() {
       setZoomLevel((prev) => {
         // Clamp to 100% max for thumbnails; default to 25% if at pagination default
         const clamped = Math.min(prev, 1.0);
-        if (clamped >= 0.95 && clamped <= 1.05) return 0.25;
-        return clamped;
+        const result = (clamped >= 0.95 && clamped <= 1.05) ? 0.25 : clamped;
+        if (isDebugZooming()) console.log('[zoom-app] thumbnails mode entered', { prev, clamped, result });
+        return result;
       });
     } else {
       setZoomLevel((prev) => {
         // Clamp to 200% max for pagination/scrolling; restore 100% if at thumbnail default
         const clamped = Math.min(prev, 2.0);
-        if (Math.abs(clamped - 0.25) < 0.01) return 1.0;
-        return clamped;
+        const result = Math.abs(clamped - 0.25) < 0.01 ? 1.0 : clamped;
+        if (isDebugZooming()) console.log('[zoom-app] thumbnails mode exited', { prev, clamped, result });
+        return result;
       });
     }
   }, [displayMode]);
@@ -1958,7 +1960,9 @@ function App() {
     setZoomLevel((current) => {
       const next = current + delta;
       const clamped = Math.min(5, Math.max(0.1, Number(next.toFixed(2))));
-      console.log('[zoom-change]', { delta, from: current, to: clamped, fitMode: 'none' });
+      if (isDebugZooming()) {
+        console.log('[zoom-app] changeZoom', { delta, from: current, raw: next, clamped, fitMode: 'none' });
+      }
       return clamped;
     });
   };
@@ -5607,7 +5611,10 @@ function App() {
                 <button
                   className="tool-btn tool-split-main"
                   disabled={fitDisabled}
-                  onClick={() => { setFitMode('none'); setZoomLevel(1); }}
+                  onClick={() => {
+                    if (isDebugZooming()) console.log('[zoom-app] reset zoom to 100%');
+                    setFitMode('none'); setZoomLevel(1);
+                  }}
                   data-tooltip={_('zoomLevel')}
                   aria-label={_('zoomLevel')}
                 >
@@ -5644,7 +5651,11 @@ function App() {
                       max="5"
                       step="0.05"
                       value={zoomLevel}
-                      onChange={(e) => { setFitMode('none'); setZoomLevel(Number(e.target.value)); }}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        if (isDebugZooming()) console.log('[zoom-app] slider change', { from: zoomLevel, to: val });
+                        setFitMode('none'); setZoomLevel(val);
+                      }}
                       aria-label={_('zoomLevel')}
                     />
                     <button
@@ -5659,7 +5670,10 @@ function App() {
                   <span className="tool-menu-sep" />
                   <button
                     className={`tool-menu-item ${fitMode === 'width' ? 'active' : ''}`}
-                    onClick={() => { setFitMode('width'); setZoomLevel(1); setFitRefreshToken((t) => t + 1); setZoomMenuOpen(false); }}
+                    onClick={() => {
+                      if (isDebugZooming()) console.log('[zoom-app] fitWidth selected');
+                      setFitMode('width'); setZoomLevel(1); setFitRefreshToken((t) => t + 1); setZoomMenuOpen(false);
+                    }}
                   >
                     <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon">
                       <path d="M3 12l3.5-3.5 1.4 1.4-1.1 1.1h10.4l-1.1-1.1 1.4-1.4L21 12l-3.5 3.5-1.4-1.4 1.1-1.1H6.8l1.1 1.1-1.4 1.4L3 12zM5 5h14v3h-2V7H7v1H5V5zm0 11h2v1h10v-1h2v3H5v-3z" />
@@ -5668,7 +5682,10 @@ function App() {
                   </button>
                   <button
                     className={`tool-menu-item ${fitMode === 'height' ? 'active' : ''}`}
-                    onClick={() => { setFitMode('height'); setZoomLevel(1); setFitRefreshToken((t) => t + 1); setZoomMenuOpen(false); }}
+                    onClick={() => {
+                      if (isDebugZooming()) console.log('[zoom-app] fitHeight selected');
+                      setFitMode('height'); setZoomLevel(1); setFitRefreshToken((t) => t + 1); setZoomMenuOpen(false);
+                    }}
                   >
                     <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon">
                       <path d="M12 3l3.5 3.5-1.4 1.4-1.1-1.1V17.2l1.1-1.1 1.4 1.4L12 21l-3.5-3.5 1.4-1.4 1.1 1.1V6.8L9.9 7.9 8.5 6.5 12 3zM5 5h3v2H7v10h1v2H5V5zm11 0h3v14h-3v-2h1V7h-1V5z" />

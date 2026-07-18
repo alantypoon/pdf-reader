@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.js?url';
 import { t, uiLang } from './i18n';
-import { isDebugScrollingPersistence } from './debug';
+import { isDebugScrollingPersistence, isDebugZooming } from './debug';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
@@ -70,26 +70,54 @@ function withTimestamp(url) {
  * Compute a scroll position that keeps the viewport center anchored
  * after content dimensions change (e.g. zoom in/out).
  *
+ * IMPORTANT: oldClientHeight/oldClientWidth must be the container's
+ * clientHeight/clientWidth *before* the content changed, because
+ * scrollbar appearance/disappearance changes these values and would
+ * throw off the viewport-center calculation.
+ *
  * @param {HTMLElement} container - The scrollable element
  * @param {number} oldScrollTop  - scrollTop before content changed
  * @param {number} oldScrollHeight - scrollHeight before content changed
  * @param {'vertical'|'both'} axis - which axis to anchor
  * @param {number} [oldScrollLeft] - scrollLeft before content changed (for 'both')
  * @param {number} [oldScrollWidth] - scrollWidth before content changed (for 'both')
+ * @param {number} [oldClientHeight] - clientHeight before content changed
+ * @param {number} [oldClientWidth] - clientWidth before content changed
  * @returns {{ top: number, left?: number }} scrollTo options
  */
-function centerAnchoredScroll(container, oldScrollTop, oldScrollHeight, axis = 'vertical', oldScrollLeft = 0, oldScrollWidth = 0) {
-  const vpCenter = oldScrollTop + container.clientHeight / 2;
+function centerAnchoredScroll(container, oldScrollTop, oldScrollHeight, axis = 'vertical', oldScrollLeft = 0, oldScrollWidth = 0, oldClientHeight = 0, oldClientWidth = 0) {
+  // Use OLD client dimensions for the viewport-center calculation so that
+  // scrollbar appearance/disappearance doesn't skew the result.
+  const refClientHeight = oldClientHeight > 0 ? oldClientHeight : container.clientHeight;
+  const refClientWidth = oldClientWidth > 0 ? oldClientWidth : container.clientWidth;
+
+  const vpCenter = oldScrollTop + refClientHeight / 2;
   const centerRatio = oldScrollHeight > 0 ? vpCenter / oldScrollHeight : 0;
   const newTop = centerRatio * container.scrollHeight - container.clientHeight / 2;
   const result = { top: Math.max(0, newTop), behavior: 'instant' };
   if (axis === 'both') {
-    const hpCenter = (oldScrollLeft || container.scrollLeft) + container.clientWidth / 2;
-    const hOldWidth = oldScrollWidth || container.scrollWidth;
+    // Use oldScrollLeft explicitly — do NOT fall back to container.scrollLeft
+    // because 0 is a valid (and common) scrollLeft value.
+    const hpCenter = oldScrollLeft + refClientWidth / 2;
+    const hOldWidth = oldScrollWidth > 0 ? oldScrollWidth : Math.max(1, container.scrollWidth);
     const hCenterRatio = hOldWidth > 0 ? hpCenter / hOldWidth : 0;
     const newLeft = hCenterRatio * container.scrollWidth - container.clientWidth / 2;
     const maxScrollLeft = Math.max(0, container.scrollWidth - container.clientWidth);
     result.left = Math.max(0, Math.min(newLeft, maxScrollLeft));
+  }
+  if (isDebugZooming()) {
+    console.log('[zoom-anchor] centerAnchoredScroll', {
+      axis,
+      oldScrollTop, oldScrollHeight, refClientHeight,
+      oldScrollLeft, oldScrollWidth, refClientWidth,
+      vpCenter, centerRatio,
+      newScrollTop: result.top,
+      newScrollLeft: result.left,
+      containerScrollHeight: container.scrollHeight,
+      containerScrollWidth: container.scrollWidth,
+      containerClientHeight: container.clientHeight,
+      containerClientWidth: container.clientWidth,
+    });
   }
   return result;
 }
@@ -327,6 +355,10 @@ function PdfPane({
   const modeGenRef = useRef(0);
   const scrollRestoredRef = useRef(false);
   const isInitialLoadRef = useRef(true);  // true until first content load completes
+  // Pre-zoom scroll capture that survives effect re-runs (caused by contentWidth
+  // changing after CSS width is set).  The key (zoom+fitMode) prevents the second
+  // run from overwriting the correct old-dimensions capture.
+  const zoomAnchorRef = useRef({ key: '', zoom: 0, scrollTop: 0, scrollLeft: 0, scrollHeight: 0, scrollWidth: 0, clientHeight: 0, clientWidth: 0 });
 
   // Keep the refs in sync so the scrolling effect always sees the latest page
   useEffect(() => {
@@ -568,6 +600,9 @@ function PdfPane({
       const oldScrollWidth = useStored
         ? Math.max(1, stored.scrollWidth || 0)
         : Math.max(1, holder.scrollWidth);
+      // Capture client dimensions before zoom changes them (scrollbar appearance)
+      const oldClientHeight = holder.clientHeight;
+      const oldClientWidth = holder.clientWidth;
       const sidebarWidth = Math.max(0, document.querySelector('.sidebar')?.getBoundingClientRect().width || 0);
       const toolbarHeight = Math.max(0, document.querySelector('.annotation-panel')?.getBoundingClientRect().height || 0);
       const viewportWidthCap = Math.max(180, window.innerWidth - sidebarWidth);
@@ -585,6 +620,14 @@ function PdfPane({
             ? scaleW  // same baseline as fit-width, but max-width is released
             : Math.min(scaleW, scaleH);
       const scale = Math.max(0.001, fitScale * zoom);
+      if (isDebugZooming()) {
+        console.log('[zoom-pdf-pagination] scale computed', {
+          zoom, fitMode, fitScale, scale,
+          fitWidth, fitHeight,
+          baseWidth: baseViewport.width, baseHeight: baseViewport.height,
+          oldScrollTop, oldScrollLeft, oldScrollHeight, oldScrollWidth,
+        });
+      }
       if (typeof onRenderScaleChange === 'function') {
         onRenderScaleChange(scale);
       }
@@ -606,8 +649,18 @@ function PdfPane({
       canvas.style.flexShrink = '0';
       context.setTransform(ratio, 0, 0, ratio, 0, 0);
       // Restore center-anchored scroll now that new dimensions are set
-      if (oldScrollHeight !== holder.scrollHeight || oldScrollWidth !== holder.scrollWidth) {
-        holder.scrollTo(centerAnchoredScroll(holder, oldScrollTop, oldScrollHeight, 'both', oldScrollLeft, oldScrollWidth));
+      const heightChanged = oldScrollHeight !== holder.scrollHeight;
+      const widthChanged = oldScrollWidth !== holder.scrollWidth;
+      if (isDebugZooming()) {
+        console.log('[zoom-pdf-pagination] center-anchor check (pre-render)', {
+          zoom, fitMode, scale,
+          oldScrollTop, oldScrollHeight, oldScrollLeft, oldScrollWidth,
+          currentScrollHeight: holder.scrollHeight, currentScrollWidth: holder.scrollWidth,
+          heightChanged, widthChanged,
+        });
+      }
+      if (heightChanged || widthChanged) {
+        holder.scrollTo(centerAnchoredScroll(holder, oldScrollTop, oldScrollHeight, 'both', oldScrollLeft, oldScrollWidth, oldClientHeight, oldClientWidth));
       }
       if (isBlank) {
         // Render a blank white page so both versions have matching dimensions
@@ -618,8 +671,18 @@ function PdfPane({
       }
       if (modeGenRef.current !== gen) return;
       // Re-apply after render in case paint caused a layout shift
-      if (oldScrollHeight !== holder.scrollHeight || oldScrollWidth !== holder.scrollWidth) {
-        holder.scrollTo(centerAnchoredScroll(holder, oldScrollTop, oldScrollHeight, 'both', oldScrollLeft, oldScrollWidth));
+      const postHeightChanged = oldScrollHeight !== holder.scrollHeight;
+      const postWidthChanged = oldScrollWidth !== holder.scrollWidth;
+      if (isDebugZooming()) {
+        console.log('[zoom-pdf-pagination] center-anchor check (post-render)', {
+          zoom, fitMode, scale,
+          oldScrollTop, oldScrollHeight, oldScrollLeft, oldScrollWidth,
+          currentScrollHeight: holder.scrollHeight, currentScrollWidth: holder.scrollWidth,
+          postHeightChanged, postWidthChanged,
+        });
+      }
+      if (postHeightChanged || postWidthChanged) {
+        holder.scrollTo(centerAnchoredScroll(holder, oldScrollTop, oldScrollHeight, 'both', oldScrollLeft, oldScrollWidth, oldClientHeight, oldClientWidth));
       }
       setRenderedPage(currentPage);
       // Don't fire onPageChange for blank pages — the page number is intentionally
@@ -747,12 +810,12 @@ function PdfPane({
   }, [isImageMode, mode, currentPage, images, zoom, fitMode, contentWidth, contentHeight, imageLoadVersion, fitRefreshToken]);
 
   // ── Image pagination: keep viewport center anchored on zoom ─
-  const imgPaginationScrollRef = useRef({ top: 0, left: 0, height: 0, width: 0 });
+  const imgPaginationScrollRef = useRef({ top: 0, left: 0, height: 0, width: 0, clientHeight: 0, clientWidth: 0 });
   useLayoutEffect(() => {
     if (!isImageMode || mode !== 'pagination') return;
     const container = imgRef.current?.closest('.pdf-single-page');
     if (!container) return;
-    let { top, left, height, width } = imgPaginationScrollRef.current;
+    let { top, left, height, width, clientHeight, clientWidth } = imgPaginationScrollRef.current;
 
     // On initial load (height=0 in ref), try localStorage first
     if (height === 0) {
@@ -763,12 +826,26 @@ function PdfPane({
         left = stored.scrollLeft || 0;
         height = Math.max(1, stored.scrollHeight || 0);
         width = Math.max(1, stored.scrollWidth || 0);
+        clientHeight = container.clientHeight;
+        clientWidth = container.clientWidth;
         scrollRestoredRef.current = true;
       }
     }
 
-    if ((height > 0 && height !== container.scrollHeight) || (width > 0 && width !== container.scrollWidth)) {
-      container.scrollTo(centerAnchoredScroll(container, top, height, 'both', left, width));
+    const heightChanged = height > 0 && height !== container.scrollHeight;
+    const widthChanged = width > 0 && width !== container.scrollWidth;
+    if (isDebugZooming()) {
+      console.log('[zoom-img-pagination] center-anchor check', {
+        zoom, fitMode,
+        refTop: top, refLeft: left, refHeight: height, refWidth: width,
+        currentScrollHeight: container.scrollHeight, currentScrollWidth: container.scrollWidth,
+        heightChanged, widthChanged,
+      });
+    }
+    if (heightChanged || widthChanged) {
+      const oldCH = clientHeight > 0 ? clientHeight : container.clientHeight;
+      const oldCW = clientWidth > 0 ? clientWidth : container.clientWidth;
+      container.scrollTo(centerAnchoredScroll(container, top, height, 'both', left, width, oldCH, oldCW));
     } else if (height === 0 && top > 0) {
       // Initial load with stored position but same dimensions — apply directly
       container.scrollTop = top;
@@ -779,6 +856,8 @@ function PdfPane({
       left: container.scrollLeft,
       height: Math.max(1, container.scrollHeight),
       width: Math.max(1, container.scrollWidth),
+      clientHeight: container.clientHeight,
+      clientWidth: container.clientWidth,
     };
   }, [isImageMode, mode, zoom, fitMode, fitRefreshToken, imageLoadVersion]);
 
@@ -795,6 +874,44 @@ function PdfPane({
     const storedPos = getScrollPosition(source);
     if (storedPos && typeof storedPos.scrollTop === 'number') {
       scrollRestoredRef.current = true;
+    }
+
+    // ── Capture scroll position BEFORE any DOM changes ──
+    // Use a ref keyed by zoom+fitMode so the capture survives effect
+    // re-runs caused by contentWidth changes (ResizeObserver feedback).
+    const anchorKey = `${zoom}|${fitMode}`;
+    let anchor = zoomAnchorRef.current;
+    const isFirstRunForZoom = anchor.key !== anchorKey;
+    if (isFirstRunForZoom) {
+      // On initial load (mount at 0,0) try localStorage first
+      const stored = getScrollPosition(source);
+      const useStored = stored && mount.scrollTop === 0 && mount.scrollLeft === 0;
+      console.log('[scroll-restore:pdf-scrolling]', { source, hasStored: !!stored, mountScrollTop: mount.scrollTop, mountScrollLeft: mount.scrollLeft, useStored, stored });
+      if (useStored) scrollRestoredRef.current = true;
+      anchor = {
+        key: anchorKey,
+        scrollTop: useStored ? stored.scrollTop : mount.scrollTop,
+        scrollLeft: useStored ? stored.scrollLeft : mount.scrollLeft,
+        scrollHeight: useStored
+          ? Math.max(1, stored.scrollHeight || 0)
+          : Math.max(1, mount.scrollHeight),
+        scrollWidth: useStored
+          ? Math.max(1, stored.scrollWidth || 0)
+          : Math.max(1, mount.scrollWidth),
+        clientHeight: mount.clientHeight,
+        clientWidth: mount.clientWidth,
+      };
+      zoomAnchorRef.current = anchor;
+      if (isDebugZooming()) {
+        console.log('[zoom-pdf-scrolling] pre-zoom capture (FIRST run)', {
+          zoom, fitMode,
+          savedScrollTop: anchor.scrollTop, savedScrollLeft: anchor.scrollLeft,
+          savedScrollHeight: anchor.scrollHeight, savedScrollWidth: anchor.scrollWidth,
+          savedClientHeight: anchor.clientHeight, savedClientWidth: anchor.clientWidth,
+        });
+      }
+    } else if (isDebugZooming()) {
+      console.log('[zoom-pdf-scrolling] pre-zoom capture (SKIPPED — already captured)', { zoom, fitMode, anchorKey });
     }
 
     let disposed = false;
@@ -838,6 +955,15 @@ function PdfPane({
       // Use the base (viewport) width for scale calculations, not the mount's
       // measured width which is now explicitly constrained.
       const containerWidth = baseWidth;
+
+      if (isDebugZooming()) {
+        console.log('[zoom-pdf-scrolling] drawAll start', {
+          zoom, fitMode, baseWidth, containerHeight, containerWidth,
+          isBilingual, numPages, maxPagesInGroup,
+          currentScrollTop: mount.scrollTop, currentScrollLeft: mount.scrollLeft,
+          currentScrollHeight: mount.scrollHeight, currentScrollWidth: mount.scrollWidth,
+        });
+      }
       const fragment = document.createDocumentFragment();
 
       // In bilingual mode, compute uniform page height from SHARED parameters
@@ -871,6 +997,15 @@ function PdfPane({
           const fitDim = fitMode === 'height' ? containerHeight : containerWidth;
           const fitBase = fitMode === 'height' ? viewportBase.height : viewportBase.width;
           lastScale = Math.max(0.001, (fitDim / fitBase) * zoom);
+        }
+
+        // Log zoom details for the first page only to avoid noise
+        if (isDebugZooming() && i === 1) {
+          console.log('[zoom-pdf-scrolling] page 1 scale computed', {
+            zoom, fitMode, lastScale, isBilingual,
+            uniformPageHeight,
+            viewportBaseWidth: viewportBase.width, viewportBaseHeight: viewportBase.height,
+          });
         }
 
         const viewport = page.getViewport({ scale: lastScale });
@@ -919,21 +1054,9 @@ function PdfPane({
 
       if (disposed || modeGenRef.current !== gen) return;
 
-      // Restore saved scroll position from localStorage on initial load
-      // (when the mount is still empty / at the top), otherwise preserve
-      // the current live scroll position for center-anchored zoom etc.
-      const stored = getScrollPosition(source);
-      const useStored = stored && mount.scrollTop === 0 && mount.scrollLeft === 0;
-      console.log('[scroll-restore:pdf-scrolling]', { source, hasStored: !!stored, mountScrollTop: mount.scrollTop, mountScrollLeft: mount.scrollLeft, useStored, stored });
-      if (useStored) scrollRestoredRef.current = true;
-      const savedScrollTop = useStored ? stored.scrollTop : mount.scrollTop;
-      const savedScrollLeft = useStored ? stored.scrollLeft : mount.scrollLeft;
-      const savedScrollHeight = useStored
-        ? Math.max(1, stored.scrollHeight || 0)
-        : Math.max(1, mount.scrollHeight);
-      const savedScrollWidth = useStored
-        ? Math.max(1, stored.scrollWidth || 0)
-        : Math.max(1, mount.scrollWidth);
+      // Scroll position was already captured at the effect level (zoomAnchorRef).
+      // Read from the ref — NOT from mount — because a second effect run may
+      // have already cleared the mount's innerHTML.
 
       mount.innerHTML = '';
       mount.appendChild(fragment);
@@ -1023,11 +1146,30 @@ function PdfPane({
       // We MUST NOT call onScroll() synchronously here — the DOM layout
       // hasn't settled yet and scrollTop may be stale.  Instead we piggy-
       // back on the same RAF that restores the scroll position.
+      // Read from the ref (NOT closure) so we use the FIRST-run capture.
+      const captured = anchor;
       requestAnimationFrame(() => {
         if (disposed || modeGenRef.current !== gen) return;
 
-        if (savedScrollHeight !== mount.scrollHeight || savedScrollWidth !== mount.scrollWidth) {
-          mount.scrollTo(centerAnchoredScroll(mount, savedScrollTop, savedScrollHeight, 'both', savedScrollLeft, savedScrollWidth));
+        const heightChanged = captured.scrollHeight !== mount.scrollHeight;
+        const widthChanged = captured.scrollWidth !== mount.scrollWidth;
+        if (isDebugZooming()) {
+          console.log('[zoom-pdf-scrolling] center-anchor check', {
+            zoom, fitMode,
+            savedScrollTop: captured.scrollTop, savedScrollHeight: captured.scrollHeight,
+            savedScrollLeft: captured.scrollLeft, savedScrollWidth: captured.scrollWidth,
+            currentScrollHeight: mount.scrollHeight, currentScrollWidth: mount.scrollWidth,
+            heightChanged, widthChanged,
+            willAnchoredScroll: heightChanged || widthChanged,
+          });
+        }
+        if (heightChanged || widthChanged) {
+          mount.scrollTo(centerAnchoredScroll(
+            mount,
+            captured.scrollTop, captured.scrollHeight, 'both',
+            captured.scrollLeft, captured.scrollWidth,
+            captured.clientHeight, captured.clientWidth
+          ));
         }
 
         // On initial load, override with the saved scroll position from a
@@ -1628,6 +1770,41 @@ function PdfPane({
     if (mode !== 'scrolling') return;
     const mount = scrollRef.current;
     if (!mount) return;
+
+    // ── Capture scroll position BEFORE any CSS changes ──
+    // Use a ref so the capture survives React re-running this effect
+    // (e.g. when contentWidth changes after we set .pdf-content width).
+    // We only capture ONCE per unique zoom+fitMode pair.
+    const anchorKey = `${zoom}|${fitMode}`;
+    let anchor = zoomAnchorRef.current;
+    if (anchor.key !== anchorKey) {
+      // First run for this zoom level — capture old dimensions AND old zoom
+      anchor = {
+        key: anchorKey,
+        zoom: anchor.zoom > 0 ? anchor.zoom : zoom,  // preserve previous zoom for scale calc
+        scrollTop: mount.scrollTop,
+        scrollLeft: mount.scrollLeft,
+        scrollHeight: Math.max(1, mount.scrollHeight),
+        scrollWidth: Math.max(1, mount.scrollWidth),
+        clientHeight: mount.clientHeight,
+        clientWidth: mount.clientWidth,
+      };
+      zoomAnchorRef.current = anchor;
+
+      if (isDebugZooming()) {
+        console.log('[zoom-img-scrolling] pre-zoom capture (FIRST run)', {
+          zoom, fitMode,
+          savedScrollTop: anchor.scrollTop, savedScrollLeft: anchor.scrollLeft,
+          savedScrollHeight: anchor.scrollHeight, savedScrollWidth: anchor.scrollWidth,
+          savedClientHeight: anchor.clientHeight, savedClientWidth: anchor.clientWidth,
+        });
+      }
+    } else if (isDebugZooming()) {
+      console.log('[zoom-img-scrolling] pre-zoom capture (SKIPPED — already captured for this zoom)', {
+        zoom, fitMode, anchorKey,
+      });
+    }
+
     mount.style.overflowX = fitMode === 'none' ? 'auto' : 'hidden';
     if (contentRef.current) {
       contentRef.current.style.overflow = fitMode === 'none' ? 'visible' : 'hidden';
@@ -1719,21 +1896,101 @@ function PdfPane({
     }
     // After fit/zoom changes, page boundaries shift. Restore the same relative
     // scroll position (both axes) so zoom is anchored at the screen center.
-    const DELAY_AFTER_FIT_CHANGE = 0;
-    const savedScrollTop = mount.scrollTop;
-    const savedScrollLeft = mount.scrollLeft;
-    const savedScrollHeight = Math.max(1, mount.scrollHeight);
-    const savedScrollWidth = Math.max(1, mount.scrollWidth);
+    //
+    // ═══ PHASE 1 (synchronous): apply estimated scroll immediately ═══
+    // Using the known zoom ratio avoids a paint frame where content is
+    // at the wrong position — this eliminates visible "shakiness".
+    const captured = anchor;
+    const oldZoom = captured.zoom > 0 ? captured.zoom : zoom;
+    const zoomRatio = oldZoom > 0 ? zoom / oldZoom : 1;
+    const oldCH = captured.clientHeight;
+    const oldCW = captured.clientWidth;
+    const oldSH = captured.scrollHeight;
+    const oldSW = captured.scrollWidth;
+
+    // Vertical: content is top-aligned, simple zoom-factor scaling
+    const estNewTop = (captured.scrollTop + oldCH / 2) * zoomRatio - oldCH / 2;
+
+    // Horizontal: account for CSS centering offset in old state
+    const oldContentFits = oldSW <= oldCW + 1;
+    const oldHOffset = oldContentFits ? (oldCW - oldSW) / 2 : 0;
+    const contentCenterX = captured.scrollLeft + oldCW / 2 - oldHOffset;
+    // Estimate new centering: if content was already overflowing, it stays overflowed
+    const estNewContentFits = oldContentFits && (zoomRatio <= 1.01);
+    const estNewHOffset = estNewContentFits ? (oldCW - oldSW * zoomRatio) / 2 : 0;
+    const estNewLeft = contentCenterX * zoomRatio + estNewHOffset - oldCW / 2;
+
+    // Clamp and apply synchronously (before browser paints)
+    const estMaxTop = Math.max(0, oldSH * zoomRatio - oldCH);
+    const estMaxLeft = Math.max(0, oldSW * zoomRatio - oldCW);
+    if (oldSH > 0 || oldSW > 0) {
+      mount.scrollTo({
+        top: Math.max(0, Math.min(estNewTop, estMaxTop)),
+        left: Math.max(0, Math.min(estNewLeft, estMaxLeft)),
+        behavior: 'instant',
+      });
+    }
+
+    // ═══ PHASE 2 (async): fine-tune using actual layout dimensions ═══
     const timer = setTimeout(() => {
       if (!mount) return;
-      const hChanged = savedScrollHeight !== mount.scrollHeight;
-      const wChanged = savedScrollWidth !== mount.scrollWidth;
-      if (hChanged || wChanged) {
-        mount.scrollTo(centerAnchoredScroll(mount, savedScrollTop, savedScrollHeight, 'both', savedScrollLeft, savedScrollWidth));
-      }
-    }, DELAY_AFTER_FIT_CHANGE);
+      const newCH = mount.clientHeight;
+      const newCW = mount.clientWidth;
+      const newSH = mount.scrollHeight;
+      const newSW = mount.scrollWidth;
 
-    return () => clearTimeout(timer);
+      // Vertical
+      const vpCenterY = captured.scrollTop + oldCH / 2;
+      const scaleY = oldSH > 0 ? newSH / oldSH : 1;
+      const newTop = vpCenterY * scaleY - newCH / 2;
+
+      // Horizontal (with actual new centering offset)
+      const newContentFits = newSW <= newCW + 1;
+      const newHOffset = newContentFits ? (newCW - newSW) / 2 : 0;
+      const scaleX = oldSW > 0 ? newSW / oldSW : 1;
+      const newLeft = contentCenterX * scaleX + newHOffset - newCW / 2;
+
+      const maxTop = Math.max(0, newSH - newCH);
+      const maxLeft = Math.max(0, newSW - newCW);
+
+      const hChanged = oldSH !== newSH;
+      const wChanged = oldSW !== newSW;
+
+      if (isDebugZooming()) {
+        console.log('[zoom-img-scrolling] center-anchor fine-tune', {
+          zoom, fitMode, oldZoom, zoomRatio,
+          savedScrollTop: captured.scrollTop, savedScrollHeight: oldSH,
+          savedScrollLeft: captured.scrollLeft, savedScrollWidth: oldSW,
+          oldClientH: oldCH, oldClientW: oldCW,
+          newClientH: newCH, newClientW: newCW,
+          oldContentFits, newContentFits,
+          oldHOffset, newHOffset,
+          contentCenterX, scaleX, scaleY,
+          estNewTop, estNewLeft,
+          finalNewTop: newTop, finalNewLeft: newLeft,
+          curH: newSH, curW: newSW,
+          hChanged, wChanged,
+        });
+      }
+      if (hChanged || wChanged) {
+        mount.scrollTo({
+          top: Math.max(0, Math.min(newTop, maxTop)),
+          left: Math.max(0, Math.min(newLeft, maxLeft)),
+          behavior: 'instant',
+        });
+      }
+      // Update the ref's zoom so the NEXT zoom change uses correct oldZoom
+      zoomAnchorRef.current = { ...captured, zoom };
+    }, 0);
+
+    // Only clear the timer if the zoom/fitMode key has changed (meaning a
+    // genuinely new zoom level, not just a re-run from contentWidth resize).
+    // Otherwise the first (correct) capture's timer would be cancelled.
+    return () => {
+      if (zoomAnchorRef.current.key !== anchorKey) {
+        clearTimeout(timer);
+      }
+    };
   }, [isImageMode, mode, zoom, fitMode, fitRefreshToken, contentWidth]);
 
   // Scroll position in scrolling mode is user-controlled — no auto-scroll on page change
