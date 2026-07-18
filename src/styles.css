@@ -3809,16 +3809,19 @@ button, input, select {
 .search-drawer {
   width: 480px;
   max-width: 92vw;
-  padding-bottom: 124px;
+  padding-bottom: 0;
   background-color: #f8fafc;
 }
 
-/* Remove the body top-padding inside the search drawer — the sticky
-   controls panel provides its own spacing.  This prevents search
-   results from peeking through the gap between the header and the
-   input panel while scrolling. */
+/* Remove the body top-padding inside the search drawer and switch to a
+   flex-column layout so the results-count bar stays pinned to the bottom
+   while the results list scrolls independently in between. */
 .search-drawer .ai-drawer-body {
   padding-top: 0;
+  padding-bottom: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: hidden;
 }
 
 .search-input {
@@ -3840,14 +3843,11 @@ button, input, select {
 }
 
 .search-controls-sticky {
-  position: sticky;
-  top: 0;
+  flex-shrink: 0;
   z-index: 10;
   background: #f8fafc;
-  padding-top: 24px;
-  padding-bottom: 12px;
+  padding: 24px 24px 12px 24px;
   margin-bottom: 4px;
-  /* Ensure the sticky panel fully occludes scrolling results behind it */
   background-color: #f8fafc;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
@@ -3918,30 +3918,26 @@ button, input, select {
   white-space: nowrap;
 }
 
+.search-results-scroll {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 0 24px;
+}
+
 .search-results {
   display: grid;
   gap: 8px;
-  padding-bottom: 48px; /* room for the fixed bottom bar */
+  padding-bottom: 150px;
 }
 
-.search-results-bar {
-  position: sticky;
-  bottom: 0;
-  z-index: 5;
-  background: #f8fafc;
-  border-top: 1px solid #e2e8f0;
-  padding: 10px 0;
-  margin-top: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.search-results-count {
-  margin: 0;
-  font-size: 0.9rem;
-  font-weight: 600;
+.search-results-count-end {
+  text-align: center;
   color: #5d7184;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 16px 0 8px;
+  margin: 0;
 }
 
 .search-result-item {
@@ -3985,6 +3981,13 @@ button, input, select {
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
+}
+
+.search-result-snippet mark {
+  background: #fde68a;
+  color: #92400e;
+  border-radius: 2px;
+  padding: 0 2px;
 }
 
 .search-no-results {

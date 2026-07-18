@@ -311,6 +311,22 @@ function DebugSubSection({ label, data }) {
   );
 }
 
+/**
+ * Wrap occurrences of `query` in `text` with <mark> tags for visual
+ * highlighting in search results.  Case-insensitive.  Escapes HTML in
+ * the original text first so raw snippet content is safe.
+ */
+function highlightMatches(text, query, wholeWord) {
+  if (!text || !query) return text;
+  const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const pattern = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // \\b only works for ASCII word boundaries — skip for pure-CJK queries
+  const hasAscii = /[a-zA-Z0-9]/.test(query);
+  const boundary = (wholeWord && hasAscii) ? '\\b' : '';
+  const regex = new RegExp(`(${boundary}${pattern}${boundary})`, 'gi');
+  return escaped.replace(regex, '<mark>$1</mark>');
+}
+
 function App() {
   const savedPrefs = loadPreferences();
   const initialTextColor = useMemo(() => {
@@ -468,7 +484,8 @@ function App() {
   const [jumpNotice, setJumpNotice] = useState('');
   const [toolbarScale, setToolbarScale] = useState(1);
   const [toolbarTight, setToolbarTight] = useState(false);
-  const [includeAnnotations, setIncludeAnnotations] = useState(false);
+  const [includeAnnotations] = useState(true); // always on — checkbox replaced by whole-word
+  const [wholeWord, setWholeWord] = useState(true);
   const [searchSubjects, setSearchSubjects] = useState(() => {
     // Default: all 4 subjects selected
     return ['physics-oup', 'chemistry-aristo', 'chemistry-winter', 'biology-oup'];
@@ -4692,7 +4709,7 @@ function App() {
   useEffect(() => {
     setSearchOffset(0);
     setSearchHasMore(false);
-  }, [searchQuery, searchScopePage, searchScopeSection, selectedBook, selectedChapter, selectedFile, selectedPage, includeAnnotations, searchSubjects]);
+  }, [searchQuery, searchScopePage, searchScopeSection, selectedBook, selectedChapter, selectedFile, selectedPage, wholeWord, searchSubjects]);
 
   useEffect(() => {
     if (!searchQuery.trim()) {
@@ -4730,7 +4747,8 @@ function App() {
             searchSubjects.forEach((id) => params.append('subjectId', id));
           }
         }
-        if (includeAnnotations) params.set('includeAnnotations', '1');
+        params.set('includeAnnotations', '1');
+        if (wholeWord) params.set('wholeWord', '1');
         const data = await fetchJson(`api/search?${params.toString()}`);
 
         // Discard stale responses (e.g. a new query was typed while this was in-flight)
@@ -4755,7 +4773,7 @@ function App() {
     }, isFirstPage ? 300 : 0); // debounce only for fresh searches; load-more is immediate
 
     return () => clearTimeout(timer);
-  }, [searchQuery, searchScopePage, searchScopeSection, selectedBook, selectedChapter, selectedFile, selectedPage, includeAnnotations, searchSubjects, searchOffset]);
+  }, [searchQuery, searchScopePage, searchScopeSection, selectedBook, selectedChapter, selectedFile, selectedPage, wholeWord, searchSubjects, searchOffset]);
 
   // ── Load more when IntersectionObserver fires ────────────
   const loadMoreSentinelRef = useRef(null);
@@ -6267,10 +6285,10 @@ function App() {
                   <label className="search-checkbox-label">
                     <input
                       type="checkbox"
-                      checked={includeAnnotations}
-                      onChange={(e) => setIncludeAnnotations(e.target.checked)}
+                      checked={wholeWord}
+                      onChange={(e) => setWholeWord(e.target.checked)}
                     />
-                    <span>{_('searchIncludeAnnotations')}</span>
+                    <span>{_('searchWholeWord')}</span>
                   </label>
                 </div>
                 <div className="search-subject-filters">
@@ -6302,8 +6320,9 @@ function App() {
               )}
               {!searchLoading && searchResults.length > 0 && (
                 <>
-                  <div className="search-results">
-                    {searchResults.map((result, idx) => (
+                  <div className="search-results-scroll">
+                    <div className="search-results">
+                      {searchResults.map((result, idx) => (
                       <button
                         key={result._id || `${result.source}-${result.subjectId}-${result.bookId}-${result.sectionId}-${result.pageId}-${idx}`}
                         className="search-result-item"
@@ -6336,7 +6355,12 @@ function App() {
                           )}
                         </div>
                         {result.snippet && (
-                          <p className="search-result-snippet">{result.snippet}</p>
+                          <p
+                            className="search-result-snippet"
+                            dangerouslySetInnerHTML={{
+                              __html: highlightMatches(result.snippet, searchQuery, wholeWord)
+                            }}
+                          />
                         )}
                       </button>
                     ))}
@@ -6347,15 +6371,12 @@ function App() {
                         <div className="ai-spinner" />
                       </div>
                     )}
-                    {!searchHasMore && searchResults.length >= 50 && (
-                      <p className="search-no-results" style={{ padding: '12px 0', fontSize: '0.85rem' }}>
-                        {_('searchNoResults')}
+                    {!searchHasMore && (
+                      <p className="search-results-count-end">
+                        {_('searchResultsCount').replace('{count}', searchResults.length)}
                       </p>
                     )}
                   </div>
-                  {/* Fixed bottom bar — always visible, never scrolls away */}
-                  <div className="search-results-bar">
-                    <span className="search-results-count">{_('searchResultsCount').replace('{count}', searchResults.length)}</span>
                   </div>
                 </>
               )}

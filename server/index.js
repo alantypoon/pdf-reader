@@ -2247,7 +2247,7 @@ app.post('/api/ai-generate', async (request, response) => {
 
 app.get('/api/search', async (request, response) => {
   try {
-    const { q, bookId, sectionId, pageId, includeAnnotations, offset, limit } = request.query;
+    const { q, bookId, sectionId, pageId, includeAnnotations, offset, limit, wholeWord } = request.query;
     if (!q || !String(q).trim()) {
       return response.json({ results: [], hasMore: false });
     }
@@ -2259,7 +2259,10 @@ app.get('/api/search', async (request, response) => {
     const skip = Math.max(0, Number(offset) || 0);
 
     const escaped = String(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const regex = { $regex: escaped, $options: 'i' };
+    // \\b only works for ASCII — pure-CJK queries skip word boundaries
+    const hasAscii = /[a-zA-Z0-9]/.test(String(q));
+    const boundary = (wholeWord === '1' && hasAscii) ? '\\b' : '';
+    const regex = { $regex: `${boundary}${escaped}${boundary}`, $options: 'i' };
 
     const scopeFilter = {};
     // Express may parse ?subjectId=a&subjectId=b as an array, or
