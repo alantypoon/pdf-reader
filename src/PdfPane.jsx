@@ -324,6 +324,20 @@ function repositionBilingualPages(mount, syncGroup) {
   mount.style.position = '';
   mount.style.setProperty('--bilingual-row-height', `${maxH}px`);
 
+  // Add/update a normal-flow spacer so iOS -webkit-overflow-scrolling: touch
+  // can compute momentum correctly.  Absolute children alone do not create a
+  // scrollable content area that iOS momentum understands — a static element
+  // with the total content height serves as the canonical scroll extent.
+  const totalPages = children.length;
+  let spacer = mount.querySelector('.bilingual-scroll-spacer');
+  if (!spacer) {
+    spacer = document.createElement('div');
+    spacer.className = 'bilingual-scroll-spacer';
+    spacer.style.cssText = 'width:1px;pointer-events:none;opacity:0;position:static;';
+    mount.appendChild(spacer);
+  }
+  spacer.style.height = `${totalPages * maxH}px`;
+
   const newScrollHeight = Math.max(1, mount.scrollHeight);
   if (newScrollHeight !== oldScrollHeight) {
     mount.scrollTop = oldScrollTop * (newScrollHeight / oldScrollHeight);
@@ -669,7 +683,7 @@ function PdfPane({
       // lands where they left off after a page reload.
       const stored = getScrollPosition(source);
       const useStored = stored && holder.scrollTop === 0 && holder.scrollLeft === 0;
-      console.log('[scroll-restore:pdf-pagination]', { source, hasStored: !!stored, holderScrollTop: holder.scrollTop, holderScrollLeft: holder.scrollLeft, useStored, stored });
+      if (isDebugScrollingPersistence()) console.log('[scroll-restore:pdf-pagination]', { source, hasStored: !!stored, holderScrollTop: holder.scrollTop, holderScrollLeft: holder.scrollLeft, useStored, stored });
       if (useStored) scrollRestoredRef.current = true;
       const oldScrollTop = useStored ? stored.scrollTop : holder.scrollTop;
       const oldScrollLeft = useStored ? stored.scrollLeft : holder.scrollLeft;
@@ -899,7 +913,7 @@ function PdfPane({
     // On initial load (height=0 in ref), try localStorage first
     if (height === 0) {
       const stored = getScrollPosition(source);
-      console.log('[scroll-restore:img-pagination]', { source, hasStored: !!stored, stored });
+      if (isDebugScrollingPersistence()) console.log('[scroll-restore:img-pagination]', { source, hasStored: !!stored, stored });
       if (stored && stored.scrollTop > 0) {
         top = stored.scrollTop;
         left = stored.scrollLeft || 0;
@@ -965,7 +979,7 @@ function PdfPane({
       // On initial load (mount at 0,0) try localStorage first
       const stored = getScrollPosition(source);
       const useStored = stored && mount.scrollTop === 0 && mount.scrollLeft === 0;
-      console.log('[scroll-restore:pdf-scrolling]', { source, hasStored: !!stored, mountScrollTop: mount.scrollTop, mountScrollLeft: mount.scrollLeft, useStored, stored });
+      if (isDebugScrollingPersistence()) console.log('[scroll-restore:pdf-scrolling]', { source, hasStored: !!stored, mountScrollTop: mount.scrollTop, mountScrollLeft: mount.scrollLeft, useStored, stored });
       if (useStored) scrollRestoredRef.current = true;
       anchor = {
         key: anchorKey,
@@ -1389,10 +1403,10 @@ function PdfPane({
       if (container && container.scrollHeight > 0) {
         saveContainerRef.current = container;
         container.addEventListener('scroll', onScroll, { passive: true });
-        console.log('[scroll-save] listener ATTACHED to container:', { source, mode, scrollHeight: container.scrollHeight, scrollWidth: container.scrollWidth });
+        if (isDebugScrollingPersistence()) console.log('[scroll-save] listener ATTACHED to container:', { source, mode, scrollHeight: container.scrollHeight, scrollWidth: container.scrollWidth });
         return true;
       }
-      console.log('[scroll-save] tryAttach FAILED (container not ready):', { hasContainer: !!container, scrollHeight: container ? container.scrollHeight : 'N/A', mode, source });
+      if (isDebugScrollingPersistence()) console.log('[scroll-save] tryAttach FAILED (container not ready):', { hasContainer: !!container, scrollHeight: container ? container.scrollHeight : 'N/A', mode, source });
       return false;
     };
 
@@ -1776,7 +1790,7 @@ function PdfPane({
       if (!currentImg || disposed) return;
 
       const storedPos = getScrollPosition(source);
-      console.log('[scroll-restore:img-scrolling]', { source, hasStored: !!storedPos, storedPos });
+      if (isDebugScrollingPersistence()) console.log('[scroll-restore:img-scrolling]', { source, hasStored: !!storedPos, storedPos });
       if (storedPos && typeof storedPos.scrollTop === 'number') {
         scrollRestoredRef.current = true;
         mount.scrollTop = storedPos.scrollTop;

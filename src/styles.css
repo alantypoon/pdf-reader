@@ -1131,8 +1131,7 @@ button, input, select {
   touch-action: none;
 }
 
-/* In hand mode, allow native touch panning on PDF containers.
-   Scroll mode: vertical-only.  Pagination mode: both axes. */
+/* In hand mode, allow native touch panning on PDF containers. */
 .book-stage.tool-hand .pdf-scroll-pages {
   touch-action: pan-x pan-y;
 }

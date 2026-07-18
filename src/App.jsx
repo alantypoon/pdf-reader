@@ -1695,6 +1695,7 @@ function App() {
     let touchStartX = 0;
     let touchStartY = 0;
     let touchActive = false;
+    let touchFingerMode = 0;
     let touchScrollTarget = null;
     let pendingRaf = null;
     let accumulatedDeltaX = 0;
@@ -1749,6 +1750,7 @@ function App() {
         accumulatedDeltaX = 0;
         accumulatedDeltaY = 0;
         touchActive = true;
+        touchFingerMode = 2;
         touchScrollTarget = getScrollTargetForGesture(e);
         touchScrollingRef.current = true;
 
@@ -1781,30 +1783,63 @@ function App() {
             console.error('[draw] failed to save touch-scroll-cancelled stroke:', err)
           );
         }
+      } else if (e.touches.length === 1 && tool === 'hand') {
+        const touch = e.touches[0];
+        e.preventDefault();
+        lastTouchScrollAtRef.current = Date.now();
+        touchStartX = touch.clientX;
+        touchStartY = touch.clientY;
+        accumulatedDeltaX = 0;
+        accumulatedDeltaY = 0;
+        touchActive = true;
+        touchFingerMode = 1;
+        touchScrollTarget = getScrollTargetForGesture(e);
+        touchScrollingRef.current = true;
+
+        velocityX = 0;
+        velocityY = 0;
+        lastVelocityTime = 0;
+
+        if (isDebugScrollingMomentum()) {
+          console.log('[momentum] touch-start: 1-finger hand scroll begin', {
+            x: touch.clientX.toFixed(1),
+            y: touch.clientY.toFixed(1),
+          });
+        }
       } else {
         touchActive = false;
+        touchFingerMode = 0;
         touchScrollTarget = null;
       }
     };
 
     const onTouchMove = (e) => {
       if (!touchActive) return;
-      if (e.touches.length !== 2) {
-        if (isDebugScrollingMomentum()) console.log('[momentum] touch-move: touch count changed, deactivating', { touchCount: e.touches.length });
+      if (e.touches.length !== touchFingerMode) {
+        if (isDebugScrollingMomentum()) console.log('[momentum] touch-move: touch count changed, deactivating', { touchCount: e.touches.length, expected: touchFingerMode });
         touchActive = false;
+        touchFingerMode = 0;
         touchScrollTarget = null;
         return;
       }
-      const midpoint = getTouchMidpoint(e.touches);
-      if (!midpoint) return;
+      let curX, curY;
+      if (touchFingerMode === 1) {
+        curX = e.touches[0].clientX;
+        curY = e.touches[0].clientY;
+      } else {
+        const midpoint = getTouchMidpoint(e.touches);
+        if (!midpoint) return;
+        curX = midpoint.x;
+        curY = midpoint.y;
+      }
       e.preventDefault();
       lastTouchScrollAtRef.current = Date.now();
 
       const now = performance.now();
       const dt = now - lastVelocityTime;
       if (dt > 0 && lastVelocityTime > 0) {
-        const instantVX = (midpoint.x - lastVelocityX) / dt;
-        const instantVY = (midpoint.y - lastVelocityY) / dt;
+        const instantVX = (curX - lastVelocityX) / dt;
+        const instantVY = (curY - lastVelocityY) / dt;
         const alpha = 0.3;
         velocityX = velocityX * (1 - alpha) + instantVX * alpha;
         velocityY = velocityY * (1 - alpha) + instantVY * alpha;
@@ -1822,13 +1857,13 @@ function App() {
         }
       }
       lastVelocityTime = now;
-      lastVelocityX = midpoint.x;
-      lastVelocityY = midpoint.y;
+      lastVelocityX = curX;
+      lastVelocityY = curY;
 
-      accumulatedDeltaX += touchStartX - midpoint.x;
-      accumulatedDeltaY += touchStartY - midpoint.y;
-      touchStartX = midpoint.x;
-      touchStartY = midpoint.y;
+      accumulatedDeltaX += touchStartX - curX;
+      accumulatedDeltaY += touchStartY - curY;
+      touchStartX = curX;
+      touchStartY = curY;
 
       if (!pendingRaf) {
         pendingRaf = requestAnimationFrame(applyScroll);
@@ -1837,6 +1872,7 @@ function App() {
 
     const onTouchEnd = () => {
       touchActive = false;
+      touchFingerMode = 0;
       touchScrollingRef.current = false;
       lastTouchScrollAtRef.current = Date.now();
       if (pendingRaf) {
@@ -1887,12 +1923,40 @@ function App() {
     canvas.addEventListener('touchend', onTouchEnd, { passive: true });
     canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
 
+    // In hand mode the annotation canvas has pointer-events: none, so
+    // touches land on the scroll containers instead.  Attach the exact
+    // same momentum handlers to every scroll container and suppress
+    // native touch-action so JS has exclusive control — identical to
+    // how pen/eraser mode works via CSS touch-action: none.
+    const scrollContainers = [];
+    if (tool === 'hand') {
+      const stage = stageRef.current;
+      if (stage) {
+        const containers = stage.querySelectorAll('.pdf-scroll-pages, .pdf-single-page');
+        containers.forEach((el) => {
+          el.style.touchAction = 'none';
+          el.addEventListener('touchstart', onTouchStart, { passive: false });
+          el.addEventListener('touchmove', onTouchMove, { passive: false });
+          el.addEventListener('touchend', onTouchEnd, { passive: true });
+          el.addEventListener('touchcancel', onTouchEnd, { passive: true });
+          scrollContainers.push(el);
+        });
+      }
+    }
+
     return () => {
       if (pendingRaf) cancelAnimationFrame(pendingRaf);
       canvas.removeEventListener('touchstart', onTouchStart);
       canvas.removeEventListener('touchmove', onTouchMove);
       canvas.removeEventListener('touchend', onTouchEnd);
       canvas.removeEventListener('touchcancel', onTouchEnd);
+      scrollContainers.forEach((el) => {
+        el.style.touchAction = '';
+        el.removeEventListener('touchstart', onTouchStart);
+        el.removeEventListener('touchmove', onTouchMove);
+        el.removeEventListener('touchend', onTouchEnd);
+        el.removeEventListener('touchcancel', onTouchEnd);
+      });
     };
   }, [displayMode, getScrollTargetForGesture, tool, cancelMomentum, startMomentum]);
 
