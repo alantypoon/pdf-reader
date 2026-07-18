@@ -162,6 +162,22 @@ function saveScrollCacheEntry(key, top, left) {
 const _bilingualMaxHeights = new Map();  // syncGroup → running max (px)
 const BILINGUAL_REPOSITION_EVENT = 'pdf-bilingual-reposition';
 
+/**
+ * Returns the effective column width for a bilingual pane.
+ * In 2-column side-by-side layout: stageWidth / 2.
+ * In 1-column stacked layout (narrow screens): full stageWidth.
+ */
+function getBilingualColumnWidth(stage) {
+  if (!stage || typeof window === 'undefined') return 360;
+  const style = getComputedStyle(stage);
+  const cols = style.gridTemplateColumns;
+  // If the grid has only 1 track (e.g. "1fr"), panes are stacked → full width
+  const colCount = cols ? cols.split(' ').filter(s => s !== '0px').length : 2;
+  const stageWidth = stage.getBoundingClientRect().width;
+  if (colCount <= 1) return Math.max(180, Math.floor(stageWidth));
+  return Math.max(180, Math.floor(stageWidth / 2));
+}
+
 function isDebugMode() {
   if (typeof window === 'undefined') return false;
   try {
@@ -921,13 +937,13 @@ function PdfPane({
     mount.style.overflowX = fitMode === 'none' ? 'auto' : 'hidden';
 
     // Measure the base (unzoomed) width. In bilingual mode, compute from
-    // the SHARED parent (.book-stage) divided by 2 grid columns so both
-    // panes get the EXACT same value — no 1px sub-pixel drift.
+    // the SHARED parent (.book-stage) so both panes get the EXACT same
+    // value — no 1px sub-pixel drift.  Respects stacked vs side-by-side layout.
     const isBilingual = maxPagesInGroup > 0;
     let baseWidth;
     if (isBilingual) {
       const stage = mount.closest('.book-stage');
-      baseWidth = stage ? Math.max(180, Math.floor(stage.getBoundingClientRect().width / 2)) : 360;
+      baseWidth = getBilingualColumnWidth(stage);
     } else {
       const baseRect = contentRef.current ? contentRef.current.getBoundingClientRect() : mount.getBoundingClientRect();
       baseWidth = Math.max(180, baseRect.width);
@@ -1224,16 +1240,20 @@ function PdfPane({
     if (mode !== 'scrolling') return;
     const mount = scrollRef.current;
     if (!mount || !mount.children.length) return;
-    // Skip if the page change was triggered by our own scroll sync,
-    // or if a saved scroll position exists in localStorage (the
-    // image/PDF build effect will restore it after content loads).
+    // Skip if the page change was triggered by our own scroll sync.
     if (lastScrolledFromSyncRef.current) {
       lastScrolledFromSyncRef.current = false;
       return;
     }
-    const storedPos = getScrollPosition(source);
-    if (storedPos && typeof storedPos.scrollTop === 'number') {
-      return;
+    // During initial load only: if a saved scroll position exists in
+    // localStorage, let the build effect's RAF restore it instead of
+    // jumping to currentPage. After the first content load completes,
+    // always honor prev/next navigation.
+    if (isInitialLoadRef.current) {
+      const storedPos = getScrollPosition(source);
+      if (storedPos && typeof storedPos.scrollTop === 'number') {
+        return;
+      }
     }
     const target = mount.querySelector(`[data-page="${currentPage}"]`);
     if (target) {
@@ -1442,12 +1462,12 @@ function PdfPane({
     const isBilingual = maxPagesInGroup > 0;
 
     // Measure the base (unzoomed) width. In bilingual mode, compute from
-    // the SHARED parent (.book-stage) divided by 2 grid columns so both
-    // panes get the EXACT same value — no 1px sub-pixel drift.
+    // the SHARED parent (.book-stage) so both panes get the EXACT same
+    // value — no 1px sub-pixel drift.  Respects stacked vs side-by-side layout.
     let baseWidth;
     if (isBilingual) {
       const stage = mount.closest('.book-stage');
-      baseWidth = stage ? Math.max(180, Math.floor(stage.getBoundingClientRect().width / 2)) : 360;
+      baseWidth = getBilingualColumnWidth(stage);
     } else {
       const baseRect = contentRef.current ? contentRef.current.getBoundingClientRect() : { width: mount.getBoundingClientRect().width };
       baseWidth = Math.max(180, baseRect.width);
@@ -1829,9 +1849,10 @@ function PdfPane({
     // The injected CSS rule and absolute positioning must reflect the new
     // container width, otherwise page heights become stale.
     if (maxPagesInGroup > 0) {
-      // Use the SHARED parent width so both panes stay in sync
+      // Use the SHARED parent width so both panes stay in sync.
+      // Respects stacked vs side-by-side layout.
       const stage = mount.closest('.book-stage');
-      const sharedW = stage ? Math.max(180, Math.floor(stage.getBoundingClientRect().width / 2)) : 360;
+      const sharedW = getBilingualColumnWidth(stage);
       const estH = fitMode === 'height'
         ? Math.round(Math.max(180, mount.getBoundingClientRect().height) * zoom)
         : Math.round(sharedW * zoom * Math.SQRT2);
