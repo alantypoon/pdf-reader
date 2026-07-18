@@ -470,8 +470,8 @@ function App() {
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
   const [colorPickerPos, setColorPickerPos] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchScopePage, setSearchScopePage] = useState(false);
-  const [searchScopeSection, setSearchScopeSection] = useState(false);
+  const [searchScopePage, setSearchScopePage] = useState(Boolean(savedPrefs.searchScopePage));
+  const [searchScopeSection, setSearchScopeSection] = useState(Boolean(savedPrefs.searchScopeSection));
   // When page or section scope is active, subject filters are irrelevant
   // (search is already constrained to the current book's content).
   const searchSubjectsDisabled = searchScopePage || searchScopeSection;
@@ -485,9 +485,12 @@ function App() {
   const [toolbarScale, setToolbarScale] = useState(1);
   const [toolbarTight, setToolbarTight] = useState(false);
   const [includeAnnotations] = useState(true); // always on — checkbox replaced by whole-word
-  const [wholeWord, setWholeWord] = useState(true);
+  const [wholeWord, setWholeWord] = useState(savedPrefs.wholeWord !== false); // default true
   const [searchSubjects, setSearchSubjects] = useState(() => {
-    // Default: all 4 subjects selected
+    // Restore from preferences, fall back to all 4 subjects
+    if (Array.isArray(savedPrefs.searchSubjects) && savedPrefs.searchSubjects.length > 0) {
+      return savedPrefs.searchSubjects;
+    }
     return ['physics-oup', 'chemistry-aristo', 'chemistry-winter', 'biology-oup'];
   });
   const [panelVisible, setPanelVisible] = useState(savedPrefs.panelVisible !== false);
@@ -1355,7 +1358,11 @@ function App() {
       zoomLevel,
       fitMode,
       panelPos,
-      panelVisible
+      panelVisible,
+      wholeWord,
+      searchScopePage,
+      searchScopeSection,
+      searchSubjects
     };
     if (isDebugScrollingPersistence()) console.log('[scroll-persist] SAVE zoom to localStorage:', { zoomLevel, fitMode });
     const raw = JSON.stringify(prefs);
@@ -1376,7 +1383,11 @@ function App() {
     zoomLevel,
     fitMode,
     panelPos,
-    panelVisible
+    panelVisible,
+    wholeWord,
+    searchScopePage,
+    searchScopeSection,
+    searchSubjects
   ]);
 
   // ── Canvas sizing — only fire when the canvas element's pixel dimensions
