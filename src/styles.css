@@ -1687,6 +1687,23 @@ button, input, select {
 /* Scroll container: allow both horizontal and vertical overflow when zooming freely */
 .app-shell[data-fit-mode="none"] .book-stage.scrolling .pdf-scroll-pages {
   overflow: auto !important;
+  touch-action: pan-x pan-y !important;
+}
+/* Allow horizontal panning on all children when zooming freely */
+.app-shell[data-fit-mode="none"] .book-stage.scrolling .pdf-scroll-pages > * {
+  touch-action: pan-x pan-y !important;
+}
+/* Remove max-width clamp so zoomed images can extend beyond viewport */
+.app-shell[data-fit-mode="none"] .book-stage.scrolling .pdf-scroll-pages .page-img {
+  max-width: none !important;
+}
+/* Also fix pagination-mode horizontal scroll for free zoom */
+.app-shell[data-fit-mode="none"] .book-stage.pagination .pdf-single-page {
+  touch-action: pan-x pan-y !important;
+}
+.app-shell[data-fit-mode="none"] .book-stage.pagination .pdf-single-page canvas,
+.app-shell[data-fit-mode="none"] .book-stage.pagination .pdf-single-page .page-img {
+  max-width: none !important;
 }
 
 /* ── QR crop area dashed overlay ───────────────────────── */

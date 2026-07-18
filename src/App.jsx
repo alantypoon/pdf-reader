@@ -61,7 +61,9 @@ function loadPreferences() {
   }
   try {
     const raw = window.localStorage.getItem(PREFERENCES_KEY);
-    return raw ? JSON.parse(raw) : {};
+    const prefs = raw ? JSON.parse(raw) : {};
+    console.log('[prefs-load] raw localStorage:', { key: PREFERENCES_KEY, zoomLevel: prefs.zoomLevel, fitMode: prefs.fitMode, rawLength: raw ? raw.length : 0 });
+    return prefs;
   } catch {
     return {};
   }
@@ -400,8 +402,9 @@ function App() {
   const [redoStack, setRedoStack] = useState([]);
   const [zoomLevel, setZoomLevel] = useState(Number(savedPrefs.zoomLevel || 1));
   const [fitMode, setFitMode] = useState(
-    savedPrefs.fitMode === 'height' ? 'height' : 'width'
+    savedPrefs.fitMode === 'height' ? 'height' : savedPrefs.fitMode === 'none' ? 'none' : 'width'
   );
+  console.log('[zoom-restore] loaded from localStorage:', { zoomLevel: savedPrefs.zoomLevel, fitMode: savedPrefs.fitMode });
   const [renderScaleByLanguage, setRenderScaleByLanguage] = useState({});
   const [pageCounts, setPageCounts] = useState({});
   const [redrawTick, setRedrawTick] = useState(0);
@@ -522,7 +525,8 @@ function App() {
   const panelDocked = true;
 
   const refreshFitForCurrentMode = useCallback(() => {
-    setZoomLevel(1);
+    // Only bump the refresh token — do NOT reset zoom.
+    // The user's zoom level must survive sidebar/fullscreen/window changes.
     setFitRefreshToken((current) => current + 1);
   }, []);
 
@@ -1211,7 +1215,9 @@ function App() {
       displayModeInitializedRef.current = true;
       return;
     }
-    setZoomLevel(1);
+    // Bump fit refresh so the new mode re-measures viewport dimensions.
+    // Do NOT reset zoom — the user's zoom level persists across mode switches.
+    setFitRefreshToken((t) => t + 1);
   }, [displayMode]);
 
   useEffect(() => {
@@ -1297,6 +1303,7 @@ function App() {
       panelPos,
       panelVisible
     };
+    console.log('[zoom-save] writing to localStorage:', { zoomLevel, fitMode });
     window.localStorage.setItem(PREFERENCES_KEY, JSON.stringify(prefs));
   }, [
     displayMode,
@@ -1710,7 +1717,13 @@ function App() {
 
   // Close annotation tools when entering thumbnails mode
   // Default zoom to 25% for thumbnails, restore to 100% when leaving
+  const thumbModeInitializedRef = useRef(false);
   useEffect(() => {
+    // Skip the initial mount — do NOT clamp the restored zoom from localStorage.
+    if (!thumbModeInitializedRef.current) {
+      thumbModeInitializedRef.current = true;
+      return;
+    }
     if (displayMode === 'thumbnails') {
       setTool('hand');
       setZoomLevel((prev) => {
@@ -1941,7 +1954,9 @@ function App() {
     setFitMode('none'); // release fit-width / fit-height so zoom works standalone
     setZoomLevel((current) => {
       const next = current + delta;
-      return Math.min(5, Math.max(0.1, Number(next.toFixed(2))));
+      const clamped = Math.min(5, Math.max(0.1, Number(next.toFixed(2))));
+      console.log('[zoom-change]', { delta, from: current, to: clamped, fitMode: 'none' });
+      return clamped;
     });
   };
 
@@ -5420,7 +5435,7 @@ function App() {
               <PdfPane
                 key={language}
                 paneLanguage={language}
-                source={isImages ? '' : (src || '')}
+                source={isImages ? `img:${selectedBook}:${selectedChapter}:${selectedFile}:${language}` : (src || '')}
                 images={isImages ? src : null}
                 title={`${getSubjectLabel(selectedBook, language)} · ${currentBookHeaderName}`}
                 section={`${currentSectionHeaderId} - ${getSectionHeaderNameForLang(language)}`}

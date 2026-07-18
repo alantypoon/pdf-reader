@@ -1,9 +1,40 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.js?url';
 import { t, uiLang } from './i18n';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
+
+// ── Scroll position persistence ───────────────────────────
+const SCROLL_POS_KEY = 'pdfReaderScrollPositions';
+
+function loadAllScrollPositions() {
+  try {
+    const raw = localStorage.getItem(SCROLL_POS_KEY);
+    const all = raw ? JSON.parse(raw) : {};
+    const keys = Object.keys(all);
+    console.log('[scroll-storage] loadAllScrollPositions:', { keyCount: keys.length, keys, rawLength: raw ? raw.length : 0 });
+    return all;
+  } catch { return {}; }
+}
+
+function saveScrollPosition(source, scrollLeft, scrollTop, scrollHeight, scrollWidth) {
+  if (!source) return;
+  try {
+    const all = loadAllScrollPositions();
+    all[source] = { scrollLeft, scrollTop, scrollHeight, scrollWidth, ts: Date.now() };
+    localStorage.setItem(SCROLL_POS_KEY, JSON.stringify(all));
+    console.log('[scroll-storage] saveScrollPosition DONE:', { source, scrollLeft, scrollTop, scrollHeight, scrollWidth });
+  } catch { /* quota exceeded, ignore */ }
+}
+
+function getScrollPosition(source) {
+  if (!source) return null;
+  const all = loadAllScrollPositions();
+  const entry = all[source] || null;
+  console.log('[scroll-storage] getScrollPosition:', { source, found: !!entry, entry });
+  return entry;
+}
 
 // Safari/WebKit max canvas area is 16,777,216 px (e.g. 4096×4096)
 const MAX_CANVAS_AREA = 16777216;
@@ -271,6 +302,7 @@ function PdfPane({
   const renderedPageRef = useRef(1);
   const syncingFromRemoteRef = useRef(false);
   const modeGenRef = useRef(0);
+  const scrollRestoredRef = useRef(false);
 
   // Keep the refs in sync so the scrolling effect always sees the latest page
   useEffect(() => {
@@ -497,11 +529,21 @@ function PdfPane({
       if (modeGenRef.current !== gen) return;
       const holder = canvasRef.current?.parentElement;
       if (!holder) return;
-      // Capture scroll position before canvas resize changes scrollHeight
-      const oldScrollTop = holder.scrollTop;
-      const oldScrollLeft = holder.scrollLeft;
-      const oldScrollHeight = Math.max(1, holder.scrollHeight);
-      const oldScrollWidth = Math.max(1, holder.scrollWidth);
+      // Capture scroll position before canvas resize changes scrollHeight.
+      // On initial load (holder at 0,0) try localStorage first so the user
+      // lands where they left off after a page reload.
+      const stored = getScrollPosition(source);
+      const useStored = stored && holder.scrollTop === 0 && holder.scrollLeft === 0;
+      console.log('[scroll-restore:pdf-pagination]', { source, hasStored: !!stored, holderScrollTop: holder.scrollTop, holderScrollLeft: holder.scrollLeft, useStored, stored });
+      if (useStored) scrollRestoredRef.current = true;
+      const oldScrollTop = useStored ? stored.scrollTop : holder.scrollTop;
+      const oldScrollLeft = useStored ? stored.scrollLeft : holder.scrollLeft;
+      const oldScrollHeight = useStored
+        ? Math.max(1, stored.scrollHeight || 0)
+        : Math.max(1, holder.scrollHeight);
+      const oldScrollWidth = useStored
+        ? Math.max(1, stored.scrollWidth || 0)
+        : Math.max(1, holder.scrollWidth);
       const sidebarWidth = Math.max(0, document.querySelector('.sidebar')?.getBoundingClientRect().width || 0);
       const toolbarHeight = Math.max(0, document.querySelector('.annotation-panel')?.getBoundingClientRect().height || 0);
       const viewportWidthCap = Math.max(180, window.innerWidth - sidebarWidth);
@@ -686,9 +728,27 @@ function PdfPane({
     if (!isImageMode || mode !== 'pagination') return;
     const container = imgRef.current?.closest('.pdf-single-page');
     if (!container) return;
-    const { top, left, height, width } = imgPaginationScrollRef.current;
+    let { top, left, height, width } = imgPaginationScrollRef.current;
+
+    // On initial load (height=0 in ref), try localStorage first
+    if (height === 0) {
+      const stored = getScrollPosition(source);
+      console.log('[scroll-restore:img-pagination]', { source, hasStored: !!stored, stored });
+      if (stored && stored.scrollTop > 0) {
+        top = stored.scrollTop;
+        left = stored.scrollLeft || 0;
+        height = Math.max(1, stored.scrollHeight || 0);
+        width = Math.max(1, stored.scrollWidth || 0);
+        scrollRestoredRef.current = true;
+      }
+    }
+
     if ((height > 0 && height !== container.scrollHeight) || (width > 0 && width !== container.scrollWidth)) {
       container.scrollTo(centerAnchoredScroll(container, top, height, 'both', left, width));
+    } else if (height === 0 && top > 0) {
+      // Initial load with stored position but same dimensions — apply directly
+      container.scrollTop = top;
+      container.scrollLeft = left;
     }
     imgPaginationScrollRef.current = {
       top: container.scrollTop,
@@ -826,10 +886,22 @@ function PdfPane({
       }
 
       if (disposed || modeGenRef.current !== gen) return;
-      const savedScrollTop = mount.scrollTop;
-      const savedScrollLeft = mount.scrollLeft;
-      const savedScrollHeight = Math.max(1, mount.scrollHeight);
-      const savedScrollWidth = Math.max(1, mount.scrollWidth);
+
+      // Restore saved scroll position from localStorage on initial load
+      // (when the mount is still empty / at the top), otherwise preserve
+      // the current live scroll position for center-anchored zoom etc.
+      const stored = getScrollPosition(source);
+      const useStored = stored && mount.scrollTop === 0 && mount.scrollLeft === 0;
+      console.log('[scroll-restore:pdf-scrolling]', { source, hasStored: !!stored, mountScrollTop: mount.scrollTop, mountScrollLeft: mount.scrollLeft, useStored, stored });
+      if (useStored) scrollRestoredRef.current = true;
+      const savedScrollTop = useStored ? stored.scrollTop : mount.scrollTop;
+      const savedScrollLeft = useStored ? stored.scrollLeft : mount.scrollLeft;
+      const savedScrollHeight = useStored
+        ? Math.max(1, stored.scrollHeight || 0)
+        : Math.max(1, mount.scrollHeight);
+      const savedScrollWidth = useStored
+        ? Math.max(1, stored.scrollWidth || 0)
+        : Math.max(1, mount.scrollWidth);
 
       mount.innerHTML = '';
       mount.appendChild(fragment);
@@ -953,9 +1025,14 @@ function PdfPane({
     if (mode !== 'scrolling') return;
     const mount = scrollRef.current;
     if (!mount || !mount.children.length) return;
-    // Skip if the page change was triggered by our own scroll sync
+    // Skip if the page change was triggered by our own scroll sync,
+    // or if we just restored a saved scroll position from localStorage.
     if (lastScrolledFromSyncRef.current) {
       lastScrolledFromSyncRef.current = false;
+      return;
+    }
+    if (scrollRestoredRef.current) {
+      scrollRestoredRef.current = false;
       return;
     }
     const target = mount.querySelector(`[data-page="${currentPage}"]`);
@@ -963,6 +1040,87 @@ function PdfPane({
       mount.scrollTo({ top: target.offsetTop, behavior: 'instant' });
     }
   }, [mode, currentPage]);
+
+  // ── Helper: resolve the active scroll container ──────────
+  const getScrollContainer = useCallback(() => {
+    if (mode === 'scrolling') return scrollRef.current;
+    return canvasRef.current?.parentElement
+      || imgRef.current?.closest('.pdf-single-page')
+      || null;
+  }, [mode]);
+
+  // ── Save scroll position to localStorage on scroll (debounced) ──
+  const saveContainerRef = useRef(null);
+  useEffect(() => {
+    if (!source) return;
+
+    let saveTimer = null;
+    let attachRetries = 0;
+    const MAX_ATTACH_RETRIES = 20; // 20 × 200ms = 4 s
+
+    const onScroll = () => {
+      console.log('[scroll-save] scroll event FIRED (debouncing 500ms)');
+      if (saveTimer) clearTimeout(saveTimer);
+      saveTimer = setTimeout(() => {
+        const container = saveContainerRef.current;
+        if (!container) return;
+        console.log('[scroll-save] saving to localStorage:', { source, scrollLeft: container.scrollLeft, scrollTop: container.scrollTop, scrollHeight: container.scrollHeight, scrollWidth: container.scrollWidth });
+        saveScrollPosition(source, container.scrollLeft, container.scrollTop, container.scrollHeight, container.scrollWidth);
+      }, 500);
+    };
+
+    // Save immediately on page unload / tab hide so the latest position is never lost.
+    // pagehide fires reliably across all browsers (unlike beforeunload which may
+    // be skipped on Chrome desktop during certain navigation patterns).
+    const doSaveNow = () => {
+      const container = saveContainerRef.current;
+      if (!container || !source) return;
+      saveScrollPosition(source, container.scrollLeft, container.scrollTop, container.scrollHeight, container.scrollWidth);
+    };
+    const onVisibilityHidden = () => {
+      if (document.visibilityState === 'hidden') doSaveNow();
+    };
+    window.addEventListener('pagehide', doSaveNow);
+    window.addEventListener('visibilitychange', onVisibilityHidden);
+
+    const tryAttach = () => {
+      const container = getScrollContainer();
+      if (container && container.scrollHeight > 0) {
+        saveContainerRef.current = container;
+        container.addEventListener('scroll', onScroll, { passive: true });
+        console.log('[scroll-save] listener ATTACHED to container:', { source, mode, scrollHeight: container.scrollHeight, scrollWidth: container.scrollWidth });
+        return true;
+      }
+      console.log('[scroll-save] tryAttach FAILED (container not ready):', { hasContainer: !!container, scrollHeight: container ? container.scrollHeight : 'N/A', mode, source });
+      return false;
+    };
+
+    // Try immediately; if the container isn't ready yet, retry.
+    if (!tryAttach()) {
+      const interval = setInterval(() => {
+        attachRetries++;
+        if (tryAttach() || attachRetries >= MAX_ATTACH_RETRIES) {
+          clearInterval(interval);
+        }
+      }, 200);
+      return () => {
+        clearInterval(interval);
+        if (saveTimer) clearTimeout(saveTimer);
+        window.removeEventListener('pagehide', doSaveNow);
+        window.removeEventListener('visibilitychange', onVisibilityHidden);
+        const c = saveContainerRef.current;
+        if (c) { c.removeEventListener('scroll', onScroll); saveContainerRef.current = null; }
+      };
+    }
+
+    return () => {
+      if (saveTimer) clearTimeout(saveTimer);
+      window.removeEventListener('pagehide', doSaveNow);
+      window.removeEventListener('visibilitychange', onVisibilityHidden);
+      const c = saveContainerRef.current;
+      if (c) { c.removeEventListener('scroll', onScroll); saveContainerRef.current = null; }
+    };
+  }, [source, mode, pdfDoc, images, getScrollContainer]);
 
   useEffect(() => {
     if (!syncGroup || mode !== 'scrolling') return;
@@ -1260,10 +1418,41 @@ function PdfPane({
       setTimeout(report, 0);
     }
 
-    // After the current-page image loads (or is already cached), scroll into position
+    // After the current-page image loads (or is already cached), scroll into position.
+    // On initial load, restore saved scroll position from localStorage instead.
     const scheduleScrollToCurrent = () => {
       const currentImg = imgElements[currentPage - 1];
       if (!currentImg || disposed) return;
+
+      const storedPos = getScrollPosition(source);
+      console.log('[scroll-restore:img-scrolling]', { source, hasStored: !!storedPos, storedPos });
+      if (storedPos && storedPos.scrollTop > 0) {
+        scrollRestoredRef.current = true;
+        mount.scrollTop = storedPos.scrollTop;
+        mount.scrollLeft = storedPos.scrollLeft || 0;
+
+        // Re-restore after all images finish loading, since image load
+        // events may trigger bilingual layout recalculations that shift
+        // the scroll position.
+        const allImgs = [...mount.querySelectorAll('img.page-img')];
+        const pending = allImgs.filter((img) => !img.complete || img.naturalHeight === 0);
+        if (pending.length > 0) {
+          let loaded = 0;
+          const onAnyLoaded = () => {
+            loaded++;
+            if (loaded >= pending.length) {
+              mount.scrollTop = storedPos.scrollTop;
+              mount.scrollLeft = storedPos.scrollLeft || 0;
+            }
+          };
+          pending.forEach((img) => {
+            img.addEventListener('load', onAnyLoaded, { once: true });
+            img.addEventListener('error', onAnyLoaded, { once: true });
+          });
+        }
+        return;
+      }
+
       if (currentImg.complete && currentImg.naturalHeight > 0) {
         scrollToPage(currentPage);
         return;
