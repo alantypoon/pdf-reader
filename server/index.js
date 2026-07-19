@@ -629,17 +629,27 @@ app.get('/api/page', asyncRoute(async (request, response) => {
     const files = await fs.readdir(pagesDir);
     const prefix = `${String(page)}-`;
     console.log(`[page] ${files.length} files in pages/, looking for prefix "${prefix}"`);
-    const images = files
+    const matched = files
       .filter((f) => f.startsWith(prefix) && /\.(png|jpg|jpeg|webp)$/i.test(f))
       .sort((a, b) => {
         const an = parseInt(a.slice(prefix.length).split('.')[0], 10) || 0;
         const bn = parseInt(b.slice(prefix.length).split('.')[0], 10) || 0;
         return an - bn;
-      })
-      .map((f) => `/pdf-reader/data/${requestedBook}/${chapter}/${language}/contents/pages/${f}`);
+      });
 
-    if (images.length > 0) {
-      console.log(`[page] → returning ${images.length} images (first: ${images[0]})`);
+    if (matched.length > 0) {
+      // Read image dimensions so the client can reserve correct space
+      // before images load — scroll restoration works instantly.
+      const images = await Promise.all(matched.map(async (f) => {
+        const url = `/pdf-reader/data/${requestedBook}/${chapter}/${language}/contents/pages/${f}`;
+        try {
+          const meta = await sharp(path.join(pagesDir, f)).metadata();
+          return { url, w: meta.width, h: meta.height };
+        } catch {
+          return { url };  // fallback if sharp can't read dimensions
+        }
+      }));
+      console.log(`[page] → returning ${images.length} images (first: ${images[0]?.url})`);
       response.json({ images });
       return;
     }

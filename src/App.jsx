@@ -25,8 +25,8 @@ const COLOR_TOOLS = new Set(['pen', 'highlight', 'text']);
 // 1 = show click-position tooltip + console logs
 // 2 = also copy crop image data URL to clipboard
 // 3 = also trigger a Save-As file download
-const DEBUG_QRCODE_CAPTURE = 0;
-// const DEBUG_QRCODE_CAPTURE = 2;
+// const DEBUG_QRCODE_CAPTURE = 0;
+const DEBUG_QRCODE_CAPTURE = 2;
 
 /** Return an ISO-8601 timestamp in Hong Kong time (UTC+8) */
 function hkNow() {
@@ -3659,6 +3659,29 @@ function App() {
     // Don't scan if clicking on a UI element
     if (event.target.closest('button, input, textarea, select, .annotation-textarea')) return;
 
+    // ── Check contents.json qrcodes lookup (instant, no image processing) ──
+    // qrcodes is an object { page: url } at either section level or language level:
+    //   section.en.qrcodes = { "1": "https://...", "8": "https://..." }
+    //   section.qrcodes     = { "1": "https://...", "7": "https://..." }
+    if (currentSection) {
+      // Determine which page was clicked
+      const pageImgEl = document.elementsFromPoint(event.clientX, event.clientY)
+        .find(el => el.tagName === 'IMG' && el.classList.contains('page-img'));
+      let clickedPage = selectedPage;
+      if (pageImgEl && pageImgEl.hasAttribute('data-page')) {
+        clickedPage = Number(pageImgEl.getAttribute('data-page')) || selectedPage;
+      }
+
+      const pageId = String(clickedPage);
+
+      const qrObj = findQrCodeUrl(currentSection, pageId);
+      if (qrObj) {
+        if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] ✅ Matched section qrcodes entry:', qrObj);
+        processQrValue(qrObj.url);
+        return;
+      }
+    }
+
     // Find the page image at the click position
     const pageImg = document.elementsFromPoint(event.clientX, event.clientY)
       .find(el => el.tagName === 'IMG' && el.classList.contains('page-img'));
@@ -3959,6 +3982,28 @@ function App() {
     } else {
       if (DEBUG_QRCODE_CAPTURE >= 1) console.log('[QR] All strategies failed: no QR found');
     }
+  };
+
+  /** Look up a QR code URL from a section's qrcodes object.
+   *  Format: { "pageNumber": "url", ... }
+   *  Checked at both section level (section.qrcodes) and language level (section.en.qrcodes). */
+  const findQrCodeUrl = (section, pageId) => {
+    if (!section || !pageId) return null;
+
+    // Collect qrcodes objects from both section-level and per-language entries
+    const sources = [section.qrcodes];
+    for (const lang of ['en', 'tc']) {
+      if (section[lang]?.qrcodes) sources.push(section[lang].qrcodes);
+    }
+
+    for (const qrcodes of sources) {
+      if (!qrcodes || typeof qrcodes !== 'object') continue;
+      const url = qrcodes[pageId];
+      if (typeof url === 'string' && url.trim()) {
+        return { page: pageId, url: url.trim(), source: qrcodes };
+      }
+    }
+    return null;
   };
 
   /** Validate QR value as http(s) URL and route it appropriately */
@@ -5908,7 +5953,111 @@ function App() {
             </div>
           ) : (
             <>
-            {visibleLanguages.map((language, idx) => {
+            {/* ── Bilingual landscape: floating header pill at top-right ── */}
+            {isBilingualView && !isPortrait && (
+              <header className="page-card-header bilingual-float-header">
+                <strong className="header-book">{selectedChapter} · {selectedFile} · {selectedPage}</strong>
+                <button
+                  className="header-fullscreen-btn"
+                  onClick={() => {
+                    if (document.fullscreenElement) {
+                      document.exitFullscreen?.();
+                    } else {
+                      document.documentElement.requestFullscreen?.();
+                    }
+                  }}
+                  title={document.fullscreenElement ? 'Exit fullscreen' : 'Fullscreen'}
+                  aria-label={document.fullscreenElement ? 'Exit fullscreen' : 'Fullscreen'}
+                >
+                  <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                    {document.fullscreenElement ? (
+                      <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z" />
+                    ) : (
+                      <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z" />
+                    )}
+                  </svg>
+                </button>
+              </header>
+            )}
+
+            {/* ── Bilingual portrait: header bar between EN (top) and TC (bottom) ── */}
+            {isBilingualView && isPortrait ? (
+              <>
+                {visibleLanguages.filter(l => l === 'en').map((language) => {
+                  const src = pageSources[language];
+                  const isImages = Array.isArray(src);
+                  return (
+                    <PdfPane key={language} paneLanguage={language}
+                      source={isImages ? `img:${selectedBook}:${selectedChapter}:${selectedFile}:${language}` : (src || '')}
+                      images={isImages ? src : null}
+                      title={`${selectedChapter} · ${selectedFile} · ${selectedPage}`}
+                      section={null} hideHeader={true}
+                      mode={displayMode} currentPage={selectedPage}
+                      onPageChange={setSelectedPage}
+                      onPageCountChange={(count) => setPageCounts((current) => ({ ...current, [language]: count }))}
+                      thumbnailsOpen={showThumbnails}
+                      onThumbnailClick={(page) => { setSelectedPage(page); setDisplayMode('pagination'); }}
+                      syncGroup={displayMode === 'scrolling' ? `${selectedChapter}-${selectedFile}-bilingual` : ''}
+                      syncId={language} zoom={zoomLevel} thumbCols={thumbCols}
+                      fitMode={fitMode} fitRefreshToken={fitRefreshToken}
+                      onRenderScaleChange={(scale) => { setRenderScaleByLanguage((current) => { if (current[language] === scale) return current; return { ...current, [language]: scale }; }); }}
+                      onScrollCanvasesReady={() => setRedrawTick((t) => t + 1)}
+                      language={selectedLanguage}
+                      maxPagesInGroup={maxPagesInGroup}
+                    />
+                  );
+                })}
+                <header className="page-card-header bilingual-mid-header">
+                  <strong className="header-book">{selectedChapter} · {selectedFile} · {selectedPage}</strong>
+                  <button
+                    className="header-fullscreen-btn"
+                    onClick={() => {
+                      if (document.fullscreenElement) {
+                        document.exitFullscreen?.();
+                      } else {
+                        document.documentElement.requestFullscreen?.();
+                      }
+                    }}
+                    title={document.fullscreenElement ? 'Exit fullscreen' : 'Fullscreen'}
+                    aria-label={document.fullscreenElement ? 'Exit fullscreen' : 'Fullscreen'}
+                  >
+                    <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                      {document.fullscreenElement ? (
+                        <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z" />
+                      ) : (
+                        <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z" />
+                      )}
+                    </svg>
+                  </button>
+                </header>
+                {visibleLanguages.filter(l => l === 'tc').map((language) => {
+                  const src = pageSources[language];
+                  const isImages = Array.isArray(src);
+                  return (
+                    <PdfPane key={language} paneLanguage={language}
+                      source={isImages ? `img:${selectedBook}:${selectedChapter}:${selectedFile}:${language}` : (src || '')}
+                      images={isImages ? src : null}
+                      title={`${selectedChapter} · ${selectedFile} · ${selectedPage}`}
+                      section={null} hideHeader={true}
+                      mode={displayMode} currentPage={selectedPage}
+                      onPageChange={setSelectedPage}
+                      onPageCountChange={(count) => setPageCounts((current) => ({ ...current, [language]: count }))}
+                      thumbnailsOpen={showThumbnails}
+                      onThumbnailClick={(page) => { setSelectedPage(page); setDisplayMode('pagination'); }}
+                      syncGroup={displayMode === 'scrolling' ? `${selectedChapter}-${selectedFile}-bilingual` : ''}
+                      syncId={language} zoom={zoomLevel} thumbCols={thumbCols}
+                      fitMode={fitMode} fitRefreshToken={fitRefreshToken}
+                      onRenderScaleChange={(scale) => { setRenderScaleByLanguage((current) => { if (current[language] === scale) return current; return { ...current, [language]: scale }; }); }}
+                      onScrollCanvasesReady={() => setRedrawTick((t) => t + 1)}
+                      language={selectedLanguage}
+                      maxPagesInGroup={maxPagesInGroup}
+                    />
+                  );
+                })}
+              </>
+            ) : (
+              /* ── Non-bilingual or bilingual landscape: render all panes normally ── */
+              visibleLanguages.map((language, idx) => {
             const src = pageSources[language];
             const isImages = Array.isArray(src);
             return (
@@ -5919,7 +6068,7 @@ function App() {
                 images={isImages ? src : null}
                 title={`${selectedChapter} · ${selectedFile} · ${selectedPage}`}
                 section={null}
-                hideHeader={isBilingualView && idx === (isPortrait ? 1 : 0)}
+                hideHeader={isBilingualView}
                 mode={displayMode}
                 currentPage={selectedPage}
                 onPageChange={setSelectedPage}
@@ -5948,7 +6097,8 @@ function App() {
                 maxPagesInGroup={isBilingualView ? maxPagesInGroup : 0}
               />
             );
-          })}
+          })
+          )}
           {textInputState && (
             <textarea
               ref={textInputRef}

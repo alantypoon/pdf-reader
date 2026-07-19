@@ -1162,8 +1162,8 @@ button, input, select {
 .page-card-header {
   position: absolute;
   left: auto;
-  right: 8px;
-  top: 8px;
+  /* right: 8px;
+  top: 8px; */
   z-index: 3;
   display: flex;
   align-items: center;
@@ -1175,6 +1175,84 @@ button, input, select {
   backdrop-filter: blur(10px);
   font-size: 0.8rem;
   max-width: calc(100% - 16px);
+}
+
+/* ── Bilingual landscape: floating pill at top-right corner ── */
+.bilingual-float-header {
+  position: absolute;
+  left: auto;
+  right: 8px;
+  top: 8px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.74);
+  backdrop-filter: blur(10px);
+  font-size: 0.8rem;
+  max-width: calc(100% - 16px);
+}
+
+.bilingual-float-header .header-book {
+  color: #1f4d6c;
+  white-space: nowrap;
+}
+
+.bilingual-float-header .header-fullscreen-btn {
+  color: #5d7184;
+  flex: 0 0 auto;
+}
+
+.bilingual-float-header .header-fullscreen-btn:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+/* ── Bilingual portrait: full-width bar between EN and TC pages ── */
+.bilingual-mid-header {
+  position: relative;
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 0;
+  max-width: 100%;
+  background: rgba(26, 58, 74, 0.92);
+  backdrop-filter: blur(12px);
+  color: #e6f0f5;
+  font-size: 0.82rem;
+  flex: 0 0 auto;
+}
+
+.bilingual-mid-header .header-book {
+  color: #ffffff;
+  margin-left: auto;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.bilingual-mid-header .header-fullscreen-btn {
+  color: #c8dbe5;
+  flex: 0 0 auto;
+}
+
+.bilingual-mid-header .header-fullscreen-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #ffffff;
+}
+
+/* Hide any legacy header still inside a page-card in bilingual mode */
+.book-stage.bilingual-layout .page-card .page-card-header {
+  display: none;
+}
+
+/* In bilingual mode, page cards should not have excessive min-height */
+.book-stage.bilingual-layout > .page-card {
+  min-height: 0;
 }
 
 .header-book {
@@ -2946,6 +3024,12 @@ button, input, select {
 
   .book-stage.bilingual-layout {
     grid-template-columns: 1fr;
+    /* gap: 6px; */
+  }
+
+  /* Give the lower TC pane some breathing room from the mid header */
+  .book-stage.bilingual-layout > .pdf-pane[data-annotation-language="tc"] {
+    /* padding-top: 4px; */
   }
 
   .section-resources {

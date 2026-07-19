@@ -340,10 +340,55 @@ async function ensureZxingReady() {
 
 /**
  * Strategy A: jsQR with Otsu binarization + auto pre-upscale for small images.
+ * Handles colored QR codes by extracting the best channel when needed.
  * Returns { data, location } or null.
  */
 async function detectWithJsQR(inputPath, meta) {
   const { width, height } = meta;
+
+  // Check if image has a strong color cast — if so, pre-extract the
+  // best channel to avoid luminance dilution in jsQR's threshold passes.
+  let preprocessPipeline = null; // null = use raw RGBA
+  try {
+    const stats = await sharp(inputPath).stats();
+    let bestCh = -1, bestRange = 0, lumMin = 255, lumMax = 0;
+    for (let c = 0; c < 3; c++) {
+      const ch = stats.channels[c];
+      const range = ch.max - ch.min;
+      if (range > bestRange) { bestRange = range; bestCh = c; }
+    }
+    // Compute approximate luminance range
+    const rng = stats.channels;
+    lumMin = Math.round(rng[0].mean * 0.299 + rng[1].mean * 0.587 + rng[2].mean * 0.114);
+    lumMax = lumMin; // rough — actual per-pixel luminance varies
+    // If a single channel has MUCH more range than expected from luminance,
+    // the QR is likely colored — extract that channel.
+    if (bestRange > 150 && bestCh >= 0) {
+      const chName = ['R', 'G', 'B'][bestCh];
+      console.log(`[qr-cli] jsQR: colored QR detected, using ${chName} channel (range=${bestRange})`);
+      preprocessPipeline = async (sw, sh) => {
+        const buf = await sharp(inputPath)
+          .ensureAlpha()
+          .extractChannel(bestCh)
+          .resize(sw, sh, { kernel: 'nearest', fit: 'fill' })
+          .raw()
+          .toBuffer();
+        // Convert single-channel grayscale to RGBA for jsQR
+        const rgba = new Uint8ClampedArray(sw * sh * 4);
+        for (let i = 0; i < sw * sh; i++) {
+          const v = buf[i];
+          const off = i * 4;
+          rgba[off] = v;
+          rgba[off + 1] = v;
+          rgba[off + 2] = v;
+          rgba[off + 3] = 255;
+        }
+        return { data: rgba, info: { width: sw, height: sh, channels: 4 } };
+      };
+    }
+  } catch {
+    // stats unavailable, proceed without channel adjustment
+  }
 
   const baseScale = width < MIN_DIM || height < MIN_DIM
     ? Math.ceil(Math.max(MIN_DIM / width, MIN_DIM / height))
@@ -389,25 +434,37 @@ async function detectWithJsQR(inputPath, meta) {
   for (const scale of scales) {
     const sw = Math.round(width * scale);
     const sh = Math.round(height * scale);
-    const { data: scaledRaw } = scale === 1
-      ? await sharp(inputPath).ensureAlpha().raw().toBuffer({ resolveWithObject: true })
-      : await sharp(inputPath)
-          .ensureAlpha()
-          .resize(sw, sh, { kernel: 'nearest', fit: 'fill' })
-          .raw()
-          .toBuffer({ resolveWithObject: true });
+
+    let scaledRaw, swActual, shActual;
+    if (preprocessPipeline) {
+      const result = await preprocessPipeline(sw, sh);
+      scaledRaw = result.data;
+      swActual = result.info.width;
+      shActual = result.info.height;
+    } else {
+      swActual = sw;
+      shActual = sh;
+      const result = scale === 1
+        ? await sharp(inputPath).ensureAlpha().raw().toBuffer({ resolveWithObject: true })
+        : await sharp(inputPath)
+            .ensureAlpha()
+            .resize(sw, sh, { kernel: 'nearest', fit: 'fill' })
+            .raw()
+            .toBuffer({ resolveWithObject: true });
+      scaledRaw = result.data;
+    }
 
     if (scale !== 1) {
       console.log(`[qr-cli] jsQR: trying ${scale}× upscale for detection...`);
     }
 
-    let qr = runVariants(scaledRaw, sw, sh, `${sw}×${sh}`);
+    let qr = runVariants(scaledRaw, swActual, shActual, `${swActual}×${shActual}`);
     if (!qr) {
-      const crop = findDenseForegroundCrop(scaledRaw, sw, sh);
+      const crop = findDenseForegroundCrop(scaledRaw, swActual, shActual);
       if (crop) {
-        console.log(`[qr-cli] jsQR ${sw}×${sh}: trying dense crop ${crop.width}×${crop.height} at (${crop.left},${crop.top})`);
-        const croppedRaw = extractRawCrop(scaledRaw, sw, sh, crop);
-        qr = runVariants(croppedRaw, crop.width, crop.height, `${sw}×${sh} crop`);
+        console.log(`[qr-cli] jsQR ${swActual}×${shActual}: trying dense crop ${crop.width}×${crop.height} at (${crop.left},${crop.top})`);
+        const croppedRaw = extractRawCrop(scaledRaw, swActual, shActual, crop);
+        qr = runVariants(croppedRaw, crop.width, crop.height, `${swActual}×${shActual} crop`);
         if (qr) {
           return translateQrLocation(qr, crop.left, crop.top, scale);
         }
@@ -415,11 +472,11 @@ async function detectWithJsQR(inputPath, meta) {
     }
 
     if (!qr) {
-      const crop = findRedSquareCrop(scaledRaw, sw, sh);
+      const crop = findRedSquareCrop(scaledRaw, swActual, shActual);
       if (crop) {
-        console.log(`[qr-cli] jsQR ${sw}×${sh}: trying red square crop ${crop.width}×${crop.height} at (${crop.left},${crop.top})`);
-        const croppedRaw = extractRawCrop(scaledRaw, sw, sh, crop);
-        qr = runVariants(croppedRaw, crop.width, crop.height, `${sw}×${sh} red-crop`);
+        console.log(`[qr-cli] jsQR ${swActual}×${shActual}: trying red square crop ${crop.width}×${crop.height} at (${crop.left},${crop.top})`);
+        const croppedRaw = extractRawCrop(scaledRaw, swActual, shActual, crop);
+        qr = runVariants(croppedRaw, crop.width, crop.height, `${swActual}×${shActual} red-crop`);
         if (qr) {
           return translateQrLocation(qr, crop.left, crop.top, scale);
         }
@@ -435,77 +492,287 @@ async function detectWithJsQR(inputPath, meta) {
   return null;
 }
 
+/**
+ * ZXing detection pass. Tries the original image bytes first, then falls back
+ * to color-channel-extracted grayscale variants for colored QR codes.
+ */
 async function detectWithZxing(inputPath, meta) {
   await ensureZxingReady();
-  const inputBytes = await readFile(inputPath);
-  const results = await readBarcodes(inputBytes, {
-    formats: ['QRCode'],
-    tryHarder: true,
-    tryRotate: true,
-    tryInvert: true,
-    tryDownscale: true,
-    tryDenoise: true,
-    maxNumberOfSymbols: 1,
-  });
 
-  const result = results.find(entry => entry?.isValid && entry?.text);
-  if (!result) {
-    console.log(`[qr-cli] ZXing (${meta.width}×${meta.height}): not found`);
-    return null;
+  // Helper: run ZXing on raw bytes
+  const tryZxingBytes = async (bytes, label) => {
+    const results = await readBarcodes(bytes, {
+      formats: ['QRCode'],
+      tryHarder: true,
+      tryRotate: true,
+      tryInvert: true,
+      tryDownscale: true,
+      tryDenoise: true,
+      maxNumberOfSymbols: 1,
+    });
+    const result = results.find(entry => entry?.isValid && entry?.text);
+    if (result) {
+      console.log(`[qr-cli] ZXing ${label}: ✅ found`);
+    }
+    return result || null;
+  };
+
+  // 1. Try original image bytes
+  const inputBytes = await readFile(inputPath);
+  let result = await tryZxingBytes(inputBytes, `(${meta.width}×${meta.height})`);
+  if (result) {
+    return {
+      data: result.text,
+      location: positionToLocation(result.position),
+      bbox: result.position
+        ? cornersToBBox([
+            result.position.topLeft,
+            result.position.topRight,
+            result.position.bottomRight,
+            result.position.bottomLeft,
+          ], meta.width, meta.height)
+        : null,
+    };
   }
 
-  console.log('[qr-cli] ZXing: ✅ found');
-  return {
-    data: result.text,
-    location: positionToLocation(result.position),
-    bbox: result.position
-      ? cornersToBBox([
-          result.position.topLeft,
-          result.position.topRight,
-          result.position.bottomRight,
-          result.position.bottomLeft,
-        ], meta.width, meta.height)
-      : null,
-  };
+  // 2. If original fails, check if the image has a strong color cast and
+  //    try grayscale variants extracted from the best channel.
+  const stats = await sharp(inputPath).stats().catch(() => null);
+  const hasColorCast = stats && stats.channels.some((ch, i) => {
+    if (i >= 3) return false;
+    const range = ch.max - ch.min;
+    return range > 60; // non-trivial contrast in this channel
+  });
+
+  if (hasColorCast) {
+    // Find the channel with the best contrast (highest range)
+    let bestCh = 0;
+    let bestRange = 0;
+    for (let c = 0; c < 3; c++) {
+      const range = stats.channels[c].max - stats.channels[c].min;
+      if (range > bestRange) { bestRange = range; bestCh = c; }
+    }
+
+    // Try extracting the best channel as grayscale PNG and passing to ZXing
+    const chPng = await sharp(inputPath)
+      .ensureAlpha()
+      .extractChannel(bestCh)
+      .png()
+      .toBuffer();
+    result = await tryZxingBytes(chPng, `(ch${bestCh} grayscale)`);
+    if (result) {
+      return {
+        data: result.text,
+        location: null, // coords don't map back to original color image
+        bbox: null,
+      };
+    }
+
+    // Try with upscale if image is small (ZXing works better with larger images)
+    if (meta.width < 200 || meta.height < 200) {
+      const upScale = Math.ceil(Math.max(200 / meta.width, 200 / meta.height));
+      const upPng = await sharp(inputPath)
+        .ensureAlpha()
+        .extractChannel(bestCh)
+        .resize(Math.round(meta.width * upScale), Math.round(meta.height * upScale), {
+          kernel: 'nearest', fit: 'fill',
+        })
+        .png()
+        .toBuffer();
+      result = await tryZxingBytes(upPng, `(ch${bestCh} ${upScale}× upscale)`);
+      if (result) {
+        return {
+          data: result.text,
+          location: null,
+          bbox: null,
+        };
+      }
+    }
+
+    // Try with threshold binarization
+    const threshPng = await sharp(inputPath)
+      .ensureAlpha()
+      .extractChannel(bestCh)
+      .threshold(128)
+      .png()
+      .toBuffer();
+    result = await tryZxingBytes(threshPng, `(ch${bestCh} threshold)`);
+    if (result) {
+      return {
+        data: result.text,
+        location: null,
+        bbox: null,
+      };
+    }
+
+    // Try negation + threshold (light modules on dark background)
+    const negPng = await sharp(inputPath)
+      .ensureAlpha()
+      .extractChannel(bestCh)
+      .negate()
+      .threshold(128)
+      .png()
+      .toBuffer();
+    result = await tryZxingBytes(negPng, `(ch${bestCh} negate+threshold)`);
+    if (result) {
+      return {
+        data: result.text,
+        location: null,
+        bbox: null,
+      };
+    }
+  }
+
+  console.log(`[qr-cli] ZXing (${meta.width}×${meta.height}): not found`);
+  return null;
 }
 
 /**
  * Strategy B: zbarimg on pre-upscaled image (system tool).
  * zbarimg needs the QR code to be at least ~250px, with smooth edges (lanczos3).
  */
+/**
+ * Find the best single channel for QR binarization by checking per-channel
+ * variance / contrast. Returns the channel index (0=R, 1=G, 2=B) with the
+ * highest inter-quartile range, or -1 if the image is already high-contrast.
+ */
+async function findBestChannel(inputPath) {
+  try {
+    const stats = await sharp(inputPath).stats();
+    let bestChannel = -1;
+    let bestRange = 0;
+    for (let c = 0; c < 3; c++) {
+      const ch = stats.channels[c];
+      const range = ch.max - ch.min;
+      // Prefer channels with high range AND low minimum (true dark areas)
+      const score = range + (255 - ch.min) * 0.3;
+      if (score > bestRange) { bestRange = score; bestChannel = c; }
+    }
+    // Only use channel extraction if the best channel is significantly
+    // better than luminance-based approach (e.g. colored QR codes)
+    return bestChannel;
+  } catch {
+    return -1;
+  }
+}
+
 async function detectWithZbar(inputPath) {
   const meta = await sharp(inputPath).metadata();
   const ZBAR_MIN_DIM = 250;
   let scanPath = inputPath;
   let tmpPath = null;
 
-  if (meta.width < ZBAR_MIN_DIM || meta.height < ZBAR_MIN_DIM) {
+  const needsUpscale = meta.width < ZBAR_MIN_DIM || meta.height < ZBAR_MIN_DIM;
+
+  // Pre-compute best channel for colored QR codes
+  const bestCh = needsUpscale ? await findBestChannel(inputPath) : -1;
+
+  // Build an array of preprocessing pipelines to try
+  const pipelines = [];
+
+  // 1. Standard: flatten + lanczos + threshold (works for black-on-white)
+  if (needsUpscale) {
     const preScale = Math.ceil(Math.max(ZBAR_MIN_DIM / meta.width, ZBAR_MIN_DIM / meta.height));
-    tmpPath = join(tmpdir(), `qr-zbar-${Date.now()}.png`);
-    await sharp(inputPath)
-      .flatten({ background: { r: 255, g: 255, b: 255 } })
-      .resize(Math.round(meta.width * preScale), Math.round(meta.height * preScale), {
-        kernel: 'lanczos3', fit: 'fill',
-      })
-      .threshold(128)
-      .png()
-      .toFile(tmpPath);
-    scanPath = tmpPath;
-    console.log(`[qr-cli] zbarimg: pre-upscaled ${preScale}× (lanczos3+threshold)`);
+    pipelines.push({
+      label: `${preScale}× (lanczos3+threshold)`,
+      build: async () => {
+        const p = join(tmpdir(), `qr-zbar-${Date.now()}.png`);
+        await sharp(inputPath)
+          .flatten({ background: { r: 255, g: 255, b: 255 } })
+          .resize(Math.round(meta.width * preScale), Math.round(meta.height * preScale), {
+            kernel: 'lanczos3', fit: 'fill',
+          })
+          .threshold(128)
+          .png()
+          .toFile(p);
+        return p;
+      },
+    });
   }
 
-  try {
-    const { stdout } = await execFileAsync('zbarimg', ['-q', '--raw', scanPath], { timeout: 10000 });
-    const data = stdout.trim();
-    if (data) {
-      console.log(`[qr-cli] zbarimg: ✅ ${data}`);
-      return { data, location: null };
-    }
-  } catch (err) {
-    if (err.code !== 4) console.warn('[qr-cli] zbarimg error:', err.message);
-  } finally {
-    if (tmpPath) unlink(tmpPath).catch(() => {});
+  // 2. Color-channel extraction + nearest upscale + threshold (for colored QR)
+  if (needsUpscale && bestCh >= 0) {
+    const preScale = Math.ceil(Math.max(ZBAR_MIN_DIM / meta.width, ZBAR_MIN_DIM / meta.height));
+    pipelines.push({
+      label: `${preScale}× (ch${bestCh}+nearest+threshold)`,
+      build: async () => {
+        const p = join(tmpdir(), `qr-zbar-ch-${Date.now()}.png`);
+        await sharp(inputPath)
+          .ensureAlpha()
+          .extractChannel(bestCh)
+          .resize(Math.round(meta.width * preScale), Math.round(meta.height * preScale), {
+            kernel: 'nearest', fit: 'fill',
+          })
+          .threshold(128)
+          .png()
+          .toFile(p);
+        return p;
+      },
+    });
+
+    // 3. Same but with negate (in case modules are light-on-dark)
+    pipelines.push({
+      label: `${preScale}× (ch${bestCh}+nearest+negate+threshold)`,
+      build: async () => {
+        const p = join(tmpdir(), `qr-zbar-ch-neg-${Date.now()}.png`);
+        await sharp(inputPath)
+          .ensureAlpha()
+          .extractChannel(bestCh)
+          .resize(Math.round(meta.width * preScale), Math.round(meta.height * preScale), {
+            kernel: 'nearest', fit: 'fill',
+          })
+          .negate()
+          .threshold(128)
+          .png()
+          .toFile(p);
+        return p;
+      },
+    });
   }
+
+  // 4. Bigger upscale with nearest neighbor (preserves module edges)
+  if (needsUpscale) {
+    const bigScale = Math.ceil(Math.max(400 / meta.width, 400 / meta.height));
+    pipelines.push({
+      label: `${bigScale}× (nearest+threshold)`,
+      build: async () => {
+        const p = join(tmpdir(), `qr-zbar-big-${Date.now()}.png`);
+        await sharp(inputPath)
+          .flatten({ background: { r: 255, g: 255, b: 255 } })
+          .resize(Math.round(meta.width * bigScale), Math.round(meta.height * bigScale), {
+            kernel: 'nearest', fit: 'fill',
+          })
+          .threshold(128)
+          .png()
+          .toFile(p);
+        return p;
+      },
+    });
+  }
+
+  // Try each pipeline
+  for (const { label, build } of pipelines) {
+    const path = await build();
+    console.log(`[qr-cli] zbarimg: ${label}`);
+    try {
+      const { stdout } = await execFileAsync('zbarimg', ['-q', '--raw', path], { timeout: 10000 });
+      const data = stdout.trim();
+      if (data) {
+        console.log(`[qr-cli] zbarimg: ✅ ${data}`);
+        // Clean up other temp files later; return this hit
+        unlink(path).catch(() => {});
+        if (tmpPath && tmpPath !== path) unlink(tmpPath).catch(() => {});
+        return { data, location: null };
+      }
+    } catch (err) {
+      if (err.code !== 4) console.warn('[qr-cli] zbarimg error:', err.message);
+    }
+    // Keep this path for potential reuse
+    if (!tmpPath) tmpPath = path;
+    else unlink(path).catch(() => {});
+  }
+
+  if (tmpPath) unlink(tmpPath).catch(() => {});
   console.log('[qr-cli] zbarimg: not found');
   return null;
 }
@@ -528,12 +795,19 @@ async function detectCropUpscaleQr(inputPath, outputPath) {
     if (zr) zbarData = zr.data;
   }
 
+  // jsQR fallback — powerful multi-pass scan with upscaling, binarization, and threshold sweep
+  let jsqrResult = null;
   if (!qr && !zbarData) {
-    console.error('[qr-cli] ❌ No QR code detected by ZXing or zbarimg.');
+    jsqrResult = await detectWithJsQR(inputPath, meta);
+  }
+
+  if (!qr && !zbarData && !jsqrResult) {
+    console.error('[qr-cli] ❌ No QR code detected by ZXing, zbarimg, or jsQR.');
     process.exit(1);
   }
 
-  const decodedData = qr?.data || zbarData;
+  const decodedData = qr?.data || zbarData || jsqrResult?.data;
+  const location = qr?.location || jsqrResult?.location || null;
   console.log(`[qr-cli] Decoded: ${decodedData}`);
   console.log(`[qr-cli] Detection time: ${(performance.now() - tDetect).toFixed(1)} ms`);
 
