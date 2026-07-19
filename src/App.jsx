@@ -14,6 +14,7 @@ import { t, uiLang } from './i18n';
 import { isDebugScrollingMomentum, isDebugScrollingPersistence, isDebugZooming } from './debug';
 
 const PREFERENCES_KEY = 'pdfReaderPreferences';
+const AI_FONT_SIZE_KEY = 'pdfReaderAiFontSize';
 const DEFAULT_ANNOTATION_COLOR = '#9acd32';
 const ANNOTATION_TOOLS = new Set(['pen', 'highlight', 'text', 'eraser', 'move', 'hand']);
 const COLOR_TOOLS = new Set(['pen', 'highlight', 'text']);
@@ -458,6 +459,19 @@ function App() {
   const [resourcesDrawerOpen, setResourcesDrawerOpen] = useState(false);
   const [aiDrawerOpen, setAiDrawerOpen] = useState(false);
   const [aiDrawerLanguage, setAiDrawerLanguage] = useState('en');
+  const [aiFontSize, setAiFontSize] = useState(() => {
+    if (typeof window === 'undefined') return 16;
+    try {
+      const v = parseInt(window.localStorage.getItem(AI_FONT_SIZE_KEY), 10);
+      if (v >= 10 && v <= 28) return v;
+    } catch { /* ignore */ }
+    return 16;
+  });
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(AI_FONT_SIZE_KEY, String(aiFontSize));
+    }
+  }, [aiFontSize]);
   const [aiContent, setAiContent] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState(null);
@@ -6208,6 +6222,21 @@ function App() {
                     <span>{_('resetAnswers')}</span>
                   </button>
                 )}
+                <div className="ai-font-size-control">
+                  <button
+                    className="ai-font-btn"
+                    onClick={() => setAiFontSize(s => Math.max(10, s - 1))}
+                    title={_('decreaseFontSize')}
+                    aria-label={_('decreaseFontSize')}
+                  >−</button>
+                  <span className="ai-font-size-value">{aiFontSize}</span>
+                  <button
+                    className="ai-font-btn"
+                    onClick={() => setAiFontSize(s => Math.min(28, s + 1))}
+                    title={_('increaseFontSize')}
+                    aria-label={_('increaseFontSize')}
+                  >+</button>
+                </div>
                 <button className="modal-close" onClick={() => setAiDrawerOpen(false)} aria-label={_('close')}>✕</button>
               </div>
             </div>
@@ -6263,7 +6292,7 @@ function App() {
               )}
 
               {aiContent && !aiLoading && (
-                <div className="ai-content">
+                <div className="ai-content" style={{ fontSize: `${aiFontSize}px` }}>
                   {/* Language tabs when both languages are available */}
                   {aiHasBoth && (
                     <div className="ai-lang-tabs">
