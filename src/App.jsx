@@ -1514,13 +1514,22 @@ function App() {
     m.lastTime = now;
 
     if (dt > 0) {
-      m.target.scrollBy({
-        left: m.vx * dt,
-        top: m.vy * dt,
-        behavior: 'auto',
-      });
+      const dx = m.vx * dt;
+      const dy = m.vy * dt;
 
-      const frictionBase = isIOSDevice ? 0.975 : 0.95;
+      // Scroll ALL scroll containers in the stage simultaneously so
+      // bilingual panes stay pixel-perfectly locked — eliminates the
+      // half-page jump caused by pdf-pane-scroll-sync lag.
+      const stage = stageRef.current;
+      if (stage) {
+        stage.querySelectorAll('.pdf-scroll-pages, .pdf-single-page').forEach((el) => {
+          el.scrollBy({ left: dx, top: dy, behavior: 'auto' });
+        });
+      } else {
+        m.target.scrollBy({ left: dx, top: dy, behavior: 'auto' });
+      }
+
+      const frictionBase = isIOSDevice.current ? 0.975 : 0.95;
       const friction = Math.pow(frictionBase, dt / 16.67);
       m.vx *= friction;
       m.vy *= friction;
@@ -1531,7 +1540,7 @@ function App() {
     // Throttled debug log: at most once every 100ms
     if (isDebugScrollingMomentum() && now - momentumDebugLastLogRef.current > 100) {
       momentumDebugLastLogRef.current = now;
-      const frictionBase = isIOSDevice ? 0.975 : 0.95;
+      const frictionBase = isIOSDevice.current ? 0.975 : 0.95;
       const friction = Math.pow(frictionBase, dt / 16.67);
       console.log('[momentum] animate: decelerating', {
         vx: m.vx.toFixed(4),
@@ -1539,7 +1548,7 @@ function App() {
         speed: speed.toFixed(4),
         dt: dt.toFixed(1),
         friction: friction.toFixed(4),
-        iosDevice: isIOSDevice,
+        iosDevice: isIOSDevice.current,
       });
     }
 
@@ -1552,6 +1561,7 @@ function App() {
       m.animating = false;
       m.rafId = null;
       m.target = null;
+      window.__momentumDragging = false;
     }
   }, []);
 
@@ -1563,14 +1573,14 @@ function App() {
     const m = momentumRef.current;
     if (m.rafId) cancelAnimationFrame(m.rafId);
 
-    const speed = Math.sqrt(vx * vx + vy * vy);
     if (isDebugScrollingMomentum()) {
+      const speed = Math.sqrt(vx * vx + vy * vy);
       console.log('[momentum] start: initial velocity', {
         vx: vx.toFixed(4),
         vy: vy.toFixed(4),
         speed: speed.toFixed(4),
         target: m.target?.className || target?.className || 'unknown',
-        iosDevice: isIOSDevice,
+        iosDevice: isIOSDevice.current,
       });
     }
 
@@ -1600,6 +1610,7 @@ function App() {
       cancelAnimationFrame(m.rafId);
       m.rafId = null;
     }
+    window.__momentumDragging = false;
   }, []);
 
   const getScrollTargetForGesture = useCallback((event) => {
@@ -1647,8 +1658,6 @@ function App() {
     if (!stage) return;
 
     const onWheel = (e) => {
-      if (tool === 'hand') return;
-      if (touchScrollingRef.current) return;
       if (Date.now() - lastTouchScrollAtRef.current < 250) return;
       cancelMomentum();
 
@@ -1661,9 +1670,9 @@ function App() {
     return () => stage.removeEventListener('wheel', onWheel);
   }, [getScrollTargetForGesture, cancelMomentum, tool]);
 
-  // In scrolling/pagination mode on touch devices: one finger draws, two fingers scroll.
+  // In scrolling/pagination mode: touch + mouse drag with momentum.
   useEffect(() => {
-    const disabled = (displayMode !== 'scrolling' && displayMode !== 'pagination') || tool === 'hand';
+    const disabled = (displayMode !== 'scrolling' && displayMode !== 'pagination');
     if (isDebugScrollingMomentum()) {
       console.log('[momentum] effect init', {
         displayMode,
@@ -1697,6 +1706,7 @@ function App() {
     let touchActive = false;
     let touchFingerMode = 0;
     let touchScrollTarget = null;
+    let touchPending = false;  // hand-mode touch: activate drag on move
     let pendingRaf = null;
     let accumulatedDeltaX = 0;
     let accumulatedDeltaY = 0;
@@ -1723,7 +1733,16 @@ function App() {
       accumulatedDeltaX = 0;
       accumulatedDeltaY = 0;
       if (dx === 0 && dy === 0) return;
-      touchScrollTarget?.scrollBy({ left: dx, top: dy, behavior: 'auto' });
+      // Scroll ALL scroll containers simultaneously to keep bilingual
+      // panes pixel-locked — prevents pdf-pane-scroll-sync feedback loop.
+      const stage = stageRef.current;
+      if (stage) {
+        stage.querySelectorAll('.pdf-scroll-pages, .pdf-single-page').forEach((el) => {
+          el.scrollBy({ left: dx, top: dy, behavior: 'auto' });
+        });
+      } else {
+        touchScrollTarget?.scrollBy({ left: dx, top: dy, behavior: 'auto' });
+      }
     };
 
     let touchDebugLastLog = 0;
@@ -1753,6 +1772,7 @@ function App() {
         touchFingerMode = 2;
         touchScrollTarget = getScrollTargetForGesture(e);
         touchScrollingRef.current = true;
+        window.__momentumDragging = true;
 
         if (isDebugScrollingMomentum()) {
           console.log('[momentum] touch-start: 2-finger scroll begin', {
@@ -1785,27 +1805,13 @@ function App() {
         }
       } else if (e.touches.length === 1 && tool === 'hand') {
         const touch = e.touches[0];
-        e.preventDefault();
-        lastTouchScrollAtRef.current = Date.now();
+        // Don't preventDefault here — it would kill the synthetic click
+        // event needed for QR scanning.  Drag activates in onTouchMove.
         touchStartX = touch.clientX;
         touchStartY = touch.clientY;
-        accumulatedDeltaX = 0;
-        accumulatedDeltaY = 0;
-        touchActive = true;
-        touchFingerMode = 1;
+        lastTouchScrollAtRef.current = Date.now();
         touchScrollTarget = getScrollTargetForGesture(e);
-        touchScrollingRef.current = true;
-
-        velocityX = 0;
-        velocityY = 0;
-        lastVelocityTime = 0;
-
-        if (isDebugScrollingMomentum()) {
-          console.log('[momentum] touch-start: 1-finger hand scroll begin', {
-            x: touch.clientX.toFixed(1),
-            y: touch.clientY.toFixed(1),
-          });
-        }
+        touchPending = true;  // wait for move to activate drag
       } else {
         touchActive = false;
         touchFingerMode = 0;
@@ -1814,6 +1820,21 @@ function App() {
     };
 
     const onTouchMove = (e) => {
+      // Activate pending hand-mode touch drag on first movement > 3px
+      if (touchPending && e.touches.length === 1) {
+        const dx = e.touches[0].clientX - touchStartX;
+        const dy = e.touches[0].clientY - touchStartY;
+        if (Math.abs(dx) < 3 && Math.abs(dy) < 3) return;
+        e.preventDefault();
+        touchPending = false;
+        touchActive = true;
+        touchFingerMode = 1;
+        touchScrollingRef.current = true;
+        window.__momentumDragging = true;
+        accumulatedDeltaX = 0;
+        accumulatedDeltaY = 0;
+        velocityX = 0; velocityY = 0; lastVelocityTime = 0;
+      }
       if (!touchActive) return;
       if (e.touches.length !== touchFingerMode) {
         if (isDebugScrollingMomentum()) console.log('[momentum] touch-move: touch count changed, deactivating', { touchCount: e.touches.length, expected: touchFingerMode });
@@ -1871,6 +1892,7 @@ function App() {
     };
 
     const onTouchEnd = () => {
+      if (touchPending) { touchPending = false; return; }
       touchActive = false;
       touchFingerMode = 0;
       touchScrollingRef.current = false;
@@ -1885,7 +1907,7 @@ function App() {
         accumulatedDeltaY = 0;
       }
 
-      const iosBoost = isIOSDevice ? 1.5 : 1.0;
+      const iosBoost = isIOSDevice.current ? 1.5 : 1.0;
       const speed = Math.sqrt(velocityX * velocityX + velocityY * velocityY);
       const boostedVX = -velocityX * iosBoost;
       const boostedVY = -velocityY * iosBoost;
@@ -1909,7 +1931,10 @@ function App() {
       }
 
       if (willStartMomentum) {
+        if (isDebugScrollingMomentum()) console.log('[momentum] touch END — launching momentum:', { vx: boostedVX.toFixed(2), vy: boostedVY.toFixed(2), speed: speed.toFixed(3) });
         startMomentum(boostedVX, boostedVY, touchScrollTarget);
+      } else {
+        window.__momentumDragging = false;
       }
 
       velocityX = 0;
@@ -1918,45 +1943,150 @@ function App() {
       touchScrollTarget = null;
     };
 
+    // ── Mouse drag handlers for hand tool ────────────────────────
+    // Reuses the same accumulatedDeltaX/Y, velocityX/Y, pendingRaf,
+    // and applyScroll from the touch handler above.
+    let mouseDownTarget = null;
+    let mouseDownX = 0;
+    let mouseDownY = 0;
+
+    const handleMouseDown = (e) => {
+      const stage = stageRef.current;
+      if (!stage || !stage.contains(e.target)) return;
+      if (e.button !== 0) return;
+      const tag = (e.target.tagName || '').toLowerCase();
+      if (tag === 'button' || tag === 'input' || tag === 'textarea' || tag === 'select') return;
+      if (e.target.closest('button, input, textarea, select, .thumbnail-rail, .thumbnail-grid, .page-card-header')) return;
+
+      let st = e.target.closest('.pdf-scroll-pages, .pdf-single-page');
+      if (!st) {
+        const panes = stage.querySelectorAll('[data-annotation-language]');
+        for (const pane of panes) {
+          const r = pane.getBoundingClientRect();
+          if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
+            st = pane.querySelector('.pdf-scroll-pages') || pane.querySelector('.pdf-single-page');
+            break;
+          }
+        }
+      }
+      if (!st) st = stage.querySelector('.pdf-scroll-pages, .pdf-single-page');
+      if (!st) return;
+
+      // Don't activate the drag yet — wait for mousemove.  This preserves
+      // native click events for QR scanning and avoids consuming every click.
+      // Drag state is fully initialized in handleMouseMove on first movement.
+      cancelMomentum();
+      mouseDownTarget = st;
+      mouseDownX = e.clientX;
+      mouseDownY = e.clientY;
+    };
+
+    const handleMouseMove = (e) => {
+      if (!touchActive || touchFingerMode !== 99) {
+        // Check if we should activate drag from a pending mousedown
+        if (mouseDownTarget) {
+          const dx = e.clientX - mouseDownX;
+          const dy = e.clientY - mouseDownY;
+          // Only activate drag after minimal movement (3px threshold)
+          if (Math.abs(dx) < 3 && Math.abs(dy) < 3) return;
+          // Activate drag
+          e.preventDefault();
+          lastTouchScrollAtRef.current = Date.now();
+          touchStartX = mouseDownX; touchStartY = mouseDownY;
+          lastVelocityX = mouseDownX; lastVelocityY = mouseDownY;
+          accumulatedDeltaX = 0; accumulatedDeltaY = 0;
+          velocityX = 0; velocityY = 0; lastVelocityTime = 0;
+          touchActive = true; touchFingerMode = 99;
+          touchScrollTarget = mouseDownTarget;
+          touchScrollingRef.current = true;
+          window.__momentumDragging = true;
+          mouseDownTarget = null;
+        } else {
+          return;
+        }
+      }
+
+      const now = performance.now();
+      const dt = now - lastVelocityTime;
+      if (dt > 0 && lastVelocityTime > 0) {
+        const ivx = (e.clientX - lastVelocityX) / dt;
+        const ivy = (e.clientY - lastVelocityY) / dt;
+        const a = 0.3;
+        velocityX = velocityX * (1 - a) + ivx * a;
+        velocityY = velocityY * (1 - a) + ivy * a;
+      }
+      lastVelocityTime = now; lastVelocityX = e.clientX; lastVelocityY = e.clientY;
+
+      accumulatedDeltaX += touchStartX - e.clientX;
+      accumulatedDeltaY += touchStartY - e.clientY;
+      touchStartX = e.clientX; touchStartY = e.clientY;
+
+      if (!pendingRaf) pendingRaf = requestAnimationFrame(applyScroll);
+      e.preventDefault();
+    };
+
+    const handleMouseUp = (e) => {
+      // If drag never activated (pure click), just clear pending state
+      if (mouseDownTarget) {
+        mouseDownTarget = null;
+        return;
+      }
+      if (!touchActive || touchFingerMode !== 99) return;
+      touchActive = false; touchFingerMode = 0;
+      touchScrollingRef.current = false;
+      lastTouchScrollAtRef.current = Date.now();
+
+      if (pendingRaf) { cancelAnimationFrame(pendingRaf); pendingRaf = null; }
+      if (accumulatedDeltaX !== 0 || accumulatedDeltaY !== 0) { touchScrollTarget?.scrollBy({ left: accumulatedDeltaX, top: accumulatedDeltaY, behavior: 'auto' }); accumulatedDeltaX = 0; accumulatedDeltaY = 0; }
+
+      const iosB = isIOSDevice.current ? 1.5 : 1.0;
+      const speed = Math.sqrt(velocityX * velocityX + velocityY * velocityY);
+      const will = speed > 0.05 && touchScrollTarget && displayModeRef.current === 'scrolling';
+
+      if (will) startMomentum(-velocityX * iosB, -velocityY * iosB, touchScrollTarget);
+      else window.__momentumDragging = false;
+      velocityX = 0; velocityY = 0; lastVelocityTime = 0; touchScrollTarget = null;
+    };
+
     canvas.addEventListener('touchstart', onTouchStart, { passive: false });
     canvas.addEventListener('touchmove', onTouchMove, { passive: false });
     canvas.addEventListener('touchend', onTouchEnd, { passive: true });
     canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
 
     // In hand mode the annotation canvas has pointer-events: none, so
-    // touches land on the scroll containers instead.  Attach the exact
-    // same momentum handlers to every scroll container and suppress
-    // native touch-action so JS has exclusive control — identical to
-    // how pen/eraser mode works via CSS touch-action: none.
-    const scrollContainers = [];
+    // touches/mouse clicks land on the scroll containers instead.
+    // Use event delegation (capture phase) because PdfPane may not be
+    // rendered yet at effect-init time.
     if (tool === 'hand') {
       const stage = stageRef.current;
       if (stage) {
-        const containers = stage.querySelectorAll('.pdf-scroll-pages, .pdf-single-page');
-        containers.forEach((el) => {
-          el.style.touchAction = 'none';
-          el.addEventListener('touchstart', onTouchStart, { passive: false });
-          el.addEventListener('touchmove', onTouchMove, { passive: false });
-          el.addEventListener('touchend', onTouchEnd, { passive: true });
-          el.addEventListener('touchcancel', onTouchEnd, { passive: true });
-          scrollContainers.push(el);
-        });
+        stage.addEventListener('touchstart', onTouchStart, { capture: true, passive: false });
+        stage.addEventListener('touchmove', onTouchMove, { capture: true, passive: false });
+        stage.addEventListener('touchend', onTouchEnd, { capture: true, passive: true });
+        stage.addEventListener('touchcancel', onTouchEnd, { capture: true, passive: true });
       }
+      // Mouse: window capture + stage containment guard
+      window.addEventListener('mousedown', handleMouseDown, true);
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
     }
 
     return () => {
       if (pendingRaf) cancelAnimationFrame(pendingRaf);
+      const stage = stageRef.current;
       canvas.removeEventListener('touchstart', onTouchStart);
       canvas.removeEventListener('touchmove', onTouchMove);
       canvas.removeEventListener('touchend', onTouchEnd);
       canvas.removeEventListener('touchcancel', onTouchEnd);
-      scrollContainers.forEach((el) => {
-        el.style.touchAction = '';
-        el.removeEventListener('touchstart', onTouchStart);
-        el.removeEventListener('touchmove', onTouchMove);
-        el.removeEventListener('touchend', onTouchEnd);
-        el.removeEventListener('touchcancel', onTouchEnd);
-      });
+      if (stage) {
+        stage.removeEventListener('touchstart', onTouchStart, true);
+        stage.removeEventListener('touchmove', onTouchMove, true);
+        stage.removeEventListener('touchend', onTouchEnd, true);
+        stage.removeEventListener('touchcancel', onTouchEnd, true);
+      }
+      window.removeEventListener('mousedown', handleMouseDown, true);
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
     };
   }, [displayMode, getScrollTargetForGesture, tool, cancelMomentum, startMomentum]);
 

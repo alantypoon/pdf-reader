@@ -8,8 +8,8 @@
 export const DEBUG_SCROLLING_MOMENTUM = 997;
 export const DEBUG_ZOOMING = 998;
 export const DEBUG_SCROLLING_PERSISTENCE = 999;
-// export const DEBUG_FLAG = DEBUG_SCROLLING_MOMENTUM;
-export const DEBUG_FLAG = 0;
+export const DEBUG_FLAG = DEBUG_SCROLLING_MOMENTUM;
+// export const DEBUG_FLAG = 0;
 
 export function isDebugScrollingMomentum() {
   return DEBUG_FLAG === DEBUG_SCROLLING_MOMENTUM;

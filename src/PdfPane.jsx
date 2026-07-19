@@ -266,16 +266,29 @@ function updateBilingualPageHeightCSS(maxH) {
 }
 
 function repositionBilingualPages(mount, syncGroup) {
-  debugLog(`[bilingual-reposition] repositionBilingualPages called  syncGroup=${syncGroup}`);  
+  debugLog(`[bilingual-reposition] repositionBilingualPages called  syncGroup=${syncGroup}`);
   const maxH = _bilingualMaxHeights.get(syncGroup) || 0;
   if (!maxH) { debugLog(`[bilingual-reposition] SKIP: maxH=${maxH} (zero/missing)`); return; }
-
-  // Dynamically inject/update the CSS rule locking all .page-img heights.
-  updateBilingualPageHeightCSS(maxH);
 
   // Find all page elements — may be inside legacy wrappers from previous builds
   const children = mount.querySelectorAll('[data-page]');
   if (!children.length) return;
+
+  // Skip everything if layout hasn't changed — prevents visual jump
+  // when this function is called mid-scroll by resize observers.
+  const expectedSpacerH = children.length * maxH;
+  const existingSpacer = mount.querySelector('.bilingual-scroll-spacer');
+  const spacerSame = existingSpacer && Math.abs(parseFloat(existingSpacer.style.height) - expectedSpacerH) < 1;
+  // Also check whether CSS rule is already correct (injected via style element)
+  const styleEl = document.getElementById('bilingual-page-height-css');
+  const cssSame = styleEl && styleEl.textContent.includes(`height: ${maxH}px`);
+  if (spacerSame && cssSame) {
+    debugLog(`[bilingual-reposition] SKIP: layout unchanged (${expectedSpacerH}px / ${maxH}px), nothing to do`);
+    return;
+  }
+
+  // Dynamically inject/update the CSS rule locking all .page-img heights.
+  updateBilingualPageHeightCSS(maxH);
 
   const paneLang = mount.closest('[data-annotation-language]')?.dataset?.annotationLanguage || '?';
   const oldScrollHeight = Math.max(1, mount.scrollHeight);
@@ -1187,7 +1200,9 @@ function PdfPane({
           setRenderedPage(nearest);
           // Suppress onPageChange when this scroll was triggered by a remote
           // sync — the initiating pane already reported the correct page.
-          if (!syncingFromRemoteRef.current) {
+          // Also suppress during an active touch/momentum drag to prevent
+          // the scroll-to-currentPage effect from jumping mid-scroll.
+          if (!syncingFromRemoteRef.current && !window.__momentumDragging) {
             lastScrolledFromSyncRef.current = true;
             onPageChange(nearest);
           }
@@ -1878,7 +1893,7 @@ function PdfPane({
         }
 
         const cp = currentPageRef.current;
-        if (nearest !== cp) {
+        if (nearest !== cp && !window.__momentumDragging) {
           lastScrolledFromSyncRef.current = true;
           onPageChange(nearest);
         }
