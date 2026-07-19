@@ -15,6 +15,7 @@ import { isDebugScrollingMomentum, isDebugScrollingPersistence, isDebugZooming }
 
 const PREFERENCES_KEY = 'pdfReaderPreferences';
 const AI_FONT_SIZE_KEY = 'pdfReaderAiFontSize';
+const AI_THEME_KEY = 'pdfReaderAiTheme';
 const DEFAULT_ANNOTATION_COLOR = '#9acd32';
 const ANNOTATION_TOOLS = new Set(['pen', 'highlight', 'text', 'eraser', 'move', 'hand']);
 const COLOR_TOOLS = new Set(['pen', 'highlight', 'text']);
@@ -472,6 +473,19 @@ function App() {
       window.localStorage.setItem(AI_FONT_SIZE_KEY, String(aiFontSize));
     }
   }, [aiFontSize]);
+  const [aiTheme, setAiTheme] = useState(() => {
+    if (typeof window === 'undefined') return 'light';
+    try {
+      const v = window.localStorage.getItem(AI_THEME_KEY);
+      if (v === 'dark' || v === 'light') return v;
+    } catch { /* ignore */ }
+    return 'light';
+  });
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(AI_THEME_KEY, aiTheme);
+    }
+  }, [aiTheme]);
   const [aiContent, setAiContent] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState(null);
@@ -6196,7 +6210,7 @@ function App() {
       {/* ── AI Generation Drawer ─────────────────────────── */}
       {aiDrawerOpen && (
         <div className="resources-drawer-overlay" onClick={() => setAiDrawerOpen(false)}>
-          <section className="ai-drawer" onClick={(e) => e.stopPropagation()}>
+          <section className={`ai-drawer ${aiTheme === 'dark' ? 'ai-dark' : ''}`} onClick={(e) => e.stopPropagation()}>
             <div className="ai-drawer-header">
               <h2>
                 <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="ai-header-icon">
@@ -6237,6 +6251,30 @@ function App() {
                     aria-label={_('increaseFontSize')}
                   >+</button>
                 </div>
+                <button
+                  className="ai-theme-toggle"
+                  onClick={() => setAiTheme(t => t === 'light' ? 'dark' : 'light')}
+                  title={aiTheme === 'light' ? _('darkTheme') : _('lightTheme')}
+                  aria-label={aiTheme === 'light' ? _('darkTheme') : _('lightTheme')}
+                >
+                  {aiTheme === 'light' ? (
+                    <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="ai-theme-icon">
+                      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+                    </svg>
+                  ) : (
+                    <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="ai-theme-icon">
+                      <circle cx="12" cy="12" r="5" />
+                      <line x1="12" y1="1" x2="12" y2="3" />
+                      <line x1="12" y1="21" x2="12" y2="23" />
+                      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+                      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+                      <line x1="1" y1="12" x2="3" y2="12" />
+                      <line x1="21" y1="12" x2="23" y2="12" />
+                      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+                      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+                    </svg>
+                  )}
+                </button>
                 <button className="modal-close" onClick={() => setAiDrawerOpen(false)} aria-label={_('close')}>✕</button>
               </div>
             </div>
