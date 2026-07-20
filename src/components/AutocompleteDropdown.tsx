@@ -110,6 +110,7 @@ function AutocompleteDropdown({
 	}, [open, dropdownFiltered]);
 
 	const handleSelect = (item) => {
+		console.log('[page-select] AutocompleteDropdown handleSelect  item.id=', item.id, '  item.primary=', item.primary);
 		onSelect?.(item.id, item);
 		setQuery('');
 		setDropdownFilter('');

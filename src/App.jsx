@@ -12,6 +12,7 @@ import AutocompleteDropdown from './components/AutocompleteDropdown';
 import MathText from './components/MathText';
 import { t, uiLang } from './i18n';
 import { isDebugScrollingMomentum, isDebugScrollingPersistence, isDebugZooming } from './debug';
+import { myScrollBy, myScrollTo } from './MyScroll';
 
 const PREFERENCES_KEY = 'pdfReaderPreferences';
 const AI_FONT_SIZE_KEY = 'pdfReaderAiFontSize';
@@ -560,6 +561,9 @@ function App() {
   const restorePressTimerRef = useRef(null);
   const restoreLongPressRef = useRef(false);
   const dragRef = useRef({ dragging: false, startX: 0, startY: 0, posX: 0, posY: 0 });
+  // True until the first content load completes — prevents scrollTo(0,0)
+  // effects from fighting with PdfPane's saved-position restoration on load.
+  const initialMountRef = useRef(true);
   const pageViewRef = useRef({ key: '', startedAt: 0, loginLogged: false });
   const touchScrollingRef = useRef(false);
   const lastTouchScrollAtRef = useRef(0);
@@ -625,18 +629,36 @@ function App() {
   }, [refreshFitForCurrentMode]);
 
   useEffect(() => {
-    if (isTestMode) console.log('[layout] sidebar collapse/expand/fullscreen changed — scheduling fit refresh in 2000ms');
-    for (var i = 0; i < 3; i++) {
-      const timer = setTimeout(() => {
-        if (isTestMode) console.log('[layout] firing fit refresh now: ' + i);
-        refreshFitForCurrentMode();
-      }, 200 * i);
-    }
-    // return () => clearTimeout(timer);
+    if (isTestMode) console.log('[layout] sidebar collapse/expand/fullscreen changed — scheduling fit refresh');
+    // Fire a single immediate refresh now (the layout hasn't started its
+    // CSS transition yet, so dimensions are still correct for the old state)
+    // and one more after the transition finishes (~350ms for CSS transitions
+    // on sidebar collapse/expand).  Previously we fired 3 staggered calls
+    // (0ms, 200ms, 400ms) which caused scroll jitter during initial page
+    // load because each call triggered the scrolling-mode effect to re-run
+    // with center-anchored scroll adjustments, fighting against the saved
+    // scroll position restoration.
+    refreshFitForCurrentMode();
+    const timer = setTimeout(() => {
+      if (isTestMode) console.log('[layout] firing deferred fit refresh');
+      refreshFitForCurrentMode();
+    }, 350);
+    return () => clearTimeout(timer);
   }, [isFullscreen, sidebarCollapsed, sidebarHidden, panelVisible, refreshFitForCurrentMode]);
 
+  // Clear the initial-mount guard after PdfPane has had time to mount and
+  // restore the saved scroll position.  Must NOT be cleared in loadPages
+  // (which completes before PdfPane mounts) — clearing too early lets the
+  // scrollTo(0,0) effects fire during scroll restoration, resetting the
+  // position to 0 before the saved position can be applied.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      initialMountRef.current = false;
+    }, 500);
+    return () => clearTimeout(timer);
+  }, []);
+
   const preferredAiDrawerLanguage = useMemo(() => {
-    return selectedLanguage === 'tc' ? 'zh' : 'en';
   }, [selectedLanguage]);
 
   const normalizeAiContent = useCallback((content) => {
@@ -1279,6 +1301,7 @@ function App() {
               updated[language] = source.length;
             }
           });
+          console.log('[page-count] seeded from server:', updated);
           return updated;
         });
       } catch (err) {
@@ -1551,10 +1574,10 @@ function App() {
       const stage = stageRef.current;
       if (stage) {
         stage.querySelectorAll('.pdf-scroll-pages, .pdf-single-page').forEach((el) => {
-          el.scrollBy({ left: dx, top: dy, behavior: 'auto' });
+          myScrollBy(el, { left: dx, top: dy, behavior: 'auto' });
         });
       } else {
-        m.target.scrollBy({ left: dx, top: dy, behavior: 'auto' });
+        myScrollBy(m.target, { left: dx, top: dy, behavior: 'auto' });
       }
 
       const frictionBase = isIOSDevice.current ? 0.975 : 0.95;
@@ -1692,7 +1715,7 @@ function App() {
       const scrollTarget = getScrollTargetForGesture(e);
       if (!scrollTarget) return;
       e.preventDefault();
-      scrollTarget.scrollBy({ left: e.deltaX, top: e.deltaY, behavior: 'auto' });
+      myScrollBy(scrollTarget, { left: e.deltaX, top: e.deltaY, behavior: 'auto' });
     };
     stage.addEventListener('wheel', onWheel, { passive: false });
     return () => stage.removeEventListener('wheel', onWheel);
@@ -1766,10 +1789,10 @@ function App() {
       const stage = stageRef.current;
       if (stage) {
         stage.querySelectorAll('.pdf-scroll-pages, .pdf-single-page').forEach((el) => {
-          el.scrollBy({ left: dx, top: dy, behavior: 'auto' });
+          myScrollBy(el, { left: dx, top: dy, behavior: 'auto' });
         });
-      } else {
-        touchScrollTarget?.scrollBy({ left: dx, top: dy, behavior: 'auto' });
+      } else if (touchScrollTarget) {
+        myScrollBy(touchScrollTarget, { left: dx, top: dy, behavior: 'auto' });
       }
     };
 
@@ -1930,7 +1953,7 @@ function App() {
         pendingRaf = null;
       }
       if (accumulatedDeltaX !== 0 || accumulatedDeltaY !== 0) {
-        touchScrollTarget?.scrollBy({ left: accumulatedDeltaX, top: accumulatedDeltaY, behavior: 'auto' });
+        if (touchScrollTarget) myScrollBy(touchScrollTarget, { left: accumulatedDeltaX, top: accumulatedDeltaY, behavior: 'auto' });
         accumulatedDeltaX = 0;
         accumulatedDeltaY = 0;
       }
@@ -2065,7 +2088,7 @@ function App() {
       lastTouchScrollAtRef.current = Date.now();
 
       if (pendingRaf) { cancelAnimationFrame(pendingRaf); pendingRaf = null; }
-      if (accumulatedDeltaX !== 0 || accumulatedDeltaY !== 0) { touchScrollTarget?.scrollBy({ left: accumulatedDeltaX, top: accumulatedDeltaY, behavior: 'auto' }); accumulatedDeltaX = 0; accumulatedDeltaY = 0; }
+      if (accumulatedDeltaX !== 0 || accumulatedDeltaY !== 0) { if (touchScrollTarget) myScrollBy(touchScrollTarget, { left: accumulatedDeltaX, top: accumulatedDeltaY, behavior: 'auto' }); accumulatedDeltaX = 0; accumulatedDeltaY = 0; }
 
       const iosB = isIOSDevice.current ? 1.5 : 1.0;
       const speed = Math.sqrt(velocityX * velocityX + velocityY * velocityY);
@@ -2161,21 +2184,27 @@ function App() {
     }
   }, [displayMode]);
 
-  // Scroll page containers to top when page changes in pagination mode
+  // Scroll page containers to top when page changes in pagination mode.
+  // Skip during initial mount — PdfPane handles scroll restoration from
+  // localStorage, and a competing scrollTo(0,0) causes visible jitter.
   useEffect(() => {
     if (displayMode !== 'pagination') return;
+    if (initialMountRef.current) return;
     const stage = stageRef.current;
     if (!stage) return;
     requestAnimationFrame(() => {
       const pages = stage.querySelectorAll('.pdf-single-page');
       pages.forEach((el) => {
-        el.scrollTo({ top: 0, behavior: 'instant' });
+        myScrollTo(el, { top: 0, behavior: 'instant' });
       });
     });
   }, [selectedPage, displayMode]);
 
-  // Scroll content to top when book or section changes (all display modes)
+  // Scroll content to top when book or section changes (all display modes).
+  // Skip during initial mount — PdfPane handles scroll restoration from
+  // localStorage, and a competing scrollTo(0,0) causes visible jitter.
   useEffect(() => {
+    if (initialMountRef.current) return;
     const stage = stageRef.current;
     if (!stage) return;
     requestAnimationFrame(() => {
@@ -2183,7 +2212,7 @@ function App() {
       const selectors = ['.pdf-scroll-pages', '.pdf-single-page', '.thumbnail-grid'];
       selectors.forEach((sel) => {
         stage.querySelectorAll(sel).forEach((el) => {
-          el.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+          myScrollTo(el, { top: 0, left: 0, behavior: 'instant' });
         });
       });
     });
@@ -4445,7 +4474,13 @@ function App() {
 
   useEffect(() => {
     if (!Number.isFinite(maxNavigablePage)) return;
-    setSelectedPage((current) => Math.max(1, Math.min(maxNavigablePage, current)));
+    setSelectedPage((current) => {
+      const clamped = Math.max(1, Math.min(maxNavigablePage, current));
+      if (clamped !== current) {
+        console.log(`[page-clamp] maxNavigablePage changed to ${maxNavigablePage} — clamping selectedPage ${current} → ${clamped}`);
+      }
+      return clamped;
+    });
   }, [maxNavigablePage]);
 
   useEffect(() => {
@@ -5681,7 +5716,7 @@ function App() {
             <StepperSelect
               items={pageSelectOptions}
               value={selectedPage}
-              onChange={(value) => setSelectedPage(Number(value))}
+              onChange={(value) => { console.log('[page-select] StepperSelect onChange  raw=', value, '  numeric=', Number(value), '  pageOptions.length=', pageOptions.length, '  maxNavigablePage=', maxNavigablePage); setSelectedPage(Number(value)); }}
               onPrev={() => currentPageIndex > 0 && setSelectedPage(Number(pageOptions[currentPageIndex - 1]))}
               onNext={() => currentPageIndex >= 0 && currentPageIndex < pageOptions.length - 1 && setSelectedPage(Number(pageOptions[currentPageIndex + 1]))}
               disablePrev={currentPageIndex <= 0}

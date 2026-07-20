@@ -8,6 +8,34 @@
   box-sizing: border-box;
 }
 
+/* ── Loading overlay ─────────────────────────────────── */
+.pdf-loading-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: #fff;
+  font-size: 0.95rem;
+  color: #667;
+}
+
+.pdf-loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid #e0e0e0;
+  border-top-color: #5a8;
+  border-radius: 50%;
+  animation: pdf-spin 0.7s linear infinite;
+}
+
+@keyframes pdf-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* ── Prevent text selection on all images and divs ─────── */
 .no-select,
 img,
@@ -1161,9 +1189,8 @@ button, input, select {
 
 .page-card-header {
   position: absolute;
-  left: auto;
-  /* right: 8px;
-  top: 8px; */
+  right: 8px;
+  top: 8px;
   z-index: 3;
   display: flex;
   align-items: center;
@@ -1226,6 +1253,7 @@ button, input, select {
   color: #e6f0f5;
   font-size: 0.82rem;
   flex: 0 0 auto;
+  top: 0px !important;  
 }
 
 .bilingual-mid-header .header-book {
@@ -1510,13 +1538,9 @@ button, input, select {
   -webkit-overflow-scrolling: touch;
 }
 
-/* In bilingual mode, pages are positioned absolutely at fixed Y coordinates
-   (pageY = pageIndex × maxHeight) so both language panes stay pixel-aligned.
-   The inner .bilingual-position-wrapper (created by JS) handles absolute positioning;
-   the scroll container stays position:static for iOS -webkit-overflow-scrolling: touch. */
-.book-stage.bilingual-layout .pdf-scroll-pages {
-  /* position is managed by JS — keep it static for iOS momentum */
-}
+/* In bilingual mode, pages use block layout with a hidden spacer element
+   for iOS -webkit-overflow-scrolling: touch momentum.  Both language panes
+   share a computed maxHeight so pages stay pixel-aligned across columns. */
 
 /* Page border — makes individual page boundaries clearly visible. */
 .book-stage.bilingual-layout .pdf-scroll-pages > * {
@@ -3024,12 +3048,6 @@ button, input, select {
 
   .book-stage.bilingual-layout {
     grid-template-columns: 1fr;
-    /* gap: 6px; */
-  }
-
-  /* Give the lower TC pane some breathing room from the mid header */
-  .book-stage.bilingual-layout > .pdf-pane[data-annotation-language="tc"] {
-    /* padding-top: 4px; */
   }
 
   .section-resources {

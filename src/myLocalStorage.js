@@ -20,11 +20,16 @@ const STORAGE_KEY = 'pdfReaderScrollStorage';
 
 /** Keys to silently strip on load — they will never enter the in-memory cache. */
 const STRIP_KEYS = new Set([
-  'scroll',
-  'scroll-default-en',
-  'scroll-default-tc',
-  'scroll-1a-2-bilingual-en',
-  'scroll-1a-2-bilingual-tc',
+  // 'scroll',
+  // 'scroll-default-en',
+  // 'scroll-default-tc',
+  // 'scroll-1a-2-bilingual-en',
+  // 'scroll-1a-2-bilingual-tc',
+  'scroll-1',
+  'scroll-1a',
+  'scroll-1b',
+  'scroll-1c',
+  // 'scroll-chemistry-aristo-1a'
 ]);
 
 // ── In-memory cache ───────────────────────────────────────
@@ -53,7 +58,7 @@ function _load() {
   } catch { _cache = {}; }
   if (isDebugMyLocalStorage()) {
     const keys = Object.keys(_cache);
-    console.log(`[storage] loaded ${keys.length} keys: [${keys.join(', ')}]`);
+    // console.log(`[storage] loaded ${keys.length} keys: [${keys.join(', ')}]`);
   }
   return _cache;
 }
@@ -66,7 +71,10 @@ function _flush() {
     _dirty = false;
     if (isDebugMyLocalStorage()) {
       const ks = Object.keys(_cache);
-      const summary = ks.map(k => `${k}:{p=${_cache[k].p},t=${typeof _cache[k].t==='number'?_cache[k].t.toFixed(4):_cache[k].t}}`).join(' ');
+      const summary = ks.map(k => {
+        const e = _cache[k];
+        return `${k}:{p=${e.p},t=${typeof e.t==='number'?e.t.toFixed(4):e.t},ph=${e.ph},pw=${e.pw}}`;
+      }).join(' ');
       console.log(`[storage] flushed ${ks.length} keys: ${summary}  (${json.length}B)`);
     }
   } catch { /* quota exceeded — silently ignore */ }
@@ -77,7 +85,7 @@ function _flush() {
 /**
  * Retrieve a saved scroll position by key.
  * @param {string} key
- * @returns {{ top: number, left: number, page?: number, scrollHeight?: number, scrollWidth?: number } | null}
+ * @returns {{ top: number, left: number, page?: number, scrollHeight?: number, scrollWidth?: number, pageHeight?: number, pageWidth?: number } | null}
  */
 export function loadScrollPos(key) {
   if (!key) return null;
@@ -90,6 +98,8 @@ export function loadScrollPos(key) {
     page: entry.p,
     scrollHeight: entry.sh,
     scrollWidth: entry.sw,
+    pageHeight: entry.ph,
+    pageWidth: entry.pw,
   };
 }
 
@@ -103,9 +113,12 @@ export function loadScrollPos(key) {
  * @param {number} [pos.page]     - current page number
  * @param {number} [pos.scrollHeight] - container scrollHeight
  * @param {number} [pos.scrollWidth]  - container scrollWidth
+ * @param {number} [pos.pageHeight]   - height of the current page (px), for reliable restore
+ * @param {number} [pos.pageWidth]    - width of the current page (px), for reliable restore
  */
 export function saveScrollPos(key, pos) {
   if (!key || typeof window === 'undefined') return;
+  if (STRIP_KEYS.has(key)) return;  // silently skip blacklisted keys
   try {
     const all = _load();
     all[key] = {
@@ -114,6 +127,8 @@ export function saveScrollPos(key, pos) {
       p: pos.page != null ? Number(pos.page) : undefined,
       sh: pos.scrollHeight != null ? Math.round(pos.scrollHeight) : undefined,
       sw: pos.scrollWidth != null ? Math.round(pos.scrollWidth) : undefined,
+      ph: pos.pageHeight != null ? Math.round(pos.pageHeight) : undefined,
+      pw: pos.pageWidth != null ? Math.round(pos.pageWidth) : undefined,
     };
     _dirty = true;
     _flush();
