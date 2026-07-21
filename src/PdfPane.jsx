@@ -2,11 +2,22 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.js?url';
 import { t, uiLang } from './i18n';
-import { isDebugScrollingPersistence, isDebugZooming } from './debug';
+import { isDebugLoadingPageImages, isDebugScrollingPersistence, isDebugZooming } from './debug';
 import { mySetScrollTop, mySetScrollLeft, myScrollTo, getScrollPos } from './MyScroll';
 import { loadScrollPos, saveScrollPos, flushScrollStorage } from './myLocalStorage';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
+
+/**
+ * Returns true when the page URL contains ?test=1, enabling in-UI
+ * debug indicators on the loading overlay for diagnosing stuck loads.
+ */
+function isTestMode() {
+  if (typeof window === 'undefined') return false;
+  try {
+    return new URLSearchParams(window.location.search).has('test');
+  } catch { return false; }
+}
 
 // Safari/WebKit max canvas area is 16,777,216 px (e.g. 4096×4096)
 const MAX_CANVAS_AREA = 16777216;
@@ -420,6 +431,18 @@ function PdfPane({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [thumbFocusIndex, setThumbFocusIndex] = useState(-1);
   const [showLoadingOverlay, setShowLoadingOverlay] = useState(true);
+  const [loadDebugText, setLoadDebugText] = useState('init');
+
+  // Safety timeout: dismiss loading overlay after 5s regardless of mode.
+  // Covers Chrome iOS where pagination-mode images may not fire onLoad.
+  useEffect(() => {
+    if (!showLoadingOverlay) return;
+    const timer = setTimeout(() => {
+      setShowLoadingOverlay(false);
+      if (isTestMode()) setLoadDebugText((prev) => prev + ' | timeout-fallback');
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [showLoadingOverlay, isImageMode]);
   const canvasRef = useRef(null);
   const scrollRef = useRef(null);
   const contentRef = useRef(null);
@@ -586,6 +609,7 @@ function PdfPane({
   const imgRef = useRef(null);
 
   const handleImageLoad = () => {
+    setShowLoadingOverlay(false);
     setImageLoadVersion((current) => current + 1);
   };
 
@@ -1185,11 +1209,9 @@ function PdfPane({
           setRenderedPage(nearest);
           // Suppress onPageChange when this scroll was triggered by a remote
           // sync — the initiating pane already reported the correct page.
-          // Also suppress during an active touch/momentum drag to prevent
-          // the scroll-to-currentPage effect from jumping mid-scroll.
           // Also suppress during bilingual repositioning to avoid false
           // page-change detections from proportional scroll adjustment.
-          if (!syncingFromRemoteRef.current && !window.__momentumDragging && !_bilingualRepositioning && !_programmaticScrolling) {
+          if (!syncingFromRemoteRef.current && !_bilingualRepositioning && !_programmaticScrolling) {
             lastScrolledFromSyncRef.current = true;
             onPageChange(nearest);
           }
@@ -1600,13 +1622,30 @@ function PdfPane({
   const maxPagesInGroupRef = useRef(maxPagesInGroup);
 
   useEffect(() => {
-    if (!isImageMode || mode !== 'scrolling') return;
+    if (!isImageMode || mode !== 'scrolling') {
+      setLoadDebugText(`chk0: skip(isArray=${Array.isArray(images)} len=${images?.length} mode=${mode})`);
+      return;
+    }
     // Bilingual mode: wait until maxPagesInGroup is known before building
     // the DOM.  Without it, isBilingual=false and pages render without the
     // CSS height lock, breaking scroll-position restore.
-    if (syncGroup && !maxPagesInGroup) return;
+    if (syncGroup && !maxPagesInGroup) { setLoadDebugText('chk1: wait(maxPages)'); return; }
     const mount = scrollRef.current;
-    if (!mount) return;
+    if (!mount) { setLoadDebugText('chk2: no mount'); return; }
+
+    setLoadDebugText('chk3: entered');
+
+    // Reset the initial-load flag so saveScrollNow (and cross-pane sync)
+    // are suppressed until the saved scroll position is fully restored.
+    // Without this, switching language triggers a save at scrollTop=0
+    // before the restore runs, corrupting the stored position.
+    isInitialLoadRef.current = true;
+
+    // Must be declared OUTSIDE the try block so the cleanup return
+    // (also outside try) can access them on unmount.
+    let disposed = false;
+    let scrollRafId2 = null;
+    let pendingScroll2 = false;
 
     // If there is a saved scroll position for this source, mark it
     // NOW (synchronously) so the scroll-to-page useEffect skips its
@@ -1630,6 +1669,7 @@ function PdfPane({
 
     // Skip rebuild if images array hasn't changed AND maxPagesInGroup hasn't changed
     if (lastImagesRef.current === images && maxPagesInGroupRef.current === maxPagesInGroup && mount.children.length === images.length) {
+      setLoadDebugText('chk3a: skip(no-rebuild)');
       // Still scroll to the current page (e.g. when switching from pagination to scrolling)
       scrollToPage(currentPage);
       // Report render scale even when we skip the rebuild — otherwise the
@@ -1687,6 +1727,14 @@ function PdfPane({
     }
     // Constrain .pdf-scroll-pages to the base (viewport) width so its content overflows → scrollbar
     mount.style.width = `${baseWidth}px`;
+    // Override CSS height:100% with an explicit pixel height matching the
+    // available viewport.  height:100% on overflow:auto can cause WebKit
+    // to add the container's box height to scrollHeight, creating blank
+    // scrollable space past the last page.
+    if (contentRef.current) {
+      mount.style.height = `${contentRef.current.clientHeight}px`;
+      mount.style.flex = '0 0 auto';
+    }
 
     // In bilingual mode, inject the CSS height rule BEFORE any images enter
     // the DOM.  Uses actual image dimensions from the API to compute the
@@ -1809,6 +1857,7 @@ function PdfPane({
       }
     }
 
+    // disposed declared above (before try block) so cleanup return can set it
     // Bilingual: position every page at pageY = (pageIndex) × maxHeight
     // using absolute positioning.  Call immediately (all elements are in
     // the DOM), then re-run immediately as EACH image loads (so pages
@@ -1836,25 +1885,39 @@ function PdfPane({
       });
     }
 
-    // Viewport-aware lazy loader — max 2 concurrent, preload 3 pages around current page
+    // Viewport-aware lazy loader — max 2 concurrent, preload 3 pages around current page.
+    // Before the FIRST image loads, cap to 1 concurrent — the selected page must
+    // paint as fast as possible before we waste bandwidth on surrounding pages.
     const PRELOAD_WINDOW = 3;
     let loading = 0;
+    let _firstImageLoaded = false;
     const loadedSet = new Set(); // indices of pages loaded or currently loading
-    let disposed = false;
+    // disposed declared above (before bilingual block)
     let lastVisiblePage = currentPage;
 
     const loadOne = (idx) => {
       if (idx < 0 || idx >= imgElements.length || disposed) return false;
       if (loadedSet.has(idx)) return false; // already loaded/loading
-      if (loading >= 2) return false;
+      // Before the first image finishes, only load one at a time so the
+      // selected page gets all the bandwidth and paints immediately.
+      if (loading >= (_firstImageLoaded ? 2 : 1)) return false;
       const img = imgElements[idx];
       const url = img.dataset.src;
       if (!url || img.src) return false;
       loadedSet.add(idx);
       loading++;
+      const pageNum = idx + 1;
+      if (isDebugLoadingPageImages()) {
+        console.log(`[img-load] START  page=${pageNum}  concurrent=${loading}  url=${url?.substring(url.lastIndexOf('/') + 1)}`);
+      }
       img.src = withTimestamp(url);
       img.onload = () => {
         loading--;
+        const wasFirst = !_firstImageLoaded;
+        _firstImageLoaded = true;
+        if (isDebugLoadingPageImages()) {
+          console.log(`[img-load] OK    page=${pageNum}  natural=${img.naturalWidth}×${img.naturalHeight}  displayed=${Math.round(img.getBoundingClientRect().width)}×${Math.round(img.getBoundingClientRect().height)}  concurrent=${loading}  scrollH=${Math.round(mount.scrollHeight)}  isInit=${isInitialLoadRef.current}  restoreInProgress=${_scrollRestoreInProgress}  wasFirst=${wasFirst}`);
+        }
         // ── Anchor viewport center to prevent layout-shift jumps ──
         // When images expand from 120px min-height to full height, the
         // scrollHeight grows but the browser keeps scrollTop fixed — so
@@ -1871,7 +1934,11 @@ function PdfPane({
           img.style.opacity = '1';
           const newScrollHeight = Math.max(1, mount.scrollHeight);
           if (newScrollHeight !== oldScrollHeight && !_scrollRestoreInProgress) {
-            mySetScrollTop(mount, oldScrollTop * (newScrollHeight / oldScrollHeight));
+            const ratio = newScrollHeight / oldScrollHeight;
+            if (isDebugLoadingPageImages()) {
+              console.log(`[img-load] PROP-ADJ  page=${pageNum}  oldScrollH=${Math.round(oldScrollHeight)}  newScrollH=${Math.round(newScrollHeight)}  ratio=${ratio.toFixed(4)}  scrollTop ${Math.round(oldScrollTop)} → ${Math.round(oldScrollTop * ratio)}`);
+            }
+            mySetScrollTop(mount, oldScrollTop * ratio);
           }
         } else {
           img.style.minHeight = '';
@@ -1881,6 +1948,10 @@ function PdfPane({
       };
       img.onerror = () => {
         loading--;
+        if (!_firstImageLoaded) _firstImageLoaded = true;
+        if (isDebugLoadingPageImages()) {
+          console.log(`[img-load] ERROR  page=${pageNum}  concurrent=${loading}`);
+        }
         img.style.opacity = '0';
         if (!disposed) loadVisibleRange(lastVisiblePage);
       };
@@ -1888,8 +1959,15 @@ function PdfPane({
     };
 
     const loadVisibleRange = (centerPage) => {
+      if (isDebugLoadingPageImages() && centerPage !== lastVisiblePage) {
+        const range = [Math.max(1, centerPage - PRELOAD_WINDOW), Math.min(images.length, centerPage + PRELOAD_WINDOW)];
+        console.log(`[img-load] RANGE  center=${centerPage}  range=[${range[0]}..${range[1]}]  loaded=${loadedSet.size}/${images.length}`);
+      }
       // Always load the center page first
       loadOne(centerPage - 1);
+      // Defer surrounding pages until the first image has loaded — the
+      // selected page must render before we spend time on neighbours.
+      if (!_firstImageLoaded) return;
       // Then load surrounding pages, expanding outward
       for (let offset = 1; offset <= PRELOAD_WINDOW; offset++) {
         loadOne(centerPage - 1 - offset);
@@ -1898,7 +1976,12 @@ function PdfPane({
     };
 
     // Initial load around the current page
+    if (isDebugLoadingPageImages()) {
+      console.log(`[img-load] INIT  currentPage=${currentPage}  total=${images.length}  isBilingual=${isBilingual}  scrollH=${Math.round(mount.scrollHeight)}`);
+    }
     loadVisibleRange(currentPage);
+
+    setLoadDebugText(`chk4: ${imgElements.length} imgs src=${!!imgElements[0]?.src}`);
 
     // After images have had a chance to load (cached images decode
     // synchronously), report the render scale so the zoom percentage
@@ -2029,60 +2112,111 @@ function PdfPane({
     // restoring the scroll position.  The first image's rendered dimensions
     // confirm that CSS heights are applied and offsetTop values are correct.
     const waitForReadyThenScroll = () => {
-      const firstImg = imgElements[0];
+      try {
+      // Wait for the SELECTED page's image (the one the lazy loader starts
+      // with after the _firstImageLoaded optimization), NOT imgElements[0].
+      // Page N is loaded first; page 1 may be far outside the ±3 range and
+      // would never fire a load event.
+      const saved = loadScrollPos(scrollCacheKey);
+      const targetPage = (saved && typeof saved.page === 'number' && saved.page >= 1)
+        ? saved.page
+        : currentPage;
+      const firstImg = mount.querySelector(`img.page-img[data-page="${targetPage}"]`);
+      setLoadDebugText(`exists=${!!firstImg} tp=${targetPage} srcSet=${!!firstImg?.src} complete=${firstImg?.complete} nh=${firstImg?.naturalHeight}`);
+
       const tryScroll = () => {
-        setShowLoadingOverlay(false);
-        // Double-RAF ensures CSS rules have taken layout effect.
-        requestAnimationFrame(() => {
+        try {
+          setLoadDebugText(`→ tryScroll (dismiss overlay)`);
+          setShowLoadingOverlay(false);
+          // Double-RAF ensures CSS rules have taken layout effect.
           requestAnimationFrame(() => {
-            if (disposed) return;
-            scheduleScrollToCurrent();
+            requestAnimationFrame(() => {
+              if (disposed) return;
+              scheduleScrollToCurrent();
+            });
           });
-        });
+        } catch (e) { setLoadDebugText(`ERR-tryScroll: ${e.message}`); }
       };
 
       if (firstImg && firstImg.complete && firstImg.naturalHeight > 0) {
         // First image already loaded/cached — CSS heights should be active.
+        setLoadDebugText('ready(complete+nh)');
         const rect = firstImg.getBoundingClientRect();
         if (isDebugScrollingPersistence()) console.log(`[scroll-load] first image ready: ${rect.width}×${rect.height}  natural: ${firstImg.naturalWidth}×${firstImg.naturalHeight}`);
         tryScroll();
       } else if (firstImg) {
+        setLoadDebugText(`waiting complete=${firstImg.complete} nh=${firstImg.naturalHeight}`);
         // Wait for the first image to load.
         if (isDebugScrollingPersistence()) console.log(`[scroll-load] waiting for first image to load...`);
+        let ready = false;
         const onReady = () => {
-          firstImg.removeEventListener('load', onReady);
-          firstImg.removeEventListener('error', onReady);
-          if (!disposed) {
-            const rect = firstImg.getBoundingClientRect();
-            if (isDebugScrollingPersistence()) console.log(`[scroll-load] first image loaded: ${rect.width}×${rect.height}  natural: ${firstImg.naturalWidth}×${firstImg.naturalHeight}`);
-            tryScroll();
-          }
+          try {
+            if (ready) return; ready = true;
+            if (firstImg) {
+              firstImg.removeEventListener('load', onReady);
+              firstImg.removeEventListener('error', onReady);
+            }
+            if (!disposed) {
+              setLoadDebugText(`onReady complete=${firstImg?.complete} nh=${firstImg?.naturalHeight}`);
+              const rect = firstImg ? firstImg.getBoundingClientRect() : { width: 0, height: 0 };
+              if (isDebugScrollingPersistence()) console.log(`[scroll-load] first image loaded: ${rect.width}×${rect.height}  natural: ${firstImg?.naturalWidth}×${firstImg?.naturalHeight}`);
+              tryScroll();
+            }
+          } catch (e) { setLoadDebugText(`ERR-onReady: ${e.message}`); }
         };
         firstImg.addEventListener('load', onReady, { once: true });
         firstImg.addEventListener('error', onReady, { once: true });
-        // Also set a safety timeout in case the event is missed.
+        // Chrome iOS sometimes reports img.complete=true but naturalHeight=0
+        // (deferred decoding).  Poll on RAF until the image has usable
+        // dimensions so we never show a stuck loading overlay.
+        let pollCount = 0;
+        const pollUntilReady = () => {
+          try {
+            if (ready || disposed) return;
+            pollCount++;
+            if (firstImg && firstImg.naturalHeight > 0) {
+              if (isDebugScrollingPersistence()) console.log(`[scroll-load] first image poll-ready  natural: ${firstImg.naturalWidth}×${firstImg.naturalHeight}  pollCount=${pollCount}`);
+              onReady();
+            } else {
+              setLoadDebugText(`poll#${pollCount} complete=${firstImg?.complete} nh=${firstImg?.naturalHeight} src=${firstImg?.src?.slice(-20)}`);
+              requestAnimationFrame(pollUntilReady);
+            }
+          } catch (e) { setLoadDebugText(`ERR-poll#${pollCount}: ${e.message}`); }
+        };
+        requestAnimationFrame(pollUntilReady);
+        // Safety timeout: guarantee we proceed even if both event + poll fail.
         setTimeout(() => {
-          if (!disposed && _scrollRestoreInProgress === false && isInitialLoadRef.current) {
-            if (isDebugScrollingPersistence()) console.log(`[scroll-load] first image load timeout — trying anyway`);
-            tryScroll();
-          }
+          try {
+            if (!disposed && !ready && isInitialLoadRef.current) {
+              if (isDebugScrollingPersistence()) console.log(`[scroll-load] first image load timeout — trying anyway`);
+              onReady();
+            }
+          } catch (e) { setLoadDebugText(`ERR-timeout: ${e.message}`); }
         }, 3000);
       } else {
         // No images at all — just go.
         tryScroll();
       }
+      } catch (e) { setLoadDebugText(`ERR-waitForReady: ${e.message}`); }
     };
-    waitForReadyThenScroll();
+    setLoadDebugText('chk5: calling waitForReady');
+    try { waitForReadyThenScroll(); } catch (e) { setLoadDebugText(`ERR-call: ${e.message}`); }
 
-    let scrollRafId2 = null;
-    let pendingScroll2 = false;
+    // scrollRafId2 and pendingScroll2 declared above (before try block)
 
     // Core scroll work: page detection, lazy loading, cross-pane sync.
     // Extracted so both onScroll (direct calls) and onScrollWithSave
     // (scroll events) share the same logic without duplicating the
     // throttle guard.
     const doScrollWork = () => {
-      const top = getScrollPos(mount).scrollTop;
+      const pos = getScrollPos(mount);
+      const top = pos.scrollTop;
+      // Clamp: never scroll past the last page content
+      const maxTop = Math.max(0, mount.scrollHeight - mount.clientHeight);
+      if (top > maxTop) {
+        mySetScrollTop(mount, maxTop);
+        return;
+      }
       // Containing page (offsetTop ≤ scrollTop), not geometrically nearest.
       const { page: nearest } = findContainingPage(mount, top);
       // Only update React state when the page actually changes to avoid
@@ -2098,7 +2232,7 @@ function PdfPane({
       }
 
       const cp = currentPageRef.current;
-      if (nearest !== cp && !window.__momentumDragging && !_programmaticScrolling) {
+      if (nearest !== cp && !_programmaticScrolling) {
         lastScrolledFromSyncRef.current = true;
         onPageChange(nearest);
       }
@@ -2493,6 +2627,9 @@ function PdfPane({
         <div className="pdf-loading-overlay">
           <div className="pdf-loading-spinner" />
           <span>Loading pages…</span>
+          {isTestMode() && (
+            <span style={{fontSize:'10px',color:'#888',marginTop:'8px',maxWidth:'90vw',wordBreak:'break-all',textAlign:'center'}}>{loadDebugText}</span>
+          )}
         </div>
       )}
       {!hideHeader && (
@@ -2634,6 +2771,7 @@ function PdfPane({
                   className="page-img"
                   onLoad={handleImageLoad}
                   onError={(e) => {
+                    setShowLoadingOverlay(false);
                     // Hide the broken-image icon; placeholder background shows instead
                     e.target.style.visibility = 'hidden';
                   }}

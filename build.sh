@@ -19,6 +19,7 @@ cat dist/index.html
 
 echo "=== Syncing dist/ → public/ ==="
 cp dist/index.html public/index.html
+mkdir -p public/assets
 cp dist/assets/*.js dist/assets/*.css public/assets/ 2>/dev/null
 # Remove stale assets not in current dist
 for f in public/assets/*.js public/assets/*.css; do

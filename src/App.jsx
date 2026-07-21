@@ -2402,7 +2402,7 @@ function App() {
     setFitMode('none'); // release fit-width / fit-height so zoom works standalone
     setZoomLevel((current) => {
       const next = current + delta;
-      const clamped = Math.min(5, Math.max(0.1, Number(next.toFixed(2))));
+      const clamped = Math.min(2, Math.max(0.1, Number(next.toFixed(2))));
       if (isDebugZooming()) {
         console.log('[zoom-app] changeZoom', { delta, from: current, raw: next, clamped, fitMode: 'none' });
       }
@@ -6307,7 +6307,7 @@ function App() {
                       type="range"
                       className="tool-menu-zoom-range"
                       min="0.1"
-                      max="5"
+                      max="2"
                       step="0.05"
                       value={zoomLevel}
                       onChange={(e) => {

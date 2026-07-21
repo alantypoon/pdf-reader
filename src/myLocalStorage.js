@@ -20,11 +20,11 @@ const STORAGE_KEY = 'pdfReaderScrollStorage';
 
 /** Keys to silently strip on load — they will never enter the in-memory cache. */
 const STRIP_KEYS = new Set([
-  // 'scroll',
-  // 'scroll-default-en',
-  // 'scroll-default-tc',
-  // 'scroll-1a-2-bilingual-en',
-  // 'scroll-1a-2-bilingual-tc',
+  'scroll',
+  'scroll-default-en',
+  'scroll-default-tc',
+  'scroll-1a-2-bilingual-en',
+  'scroll-1a-2-bilingual-tc',
   'scroll-1',
   'scroll-1a',
   'scroll-1b',
@@ -92,6 +92,13 @@ export function loadScrollPos(key) {
   const all = _load();
   const entry = all[key];
   if (!entry) return null;
+  // When the page number is missing (undefined/null), treat as "nothing saved"
+  // so callers fall through to the initialization path instead of trying to
+  // restore a position that doesn't exist.  Without a page number we cannot
+  // compute a meaningful scroll target.
+  if (entry.p == null) {
+    return null;
+  }
   return {
     top: entry.t ?? 0,
     left: entry.l ?? 0,

@@ -1189,7 +1189,7 @@ button, input, select {
 
 .page-card-header {
   position: absolute;
-  right: 8px;
+  /* right: 8px; */
   top: 8px;
   z-index: 3;
   display: flex;
@@ -1515,6 +1515,7 @@ button, input, select {
   display: grid;
   place-items: safe center;
   overflow: auto;
+  overscroll-behavior-y: contain;
   touch-action: pan-x pan-y;
   -webkit-overflow-scrolling: touch;
 }
@@ -1533,6 +1534,7 @@ button, input, select {
   overflow: auto;
   touch-action: pan-y;
   overscroll-behavior-x: contain;
+  overscroll-behavior-y: contain;
   user-select: none;
   -webkit-user-select: none;
   -webkit-overflow-scrolling: touch;
