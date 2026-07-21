@@ -346,6 +346,7 @@ function App() {
   }, []);
   const canvasRef = useRef(null);
   const stageRef = useRef(null);
+  const visibleLanguagesRef = useRef([]);
   const drawingRef = useRef(false);
   const currentStrokeRef = useRef(null);
   const moveAnnotationRef = useRef(null);
@@ -548,6 +549,14 @@ function App() {
   const [isPortrait, setIsPortrait] = useState(() => {
     if (typeof window === 'undefined') return false;
     return window.matchMedia('(orientation: portrait)').matches;
+  });
+  // Medium-width range (817px–960px): tablet landscape where CSS
+  // collapses to 1-column but orientation is still landscape.
+  // In this range we use the bilingual-mid-header (stacked layout)
+  // instead of the floating pill badge, maximising reading area.
+  const [isMediumBilingualWidth, setIsMediumBilingualWidth] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.matchMedia('(min-width: 817px) and (max-width: 960px)').matches;
   });
   const panelRef = useRef(null);
   const mainControlsRef = useRef(null);
@@ -880,6 +889,11 @@ function App() {
     return ['en', 'tc'].filter((language) => hasRenderableSource(pageSources[language]));
   }, [selectedLanguage, pageSources]);
 
+  // Keep visibleLanguagesRef in sync for use inside callbacks that can't list visibleLanguages as a dependency
+  useEffect(() => {
+    visibleLanguagesRef.current = visibleLanguages;
+  }, [visibleLanguages]);
+
   const sectionScopedAnnotations = displayMode === 'scrolling' || displayMode === 'thumbnails';
   const remarksLoadGenRef = useRef(0);
 
@@ -957,15 +971,17 @@ function App() {
         Number(remark.page) === Number(selectedPage) &&
         !clearedTimestamps.includes(remark.createdAt)
     );
-    setPageAnnotations(existing.map((remark) => ({
+    const normalized = existing.map((remark) => ({
       ...remark,
       langId: remark.langId === 'tc' ? 'tc' : 'en'
-    })));
-  }, [remarks, selectedChapter, selectedPage, clearedTimestamps]);
+    }));
+    // Strictly enforce: only include annotations whose language is currently visible
+    setPageAnnotations(normalized.filter((r) => visibleLanguages.includes(r.langId)));
+  }, [remarks, selectedChapter, selectedPage, clearedTimestamps, visibleLanguages]);
 
   // All annotations for the current section (all pages) — used in thumbnails & scrolling modes
   const allSectionAnnotations = useMemo(() => {
-    return remarks
+    const normalized = remarks
       .filter((remark) =>
         remark.chapter === selectedChapter &&
         !clearedTimestamps.includes(remark.createdAt)
@@ -974,7 +990,9 @@ function App() {
         ...remark,
         langId: remark.langId === 'tc' ? 'tc' : 'en'
       }));
-  }, [remarks, selectedChapter, clearedTimestamps]);
+    // Strictly enforce: only include annotations whose language is currently visible
+    return normalized.filter((r) => visibleLanguages.includes(r.langId));
+  }, [remarks, selectedChapter, clearedTimestamps, visibleLanguages]);
 
   const currentChapter = useMemo(
     () => structure.find((chapter) => chapter.id === selectedChapter),
@@ -3005,6 +3023,36 @@ function App() {
   }, []);
 
   /**
+   * Get the bounding rect (relative to the annotation canvas) of each
+   * language pane's entire .pdf-pane section.  Used for per-language
+   * hard clipping in the redraw function — guarantees that annotations
+   * drawn for one language can NEVER bleed into the other language's
+   * pane, even if individual page-image rects overlap due to layout.
+   */
+  const getPaneRects = useCallback(() => {
+    const canvas = canvasRef.current;
+    const stage = stageRef.current;
+    if (!canvas || !stage) return {};
+    const canvasRect = canvas.getBoundingClientRect();
+    const panes = stage.querySelectorAll('[data-annotation-language]');
+    const result = {};
+    for (const pane of panes) {
+      const langId = pane.getAttribute('data-annotation-language');
+      if (!langId) continue;
+      const r = pane.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) {
+        result[langId] = {
+          left: r.left - canvasRect.left,
+          top: r.top - canvasRect.top,
+          width: r.width,
+          height: r.height,
+        };
+      }
+    }
+    return result;
+  }, []);
+
+  /**
    * In thumbnails mode, get rects for ALL thumbnail images keyed by "langId-pageNum".
    */
   const getAllThumbnailRects = useCallback(() => {
@@ -3146,162 +3194,204 @@ function App() {
     if (!context) return;
     context.clearRect(0, 0, width, height);
 
+    // Strictly enforce: only draw annotations whose language is currently visible.
+    const vl = visibleLanguagesRef.current;
+    const filteredAnnotations = vl.length > 0
+      ? annotations.filter(a => vl.includes(a.langId === 'tc' ? 'tc' : 'en'))
+      : annotations;
+
+    // Group annotations by language so we can apply per-pane hard clipping.
+    // This GUARANTEES that annotations for one language can never bleed into
+    // the other language's pane, regardless of page-image rect accuracy.
+    const byLang = {};
+    for (const a of filteredAnnotations) {
+      const lid = a.langId === 'tc' ? 'tc' : 'en';
+      if (!byLang[lid]) byLang[lid] = [];
+      byLang[lid].push(a);
+    }
+    const paneRects = getPaneRects();
+
     const isThumbMode = displayModeRef.current === 'thumbnails';
     const isScrollMode = displayModeRef.current === 'scrolling';
 
     if (isThumbMode) {
-      // Thumbnails mode: draw each page's annotations on its own thumbnail
       const thumbRects = getAllThumbnailRects();
-      for (const annotation of annotations) {
-        const langId = annotation.langId === 'tc' ? 'tc' : 'en';
-        const page = Number(annotation.page);
-        const key = `${langId}-${page}`;
-        const imageRect = thumbRects[key];
-        if (!imageRect) continue;
-
-        context.save();
-        context.beginPath();
-        context.rect(imageRect.left, imageRect.top, imageRect.width, imageRect.height);
-        context.clip();
-
-        const denorm = annotation.coordsNormalized
-          ? denormalizeAnnotationCoords(annotation, imageRect)
-          : annotation;
-
-        if (denorm.type === 'stroke') {
-          const points = denorm.points || [];
-          if (points.length < 2) { context.restore(); continue; }
+      for (const [langId, langAnnotations] of Object.entries(byLang)) {
+        const paneRect = paneRects[langId];
+        // Apply per-pane hard clip first — nothing for this language
+        // can draw outside its pane.
+        if (paneRect) {
           context.save();
-          context.lineJoin = 'round';
-          context.lineCap = 'round';
-          context.strokeStyle = denorm.color;
-          context.globalAlpha = denorm.mode === 'highlight' ? 0.28 : 1;
-          const strokeScale = Math.max(0.2, imageRect.width / 800);
-          context.lineWidth = (denorm.mode === 'highlight' ? 18 : 4) * strokeScale;
           context.beginPath();
-          context.moveTo(imageRect.left + points[0].x, imageRect.top + points[0].y);
-          for (const point of points.slice(1)) {
-            context.lineTo(imageRect.left + point.x, imageRect.top + point.y);
-          }
-          context.stroke();
-          context.restore();
+          context.rect(paneRect.left, paneRect.top, paneRect.width, paneRect.height);
+          context.clip();
         }
+        for (const annotation of langAnnotations) {
+          const page = Number(annotation.page);
+          const key = `${langId}-${page}`;
+          const imageRect = thumbRects[key];
+          if (!imageRect) continue;
 
-        if (denorm.type === 'text') {
           context.save();
-          context.fillStyle = denorm.color;
-          const fontSize = Math.max(1, Math.round(18 * (imageRect.width / 800)));
-          context.font = `${fontSize}px Inter, system-ui, sans-serif`;
-          context.fillText(denorm.text, imageRect.left + denorm.x, imageRect.top + denorm.y);
+          context.beginPath();
+          context.rect(imageRect.left, imageRect.top, imageRect.width, imageRect.height);
+          context.clip();
+
+          const denorm = annotation.coordsNormalized
+            ? denormalizeAnnotationCoords(annotation, imageRect)
+            : annotation;
+
+          if (denorm.type === 'stroke') {
+            const points = denorm.points || [];
+            if (points.length < 2) { context.restore(); continue; }
+            context.save();
+            context.lineJoin = 'round';
+            context.lineCap = 'round';
+            context.strokeStyle = denorm.color;
+            context.globalAlpha = denorm.mode === 'highlight' ? 0.28 : 1;
+            const strokeScale = Math.max(0.2, imageRect.width / 800);
+            context.lineWidth = (denorm.mode === 'highlight' ? 18 : 4) * strokeScale;
+            context.beginPath();
+            context.moveTo(imageRect.left + points[0].x, imageRect.top + points[0].y);
+            for (const point of points.slice(1)) {
+              context.lineTo(imageRect.left + point.x, imageRect.top + point.y);
+            }
+            context.stroke();
+            context.restore();
+          }
+
+          if (denorm.type === 'text') {
+            context.save();
+            context.fillStyle = denorm.color;
+            const fontSize = Math.max(1, Math.round(18 * (imageRect.width / 800)));
+            context.font = `${fontSize}px Inter, system-ui, sans-serif`;
+            context.fillText(denorm.text, imageRect.left + denorm.x, imageRect.top + denorm.y);
+            context.restore();
+          }
+
           context.restore();
         }
-
-        context.restore();
+        if (paneRect) context.restore();
       }
       return;
     }
 
     if (isScrollMode) {
-      // Scrolling mode: draw each page's annotations on its own page canvas
       const pageRects = getPageImageRects();
-      for (const annotation of annotations) {
-        const langId = annotation.langId === 'tc' ? 'tc' : 'en';
-        const page = Number(annotation.page);
-        const key = `${langId}-${page}`;
-        const imageRect = pageRects[key];
-        if (!imageRect) continue;
-
-        context.save();
-        context.beginPath();
-        context.rect(imageRect.left, imageRect.top, imageRect.width, imageRect.height);
-        context.clip();
-
-        const denorm = annotation.coordsNormalized
-          ? denormalizeAnnotationCoords(annotation, imageRect)
-          : annotation;
-
-        if (denorm.type === 'stroke') {
-          const points = denorm.points || [];
-          if (points.length < 2) { context.restore(); continue; }
+      for (const [langId, langAnnotations] of Object.entries(byLang)) {
+        const paneRect = paneRects[langId];
+        if (paneRect) {
           context.save();
-          context.lineJoin = 'round';
-          context.lineCap = 'round';
-          context.strokeStyle = denorm.color;
-          context.globalAlpha = denorm.mode === 'highlight' ? 0.28 : 1;
-          const strokeScale = Math.max(0.2, imageRect.width / 800);
-          context.lineWidth = (denorm.mode === 'highlight' ? 18 : 4) * strokeScale;
           context.beginPath();
-          context.moveTo(imageRect.left + points[0].x, imageRect.top + points[0].y);
-          for (const point of points.slice(1)) {
-            context.lineTo(imageRect.left + point.x, imageRect.top + point.y);
-          }
-          context.stroke();
-          context.restore();
+          context.rect(paneRect.left, paneRect.top, paneRect.width, paneRect.height);
+          context.clip();
         }
+        for (const annotation of langAnnotations) {
+          const page = Number(annotation.page);
+          const key = `${langId}-${page}`;
+          const imageRect = pageRects[key];
+          if (!imageRect) continue;
 
-        if (denorm.type === 'text') {
           context.save();
-          context.fillStyle = denorm.color;
-          const fontSize = Math.max(1, Math.round(18 * (imageRect.width / 800)));
-          context.font = `${fontSize}px Inter, system-ui, sans-serif`;
-          context.fillText(denorm.text, imageRect.left + denorm.x, imageRect.top + denorm.y);
+          context.beginPath();
+          context.rect(imageRect.left, imageRect.top, imageRect.width, imageRect.height);
+          context.clip();
+
+          const denorm = annotation.coordsNormalized
+            ? denormalizeAnnotationCoords(annotation, imageRect)
+            : annotation;
+
+          if (denorm.type === 'stroke') {
+            const points = denorm.points || [];
+            if (points.length < 2) { context.restore(); continue; }
+            context.save();
+            context.lineJoin = 'round';
+            context.lineCap = 'round';
+            context.strokeStyle = denorm.color;
+            context.globalAlpha = denorm.mode === 'highlight' ? 0.28 : 1;
+            const strokeScale = Math.max(0.2, imageRect.width / 800);
+            context.lineWidth = (denorm.mode === 'highlight' ? 18 : 4) * strokeScale;
+            context.beginPath();
+            context.moveTo(imageRect.left + points[0].x, imageRect.top + points[0].y);
+            for (const point of points.slice(1)) {
+              context.lineTo(imageRect.left + point.x, imageRect.top + point.y);
+            }
+            context.stroke();
+            context.restore();
+          }
+
+          if (denorm.type === 'text') {
+            context.save();
+            context.fillStyle = denorm.color;
+            const fontSize = Math.max(1, Math.round(18 * (imageRect.width / 800)));
+            context.font = `${fontSize}px Inter, system-ui, sans-serif`;
+            context.fillText(denorm.text, imageRect.left + denorm.x, imageRect.top + denorm.y);
+            context.restore();
+          }
+
           context.restore();
         }
-
-        context.restore();
+        if (paneRect) context.restore();
       }
       return;
     }
 
     // Pagination mode: draw annotations on the current page image
     const pageImageRects = getPageImageRects();
-    for (const annotation of annotations) {
-      const langId = annotation.langId === 'tc' ? 'tc' : 'en';
-      const imageRect = pageImageRects[langId];
-      if (!imageRect) continue;
-
-      // Clip to the page image area so annotations don't bleed outside
-      context.save();
-      context.beginPath();
-      context.rect(imageRect.left, imageRect.top, imageRect.width, imageRect.height);
-      context.clip();
-
-      // Denormalize if stored as percentages
-      const denorm = annotation.coordsNormalized
-        ? denormalizeAnnotationCoords(annotation, imageRect)
-        : annotation;
-
-      if (denorm.type === 'stroke') {
-        const points = denorm.points || [];
-        if (points.length < 2) { context.restore(); continue; }
+    for (const [langId, langAnnotations] of Object.entries(byLang)) {
+      const paneRect = paneRects[langId];
+      if (paneRect) {
         context.save();
-        context.lineJoin = 'round';
-        context.lineCap = 'round';
-        context.strokeStyle = denorm.color;
-        context.globalAlpha = denorm.mode === 'highlight' ? 0.28 : 1;
-        const strokeScale = Math.max(0.2, imageRect.width / 800);
-        context.lineWidth = (denorm.mode === 'highlight' ? 18 : 4) * strokeScale;
         context.beginPath();
-        context.moveTo(imageRect.left + points[0].x, imageRect.top + points[0].y);
-        for (const point of points.slice(1)) {
-          context.lineTo(imageRect.left + point.x, imageRect.top + point.y);
-        }
-        context.stroke();
-        context.restore();
+        context.rect(paneRect.left, paneRect.top, paneRect.width, paneRect.height);
+        context.clip();
       }
+      for (const annotation of langAnnotations) {
+        const imageRect = pageImageRects[langId];
+        if (!imageRect) continue;
 
-      if (denorm.type === 'text') {
         context.save();
-        context.fillStyle = denorm.color;
-        const fontSize = Math.max(1, Math.round(18 * (imageRect.width / 800)));
-        context.font = `${fontSize}px Inter, system-ui, sans-serif`;
-        context.fillText(denorm.text, imageRect.left + denorm.x, imageRect.top + denorm.y);
+        context.beginPath();
+        context.rect(imageRect.left, imageRect.top, imageRect.width, imageRect.height);
+        context.clip();
+
+        const denorm = annotation.coordsNormalized
+          ? denormalizeAnnotationCoords(annotation, imageRect)
+          : annotation;
+
+        if (denorm.type === 'stroke') {
+          const points = denorm.points || [];
+          if (points.length < 2) { context.restore(); continue; }
+          context.save();
+          context.lineJoin = 'round';
+          context.lineCap = 'round';
+          context.strokeStyle = denorm.color;
+          context.globalAlpha = denorm.mode === 'highlight' ? 0.28 : 1;
+          const strokeScale = Math.max(0.2, imageRect.width / 800);
+          context.lineWidth = (denorm.mode === 'highlight' ? 18 : 4) * strokeScale;
+          context.beginPath();
+          context.moveTo(imageRect.left + points[0].x, imageRect.top + points[0].y);
+          for (const point of points.slice(1)) {
+            context.lineTo(imageRect.left + point.x, imageRect.top + point.y);
+          }
+          context.stroke();
+          context.restore();
+        }
+
+        if (denorm.type === 'text') {
+          context.save();
+          context.fillStyle = denorm.color;
+          const fontSize = Math.max(1, Math.round(18 * (imageRect.width / 800)));
+          context.font = `${fontSize}px Inter, system-ui, sans-serif`;
+          context.fillText(denorm.text, imageRect.left + denorm.x, imageRect.top + denorm.y);
+          context.restore();
+        }
+
         context.restore();
       }
-
-      context.restore(); // restore clip
+      if (paneRect) context.restore();
     }
-  }, [getPageImageRects, denormalizeAnnotationCoords, getAllThumbnailRects]);
+  }, [getPageImageRects, getPaneRects, denormalizeAnnotationCoords, getAllThumbnailRects]);
 
   const pointToSegmentDistance = (point, start, end) => {
     const dx = end.x - start.x;
@@ -4228,6 +4318,21 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const mediaQuery = window.matchMedia('(min-width: 817px) and (max-width: 960px)');
+    const handleChange = (event) => {
+      setIsMediumBilingualWidth(event.matches);
+    };
+    setIsMediumBilingualWidth(mediaQuery.matches);
+    if (typeof mediaQuery.addEventListener === 'function') {
+      mediaQuery.addEventListener('change', handleChange);
+      return () => mediaQuery.removeEventListener('change', handleChange);
+    }
+    mediaQuery.addListener(handleChange);
+    return () => mediaQuery.removeListener(handleChange);
+  }, []);
+
+  useEffect(() => {
     console.log('[layout] immediate fit refresh — sidebar/fullscreen/panel changed');
     refreshFitForCurrentMode();
   }, [sidebarCollapsed, sidebarHidden, panelVisible, annotationToolsOpen, refreshFitForCurrentMode]);
@@ -4402,6 +4507,10 @@ function App() {
   }, [isNarrowScreen]);
 
   const isBilingualView = selectedLanguage === 'bilingual' && visibleLanguages.length > 1;
+  // When the screen is portrait OR in the medium tablet-landscape range
+  // (817px–960px), use the stacked layout with bilingual-mid-header bar
+  // between the two language panes instead of the floating pill badge.
+  const useBilingualMidHeaderLayout = isBilingualView && (isPortrait || isMediumBilingualWidth);
   const maxPagesInGroup = useMemo(() => {
     const counts = visibleLanguages
       .map((language) => Number(pageCounts[language] || 0))
@@ -5949,7 +6058,7 @@ function App() {
 
       <main className="reader">
         <div
-          className={`book-stage ${displayMode} ${isBilingualView ? 'bilingual-layout' : ''} tool-${tool}`}
+          className={`book-stage ${displayMode} ${isBilingualView ? 'bilingual-layout' : ''} ${useBilingualMidHeaderLayout ? 'bilingual-stacked' : ''} tool-${tool}`}
           ref={stageRef}
           onClick={(e) => { handleStageClick(e); if (tool === 'text') handleCanvasClick(e); }}
           onContextMenu={handleStageContextMenu}
@@ -5989,7 +6098,7 @@ function App() {
           ) : (
             <>
             {/* ── Bilingual landscape: floating header pill at top-right ── */}
-            {isBilingualView && !isPortrait && (
+            {isBilingualView && !useBilingualMidHeaderLayout && (
               <header className="page-card-header bilingual-float-header">
                 <strong className="header-book">{selectedChapter} · {selectedFile} · {selectedPage}</strong>
                 <button
@@ -6015,8 +6124,8 @@ function App() {
               </header>
             )}
 
-            {/* ── Bilingual portrait: header bar between EN (top) and TC (bottom) ── */}
-            {isBilingualView && isPortrait ? (
+            {/* ── Bilingual portrait / medium-width: header bar between EN (top) and TC (bottom) ── */}
+            {useBilingualMidHeaderLayout ? (
               <>
                 {visibleLanguages.filter(l => l === 'en').map((language) => {
                   const src = pageSources[language];

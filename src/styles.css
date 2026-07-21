@@ -1120,6 +1120,19 @@ button, input, select {
   align-items: stretch;
 }
 
+/* Stacked bilingual layout (portrait or medium-width 817–960px):
+   header bar gets natural height, both language panes split the
+   remaining vertical space equally. */
+.book-stage.bilingual-stacked {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr auto 1fr;
+}
+
+.book-stage.bilingual-stacked > .page-card {
+  min-height: 0;
+  overflow: hidden;
+}
+
 /* Blank placeholder pages for bilingual padding (shorter PDF padded to match taller).
    Page number is shown as direct textContent, centred with flexbox. */
 .pdf-blank-page {
@@ -1245,7 +1258,7 @@ button, input, select {
   align-items: center;
   justify-content: flex-start;
   gap: 8px;
-  padding: 6px 14px;
+  padding: 0 14px !important;
   border-radius: 0;
   max-width: 100%;
   background: rgba(26, 58, 74, 0.92);
@@ -1254,6 +1267,9 @@ button, input, select {
   font-size: 0.82rem;
   flex: 0 0 auto;
   top: 0px !important;  
+  height: auto !important;
+  min-height: 22px;
+  line-height: 1.2;
 }
 
 .bilingual-mid-header .header-book {

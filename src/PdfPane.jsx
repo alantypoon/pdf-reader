@@ -222,7 +222,6 @@ const _bilingualMaxHeights = new Map();  // syncGroup → running max (px)
 const BILINGUAL_REPOSITION_EVENT = 'pdf-bilingual-reposition';
 let _bilingualRepositioning = false;  // true while repositionBilingualPages is adjusting scrollTop
 let _scrollRestoreInProgress = false; // true while a saved scroll position is being restored — suppresses saveScrollNow so the fraction is not recomputed before the layout stabilises
-let _programmaticScrolling = false;   // true while the scroll-to-page effect is scrolling — suppresses scroll-event-driven page-change detection so it doesn't race with explicit user navigation
 
 /**
  * Returns the effective column width for a bilingual pane.
@@ -451,6 +450,7 @@ function PdfPane({
   const currentPageRef = useRef(currentPage);
   const renderedPageRef = useRef(1);
   const syncingFromRemoteRef = useRef(false);
+  const programmaticScrollingRef = useRef(false);  // true while the scroll-to-page effect is scrolling (per-instance, not shared across panes)
   const modeGenRef = useRef(0);
   const scrollRestoredRef = useRef(false);
   const isInitialLoadRef = useRef(true);  // true until first content load completes
@@ -1211,7 +1211,7 @@ function PdfPane({
           // sync — the initiating pane already reported the correct page.
           // Also suppress during bilingual repositioning to avoid false
           // page-change detections from proportional scroll adjustment.
-          if (!syncingFromRemoteRef.current && !_bilingualRepositioning && !_programmaticScrolling) {
+          if (!syncingFromRemoteRef.current && !_bilingualRepositioning && !programmaticScrollingRef.current) {
             lastScrolledFromSyncRef.current = true;
             onPageChange(nearest);
           }
@@ -1380,7 +1380,8 @@ function PdfPane({
     if (isInitialLoadRef.current) return;
     const mount = scrollRef.current;
     if (!mount || !mount.children.length) return;
-    // Skip if the page change was triggered by our own scroll sync.
+    // Skip if the page change was triggered by our own scroll sync
+    // (e.g. onPageChange called from doScrollWork after natural scroll).
     if (lastScrolledFromSyncRef.current) {
       lastScrolledFromSyncRef.current = false;
       return;
@@ -1396,7 +1397,17 @@ function PdfPane({
     // bilingual CSS rule), so offsetTop is always correct — no clamping
     // or retry needed.  Just scroll to the target position.
     const targetTop = target.offsetTop;
+    const currentScrollTop = getScrollPos(mount).scrollTop;
     const maxScroll = Math.max(0, mount.scrollHeight - mount.clientHeight);
+    // If we're already at the target position (within a 2px tolerance
+    // for sub-pixel rounding), skip the scroll entirely. This prevents
+    // unnecessary scroll events, RAF handlers, and cross-pane sync
+    // dispatches — especially important in bilingual mode where sync
+    // events from the other pane may have already positioned us correctly.
+    const scrollTarget = Math.min(targetTop, maxScroll);
+    if (Math.abs(currentScrollTop - scrollTarget) <= 2) {
+      return;
+    }
     const chapter = String(source || '').split(':')[2] || '?';
     // Use the first page's offsetHeight as the authoritative page height.
     // All pages share the same height (from the bilingual CSS rule or
@@ -1406,13 +1417,13 @@ function PdfPane({
     console.log(
       `[trace] scroll-to-page  ${chapter}.${currentPage}  ` +
       `offsetTop=${Math.round(targetTop)}  avgPageH=offsetHeight(page1)=${avgPageH}  ` +
-      `requested=${Math.round(targetTop)}  maxScroll=${Math.round(maxScroll)}  ` +
+      `requested=${Math.round(scrollTarget)}  maxScroll=${Math.round(maxScroll)}  ` +
       `scrollHeight=${Math.round(mount.scrollHeight)}  clientHeight=${mount.clientHeight}`
     );
 
-    _programmaticScrolling = true;
-    myScrollTo(mount, { top: Math.min(targetTop, maxScroll), behavior: 'instant' });
-    _programmaticScrolling = false;
+    programmaticScrollingRef.current = true;
+    myScrollTo(mount, { top: scrollTarget, behavior: 'instant' });
+    programmaticScrollingRef.current = false;
     const actualPos = getScrollPos(mount);
     console.log(`[trace] scroll-to-page  RESULT  ${chapter}.${currentPage}  actualPage=${findContainingPage(mount, actualPos.scrollTop).page}  actualTop=${Math.round(actualPos.scrollTop)}`);
 
@@ -2232,7 +2243,10 @@ function PdfPane({
       }
 
       const cp = currentPageRef.current;
-      if (nearest !== cp && !_programmaticScrolling) {
+      // Suppress onPageChange when this scroll was triggered programmatically
+      // (scroll-to-page effect) or during bilingual repositioning to avoid
+      // false page-change detections from proportional scroll adjustment.
+      if (nearest !== cp && !programmaticScrollingRef.current && !_bilingualRepositioning) {
         lastScrolledFromSyncRef.current = true;
         onPageChange(nearest);
       }
