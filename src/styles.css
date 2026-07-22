@@ -1120,7 +1120,7 @@ button, input, select {
   align-items: stretch;
 }
 
-/* Stacked bilingual layout (portrait or medium-width 817–960px):
+/* Stacked bilingual layout (portrait or medium-width 817–1040px):
    header bar gets natural height, both language panes split the
    remaining vertical space equally. */
 .book-stage.bilingual-stacked {
@@ -1137,7 +1137,6 @@ button, input, select {
    Page number is shown as direct textContent, centred with flexbox. */
 .pdf-blank-page {
   background: #f5f5f5;
-  border: 1px dashed #ccc;
   box-sizing: border-box;
   position: relative;
   display: flex;
@@ -1148,6 +1147,12 @@ button, input, select {
   pointer-events: none;
   user-select: none;
   width: 100% !important;
+  border-radius: 8px;
+  border: 1px solid gray !important;
+  margin: 20px 0px !important;  
+}
+.bilingual-scroll-spacer{
+  display:none;
 }
 
 .book-stage.scrolling {
@@ -1202,7 +1207,7 @@ button, input, select {
 
 .page-card-header {
   position: absolute;
-  /* right: 8px; */
+  right: 8px;
   top: 8px;
   z-index: 3;
   display: flex;
@@ -1583,8 +1588,10 @@ button, input, select {
 
 .page-img {
   background: white;
-  border-radius: 0;
-  box-shadow: none;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15), 0 1px 4px rgba(0, 0, 0, 0.08);
+  border-radius: 8px;
+  border: 1px solid gray;
+  margin: 20px 0px !important;  
 }
 
 /* Page image — subtle placeholder background for loading / broken states */
@@ -3060,14 +3067,6 @@ button, input, select {
     top: 8px;
   }
 
-  .book-stage.scrolling {
-    grid-template-columns: 1fr;
-  }
-
-  .book-stage.bilingual-layout {
-    grid-template-columns: 1fr;
-  }
-
   .section-resources {
     grid-template-columns: 1fr;
   }
@@ -3084,6 +3083,18 @@ button, input, select {
   .annotation-panel.docked-bottom .panel-row-2,
   .annotation-panel.docked-bottom .toolbar-group {
     justify-content: center;
+  }
+}
+
+/* Bilingual stacked layout: force single-column grid so the
+   mid-header bar separates EN (top) and TC (bottom) panes. */
+@media (max-width: 1040px) {
+  .book-stage.scrolling {
+    grid-template-columns: 1fr;
+  }
+
+  .book-stage.bilingual-layout {
+    grid-template-columns: 1fr;
   }
 }
 

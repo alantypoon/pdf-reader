@@ -142,10 +142,10 @@ function hasRenderableSource(source) {
 function getSubjectLabel(subjectId, selectedLanguage = 'en') {
   const normalized = String(subjectId || '').trim().toLowerCase();
   const showChinese = selectedLanguage === 'tc';
-  if (normalized === 'biology-oup') return showChinese ? '生物' : 'Bio';
-  if (normalized === 'chemistry-aristo') return showChinese ? '化學' : 'Chem';
+  if (normalized === 'biology-oup') return showChinese ? '生物' : 'Biology';
+  if (normalized === 'chemistry-aristo') return showChinese ? '化學' : 'Chemistry';
   if (normalized === 'chemistry-winter') return showChinese ? '化學.W' : 'Chem.W';
-  if (normalized === 'physics-oup') return showChinese ? '物理' : 'Phy';
+  if (normalized === 'physics-oup') return showChinese ? '物理' : 'Physics';
   return String(subjectId || '').trim();
 }
 
@@ -154,7 +154,8 @@ function getSubjectAbbreviation(subjectId, selectedLanguage = 'en') {
   const normalized = String(subjectId || '').trim().toLowerCase();
   let result;
   if (normalized === 'biology-oup') result = selectedLanguage === 'tc' ? '生物' : 'Bio';
-  else if (normalized === 'chemistry-winter') result = selectedLanguage === 'tc' ? '化學' : 'Che';
+  else if (normalized === 'chemistry-aristo') result = selectedLanguage === 'tc' ? '化學' : 'Chem';
+  else if (normalized === 'chemistry-winter') result = selectedLanguage === 'tc' ? '化學' : 'CheW';
   else if (normalized === 'physics-oup') result = selectedLanguage === 'tc' ? '物理' : 'Phy';
   else result = getSubjectLabel(subjectId, selectedLanguage);
   // console.log('[subjectBtn] getSubjectAbbreviation', { subjectId, selectedLanguage, normalized, result });
@@ -369,10 +370,11 @@ function App() {
   const [lastSubjectId, setLastSubjectId] = useState('');
   const [sessionUserResolved, setSessionUserResolved] = useState(false);
   const [userSelectsLoaded, setUserSelectsLoaded] = useState(false);
-  const [selectedBook, setSelectedBook] = useState('');
-  const [selectedChapter, setSelectedChapter] = useState('');
-  const [selectedFile, setSelectedFile] = useState(1);
-  const [selectedPage, setSelectedPage] = useState(1);
+  const [selectedBook, setSelectedBook] = useState(savedPrefs.selectedBook || '');
+  const selectedBookRef = useRef(savedPrefs.selectedBook || '');
+  const [selectedChapter, setSelectedChapter] = useState(savedPrefs.selectedChapter || '');
+  const [selectedFile, setSelectedFile] = useState(savedPrefs.selectedFile || 1);
+  const [selectedPage, setSelectedPage] = useState(savedPrefs.selectedPage || 1);
   const [selectedPhysicsChapterId, setSelectedPhysicsChapterId] = useState('');
   const [displayMode, setDisplayMode] = useState(savedPrefs.displayMode || 'scrolling');
   const showThumbnails = displayMode === 'thumbnails';
@@ -388,6 +390,7 @@ function App() {
   const regenSkipFlashcardsRef = useRef(false);
   const regenSkipQuizRef = useRef(false);
   const [selectedLanguage, setSelectedLanguage] = useState(savedPrefs.selectedLanguage || 'bilingual');
+  const selectedLanguageRef = useRef(selectedLanguage);
 
   // Auto-fallback to English if the selected language isn't available for the current book.
   // 'bilingual' is a UI mode combining en+tc — only skip fallback when both languages exist.
@@ -396,6 +399,10 @@ function App() {
     const hasBoth = bookAvailableLanguages.includes('en') && bookAvailableLanguages.includes('tc');
     if (selectedLanguage === 'bilingual' && hasBoth) return;
     if (!bookAvailableLanguages.includes(selectedLanguage)) {
+      // When only one language is available, 'bilingual' is effectively
+      // that language already — forcing a change to 'en' would trigger a
+      // redundant loadPages run and DOM rebuild, resetting scroll position.
+      if (selectedLanguage === 'bilingual' && bookAvailableLanguages.length === 1) return;
       setSelectedLanguage('en');
     }
   }, [bookAvailableLanguages, selectedLanguage]);
@@ -550,13 +557,13 @@ function App() {
     if (typeof window === 'undefined') return false;
     return window.matchMedia('(orientation: portrait)').matches;
   });
-  // Medium-width range (817px–960px): tablet landscape where CSS
+  // Medium-width range (817px–1040px): tablet landscape where CSS
   // collapses to 1-column but orientation is still landscape.
   // In this range we use the bilingual-mid-header (stacked layout)
   // instead of the floating pill badge, maximising reading area.
   const [isMediumBilingualWidth, setIsMediumBilingualWidth] = useState(() => {
     if (typeof window === 'undefined') return false;
-    return window.matchMedia('(min-width: 817px) and (max-width: 960px)').matches;
+    return window.matchMedia('(min-width: 817px) and (max-width: 1040px)').matches;
   });
   const panelRef = useRef(null);
   const mainControlsRef = useRef(null);
@@ -802,11 +809,38 @@ function App() {
           ? apiLangs.filter((l) => l === 'en')
           : apiLangs;
         setBookAvailableLanguages(langs);
-        if (effectiveBook === 'chemistry-winter') {
-          setSelectedLanguage('en');
-        }
+        // Auto-fallback effect handles language selection — don't force
+        // setSelectedLanguage here because it triggers a second loadPages
+        // run on reload (the first already ran with the localStorage language),
+        // which causes a DOM rebuild that resets the scroll position.
         if (chapters.length) {
-          applySubjectSelection(book || bookId, chapters, bookId);
+          // ── Merge server-saved selections with localStorage values ──
+          // The server save has a 250ms debounce — if the user navigates
+          // and reloads quickly, the server still holds the OLD page number.
+          // LocalStorage is always up-to-date because it's saved synchronously
+          // on every navigation (and in the pagehide handler).
+          const serverSel = (subjectSelections && Object.keys(subjectSelections).length > 0)
+            ? (subjectSelections[book || bookId] || null)
+            : null;
+          if (serverSel) {
+            const lsChapter = savedPrefs.selectedChapter || '';
+            const lsFile = savedPrefs.selectedFile;
+            const lsPage = savedPrefs.selectedPage;
+            // If server and localStorage agree on the book, prefer localStorage
+            // values — they are guaranteed more recent from this device.
+            if (serverSel.bookId === lsChapter && lsChapter) {
+              applyBookSelection(chapters, serverSel.bookId, {
+                preferredSectionId: lsFile != null ? lsFile : serverSel.sectionId,
+                preferredPageId: lsPage != null ? lsPage : serverSel.pageId,
+                preferredPhysicsChapterId: serverSel.physicsChapterId || '',
+              });
+            } else {
+              // Different book on server — user switched devices, trust server.
+              applySubjectSelection(book || bookId, chapters, bookId);
+            }
+          }
+          // If no server data at all, keep the localStorage values already
+          // set via useState initializers — no action needed.
         } else {
           setSelectedChapter('');
           setSelectedFile(1);
@@ -1002,7 +1036,18 @@ function App() {
   const qrUrlRewriteMap = useMemo(() => buildQrUrlRewriteMap(currentChapter), [currentChapter]);
 
   const handleBookSelect = (newBookId) => {
-    applyBookSelection(structure, newBookId);
+    // Look up saved selections for the current subject.  If the saved
+    // book matches the target book, restore the section and page so the
+    // user lands where they left off instead of always resetting to page 1.
+    const savedSelection = subjectSelections[selectedBook] || {};
+    const options = (savedSelection.bookId === newBookId)
+      ? {
+          preferredSectionId: savedSelection.sectionId,
+          preferredPageId: savedSelection.pageId,
+          preferredPhysicsChapterId: savedSelection.physicsChapterId,
+        }
+      : {};
+    applyBookSelection(structure, newBookId, options);
   };
 
   const physicsBookChapterMeta = useMemo(() => {
@@ -1173,9 +1218,11 @@ function App() {
     setSelectedBook(newBook);
     setLastSubjectId(newBook);
     setSelectedChapter('');
-    setSelectedFile(1);
-    setSelectedPage(1);
     setSelectedPhysicsChapterId('');
+    // Keep selectedFile and selectedPage at their current values — they'll be
+    // updated by applySubjectSelection once the catalog loads.  Resetting them
+    // to 1 here would cause a flash AND corrupt the saved section/page for
+    // the new subject before the saved selections can be restored.
     // chem.w only has English content — select English and disable tc/bilingual
     if (newBook === 'chemistry-winter') {
       setSelectedLanguage('en');
@@ -1343,6 +1390,27 @@ function App() {
     // Bump fit refresh so the new mode re-measures viewport dimensions.
     // Do NOT reset zoom — the user's zoom level persists across mode switches.
     setFitRefreshToken((t) => t + 1);
+    // When switching from thumbnails to scrolling/pagination, the content
+    // div remounts (key={mode}) and the DOM may not be fully laid out when
+    // the first fit refresh fires.  Schedule a second refresh after the
+    // browser has completed layout + paint (double-rAF) to ensure images
+    // are correctly fitted to the screen width.
+    let cancelled = false;
+    requestAnimationFrame(() => {
+      if (cancelled) return;
+      requestAnimationFrame(() => {
+        if (cancelled) return;
+        setFitRefreshToken((t) => t + 1);
+      });
+    });
+    // Safety net: one more refresh at 200ms in case images are still loading.
+    const timer = setTimeout(() => {
+      if (!cancelled) setFitRefreshToken((t) => t + 1);
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [displayMode]);
 
   useEffect(() => {
@@ -1370,7 +1438,18 @@ function App() {
   }, [selectedChapter]);
 
   useEffect(() => {
-    if (!selectedBook) return;
+    selectedBookRef.current = selectedBook;
+  }, [selectedBook]);
+
+  useEffect(() => {
+    selectedLanguageRef.current = selectedLanguage;
+  }, [selectedLanguage]);
+
+  useEffect(() => {
+    // Don't save while chapter is empty — this is a transitional state
+    // during subject/book switches that would overwrite the previously
+    // saved selection with blank values before restoration can occur.
+    if (!selectedBook || !selectedChapter) return;
     setSubjectSelections((current) => {
       const nextEntry = {
         bookId: selectedChapter,
@@ -1392,7 +1471,9 @@ function App() {
   }, [selectedBook, selectedChapter, selectedFile, selectedPage, selectedPhysicsChapterId]);
 
   useEffect(() => {
-    if (!sessionUserResolved || !userSelectsLoaded || !userId || !selectedBook || restoringUserSelectsRef.current) return;
+    // Don't save while chapter is empty — transitional state during subject
+    // switches that would overwrite the saved selection on the server.
+    if (!sessionUserResolved || !userSelectsLoaded || !userId || !selectedBook || !selectedChapter || restoringUserSelectsRef.current) return;
     const timer = window.setTimeout(() => {
       fetchJson('api/user-selects', {
         method: 'POST',
@@ -1415,33 +1496,68 @@ function App() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const prefs = {
-      selectedBook,
-      displayMode,
-      selectedLanguage,
-      sidebarCollapsed,
-      sidebarHidden,
-      tool,
-      annotationToolsOpen,
-      textColor,
-      zoomLevel,
-      fitMode,
-      panelPos,
-      panelVisible,
-      wholeWord,
-      searchScopePage,
-      searchScopeSection,
-      searchSubjects
+
+    // Persist preferences to localStorage so they survive page reloads
+    // synchronously (useState initializers read them back on next load).
+    const savePreferencesNow = () => {
+      // Never persist an empty chapter — this is a transitional state
+      // during subject/book switches (handleSubjectChange calls
+      // setSelectedChapter('')) that would corrupt the saved position.
+      // Wait until the catalog loads and a real chapter is assigned.
+      const chapter = selectedChapterRef.current;
+      const book = selectedBookRef.current;
+      if (!chapter && book) return;
+
+      const prefs = {
+        selectedBook: selectedBookRef.current,
+        selectedChapter: selectedChapterRef.current,
+        selectedFile: selectedFileRef.current,
+        selectedPage: selectedPageRef.current,
+        displayMode: displayModeRef.current,
+        selectedLanguage: selectedLanguageRef.current,
+        sidebarCollapsed,
+        sidebarHidden,
+        tool,
+        annotationToolsOpen,
+        textColor,
+        zoomLevel: zoomLevelRef.current,
+        fitMode,
+        panelPos,
+        panelVisible,
+        wholeWord,
+        searchScopePage,
+        searchScopeSection,
+        searchSubjects
+      };
+      if (isDebugScrollingPersistence()) console.log('[prefs-save] to localStorage:', { chapter: prefs.selectedChapter, file: prefs.selectedFile, page: prefs.selectedPage });
+      const raw = JSON.stringify(prefs);
+      window.localStorage.setItem(PREFERENCES_KEY, raw);
+      _cachedPreferences = prefs;
+      _cachedPreferencesKey = raw;
     };
-    if (isDebugScrollingPersistence()) console.log('[scroll-persist] SAVE zoom to localStorage:', { zoomLevel, fitMode });
-    const raw = JSON.stringify(prefs);
-    window.localStorage.setItem(PREFERENCES_KEY, raw);
-    // Invalidate the module-level cache so the next loadPreferences() call
-    // (if any) picks up the fresh data instead of returning stale cache.
-    _cachedPreferences = prefs;
-    _cachedPreferencesKey = raw;
+
+    // Save synchronously before the page unloads / tab hides so the latest
+    // page number is never lost, even if the user closes the tab immediately
+    // after navigating.
+    const onPageHide = () => savePreferencesNow();
+    const onVisibilityHidden = () => {
+      if (document.visibilityState === 'hidden') savePreferencesNow();
+    };
+    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('visibilitychange', onVisibilityHidden);
+
+    // Also save on every state change (debounced by React's batching).
+    savePreferencesNow();
+
+    return () => {
+      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('visibilitychange', onVisibilityHidden);
+    };
   }, [
     selectedBook,
+    selectedChapter,
+    selectedFile,
+    selectedPage,
     displayMode,
     selectedLanguage,
     sidebarCollapsed,
@@ -1729,6 +1845,10 @@ function App() {
     const onWheel = (e) => {
       if (Date.now() - lastTouchScrollAtRef.current < 250) return;
       cancelMomentum();
+
+      // Let the thumbnail grid scroll naturally with the mouse wheel —
+      // don't intercept wheel events inside the grid.
+      if (e.target.closest('.thumbnail-grid')) return;
 
       const scrollTarget = getScrollTargetForGesture(e);
       if (!scrollTarget) return;
@@ -3137,11 +3257,29 @@ function App() {
       y: event.clientY - rect.top
     };
     const pageImageRects = getPageImageRects();
+    const paneRects = getPaneRects();
     const isScrollMode = displayModeRef.current === 'scrolling';
+
+    /**
+     * Returns true when canvasPoint lies within the given pane rect.
+     * Used as a secondary guard to prevent an oversized page-image rect
+     * (e.g. EN image taller than its grid row in bilingual-stacked layout)
+     * from "leaking" into the adjacent language pane and causing the wrong
+     * langId to be matched.
+     */
+    const isWithinPane = (langId) => {
+      const pr = paneRects[langId];
+      if (!pr) return true; // no pane rect → allow (degraded fallback)
+      return canvasPoint.x >= pr.left
+        && canvasPoint.x <= pr.left + pr.width
+        && canvasPoint.y >= pr.top
+        && canvasPoint.y <= pr.top + pr.height;
+    };
 
     if (isScrollMode) {
       // In scrolling mode, rects are keyed by "langId-pageNum"
       for (const langId of visibleLanguages) {
+        if (!isWithinPane(langId)) continue;
         // Check all page rects for this language; find the one containing the click
         for (const [key, imageRect] of Object.entries(pageImageRects)) {
           if (!key.startsWith(langId + '-')) continue;
@@ -3149,7 +3287,7 @@ function App() {
             && canvasPoint.x <= imageRect.left + imageRect.width
             && canvasPoint.y >= imageRect.top
             && canvasPoint.y <= imageRect.top + imageRect.height) {
-            return {
+            const result = {
               langId,
               point: {
                 x: canvasPoint.x - imageRect.left,
@@ -3158,14 +3296,44 @@ function App() {
               imageRect: { width: imageRect.width, height: imageRect.height },
               pageNum: Number(key.split('-')[1]),
             };
+            if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('dbg-ann')) {
+              console.log('[ann] resolveAnnotationTarget HIT', {
+                key, langId, pageNum: result.pageNum,
+                canvasPoint: { x: Math.round(canvasPoint.x), y: Math.round(canvasPoint.y) },
+                imageRect: { left: Math.round(imageRect.left), top: Math.round(imageRect.top), width: Math.round(imageRect.width), height: Math.round(imageRect.height) },
+                point: { x: Math.round(result.point.x), y: Math.round(result.point.y) },
+                allKeys: Object.keys(pageImageRects),
+              });
+            }
+            return result;
           }
         }
+      }
+      if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('dbg-ann')) {
+        console.log('[ann] resolveAnnotationTarget MISS', {
+          canvasPoint: { x: Math.round(canvasPoint.x), y: Math.round(canvasPoint.y) },
+          visibleLanguages,
+          rects: Object.entries(pageImageRects).map(([k, r]) => ({
+            key: k,
+            left: Math.round(r.left), top: Math.round(r.top),
+            width: Math.round(r.width), height: Math.round(r.height),
+          })),
+          paneRects: Object.entries(paneRects).map(([k, r]) => ({
+            key: k,
+            left: Math.round(r.left), top: Math.round(r.top),
+            width: Math.round(r.width), height: Math.round(r.height),
+          })),
+        });
       }
       return null;
     }
 
-    // Pagination / thumbnails mode: rects are keyed by langId
+    // Pagination / thumbnails mode: rects are keyed by langId.
+    // Check pane rect FIRST so that an oversized page-image rect
+    // (e.g. EN image taller than its grid row in bilingual-stacked
+    // layout) cannot bleed into the adjacent language pane.
     const langId = visibleLanguages.find((language) => {
+      if (!isWithinPane(language)) return false;
       const imageRect = pageImageRects[language];
       return imageRect
         && canvasPoint.x >= imageRect.left
@@ -3188,7 +3356,7 @@ function App() {
       // Page image dimensions for percentage normalization
       imageRect: { width: imageRect.width, height: imageRect.height },
     };
-  }, [getPageImageRects, visibleLanguages]);
+  }, [getPageImageRects, getPaneRects, visibleLanguages]);
 
   const redraw = useCallback((context, width, height, annotations) => {
     if (!context) return;
@@ -3468,11 +3636,11 @@ function App() {
         const stroke = currentStrokeRef.current;
         drawingRef.current = false;
         currentStrokeRef.current = null;
-        // Save the partial stroke before discarding
-        const pageImageRects = getPageImageRects();
+        // Save the partial stroke before discarding.
+        // Use the imageRect captured at pointer-down if available.
         const isScrollMode = displayModeRef.current === 'scrolling';
         const rectKey = isScrollMode ? `${stroke.langId}-${stroke.page || selectedPage}` : stroke.langId;
-        const imageRect = pageImageRects[rectKey];
+        const imageRect = stroke.imageRect || getPageImageRects()[rectKey];
         const normalizedStroke = imageRect
           ? normalizeAnnotationCoords(stroke, imageRect)
           : stroke;
@@ -3514,6 +3682,12 @@ function App() {
       mode: tool,
       color: textColor,
       points: [target.point],
+      // Capture the image dimensions at pointer-down so normalization
+      // at pointer-up uses the SAME rect the points were collected against.
+      // If the DOM layout changes during the gesture (e.g. bilingual
+      // repositioning or image load), a fresh getPageImageRects() lookup
+      // would return different dimensions and distort the coordinates.
+      imageRect: target.imageRect,
       createdAt: hkNow()
     };
   };
@@ -3632,14 +3806,30 @@ function App() {
     const stroke = currentStrokeRef.current;
     currentStrokeRef.current = null;
     // console.log('[draw] pointerup — stroke points:', stroke.points.length);
-    // Normalize coordinates to percentages relative to page image size
-    const pageImageRects = getPageImageRects();
+    // Normalize coordinates to percentages relative to page image size.
+    // Use the imageRect captured at pointer-down so the dimensions match
+    // the coordinate space the points were collected in.  Fall back to a
+    // fresh lookup only when the stroke doesn't carry its own imageRect
+    // (e.g. annotations created before this fix was deployed).
     const isScrollMode = displayModeRef.current === 'scrolling';
     const rectKey = isScrollMode ? `${stroke.langId}-${stroke.page || selectedPage}` : stroke.langId;
-    const imageRect = pageImageRects[rectKey];
+    const imageRect = stroke.imageRect || getPageImageRects()[rectKey];
     const normalizedStroke = imageRect
       ? normalizeAnnotationCoords(stroke, imageRect)
       : stroke;
+    if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('dbg-ann')) {
+      const lastPt = stroke.points[stroke.points.length - 1];
+      console.log('[ann] handlePointerUp normalize', {
+        langId: stroke.langId, page: stroke.page,
+        rectKey,
+        usedStoredImageRect: !!stroke.imageRect,
+        imageRect: imageRect ? { w: Math.round(imageRect.width), h: Math.round(imageRect.height) } : null,
+        lastPoint: lastPt ? { x: Math.round(lastPt.x), y: Math.round(lastPt.y) } : null,
+        normalizedLastPoint: normalizedStroke.coordsNormalized && normalizedStroke.points
+          ? { x: normalizedStroke.points[normalizedStroke.points.length - 1].x.toFixed(2), y: normalizedStroke.points[normalizedStroke.points.length - 1].y.toFixed(2) }
+          : null,
+      });
+    }
     try {
       await saveRemark(normalizedStroke);
     } catch (err) {
@@ -4319,7 +4509,7 @@ function App() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
-    const mediaQuery = window.matchMedia('(min-width: 817px) and (max-width: 960px)');
+    const mediaQuery = window.matchMedia('(min-width: 817px) and (max-width: 1040px)');
     const handleChange = (event) => {
       setIsMediumBilingualWidth(event.matches);
     };
@@ -4508,7 +4698,7 @@ function App() {
 
   const isBilingualView = selectedLanguage === 'bilingual' && visibleLanguages.length > 1;
   // When the screen is portrait OR in the medium tablet-landscape range
-  // (817px–960px), use the stacked layout with bilingual-mid-header bar
+  // (817px–1040px), use the stacked layout with bilingual-mid-header bar
   // between the two language panes instead of the floating pill badge.
   const useBilingualMidHeaderLayout = isBilingualView && (isPortrait || isMediumBilingualWidth);
   const maxPagesInGroup = useMemo(() => {

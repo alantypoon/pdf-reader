@@ -132,18 +132,62 @@ function findContainingPage(mount, scrollTop) {
 
 /**
  * Build the scroll-position localStorage key from the source string.
- * Source format: "img:book:chapter:file:lang"
- * Key format:     "scroll-{book}-{chapter}"  (e.g. "scroll-biology-oup-1b")
  *
- * This namespaces scroll positions per subject so the same chapter ID
- * (e.g. "1a") across different books doesn't collide.
+ * Two source formats are supported:
+ *
+ *   1. Image mode:   "img:book:chapter:file:lang"
+ *      → key: "scroll-{book}-{chapter}"  (e.g. "scroll-biology-oup-1a")
+ *
+ *   2. PDF mode:     URL like "/pdf-reader/data/book/chapter/lang/file.pdf"
+ *      → key: "scroll-{book}-{chapter}"  (extracted from URL path segments)
+ *
+ * This namespaces scroll positions per subject+chapter so the same chapter
+ * ID (e.g. "1a") across different books doesn't collide.
  *
  * @param {string} source - source identifier string
  * @returns {string} localStorage key
  */
 function getScrollCacheKey(source) {
   if (!source) return 'scroll-default';
+
+  // Image-mode format: "img:book:chapter:file:lang"
   const parts = String(source).split(':');
+  if (parts.length >= 4 && parts[0] === 'img') {
+    const book = parts[1] || 'default';
+    const chapter = parts[2] || 'default';
+    return `scroll-${book}-${chapter}`;
+  }
+
+  // PDF-mode format: URL like "/pdf-reader/data/book/chapter/lang/file.pdf"
+  // Extract book + chapter from path segments.  Common patterns:
+  //   /pdf-reader/data/biology-oup/1a/en/1.pdf
+  //   /data/biology-oup/1a/en/1.pdf
+  try {
+    const url = new URL(String(source), 'http://localhost');
+    const segments = url.pathname.split('/').filter(Boolean);
+    // Look for a "data" segment followed by book and chapter
+    const dataIdx = segments.indexOf('data');
+    if (dataIdx >= 0 && segments.length > dataIdx + 2) {
+      const book = segments[dataIdx + 1] || 'default';
+      const chapter = segments[dataIdx + 2] || 'default';
+      return `scroll-${book}-${chapter}`;
+    }
+    // Fallback: if path has at least 2 segments, use last two meaningful ones
+    if (segments.length >= 3) {
+      // Try to find the book (second-to-last or third-to-last segment
+      // before the language code, which is typically 'en' or 'tc')
+      const langIdx = segments.findIndex(s => s === 'en' || s === 'tc');
+      if (langIdx >= 2) {
+        const book = segments[langIdx - 2] || 'default';
+        const chapter = segments[langIdx - 1] || 'default';
+        return `scroll-${book}-${chapter}`;
+      }
+    }
+  } catch {
+    // URL parsing failed — fall through to default
+  }
+
+  // Legacy/fallback: try colon-separated format anyway
   const book = parts[1] || 'default';
   const chapter = parts[2] || 'default';
   return `scroll-${book}-${chapter}`;
@@ -270,13 +314,14 @@ function repositionBilingualPages(mount, syncGroup) {
 
   // Skip everything if layout hasn't changed — prevents visual jump
   // when this function is called mid-scroll by resize observers.
-  const expectedSpacerH = children.length * maxH;
+  // The spacer is always 0px (pages provide their own scroll extent in
+  // block layout), so just check that a spacer exists.
   const existingSpacer = mount.querySelector('.bilingual-scroll-spacer');
-  const spacerSame = existingSpacer && Math.abs(parseFloat(existingSpacer.style.height) - expectedSpacerH) < 1;
+  const spacerExists = !!existingSpacer;
   // Also check whether CSS rule is already correct (injected via style element)
   const styleEl = document.getElementById('bilingual-page-height-css');
   const cssSame = styleEl && styleEl.textContent.includes(`height: ${maxH}px`);
-  if (spacerSame && cssSame) {
+  if (spacerExists && cssSame) {
     return;
   }
 
@@ -304,9 +349,13 @@ function repositionBilingualPages(mount, syncGroup) {
     child.style.right = '';
     child.style.marginLeft = '';
     child.style.marginRight = '';
-    child.style.display = 'block';
+    // Blank pages use flexbox for centering the page number — preserve
+    // display:flex from CSS (.pdf-blank-page) instead of overriding to block.
     if (child.dataset.blank === 'true') {
+      child.style.display = 'flex';
       child.style.setProperty('height', `${maxH}px`, 'important');
+    } else {
+      child.style.display = 'block';
     }
   });
 
@@ -319,10 +368,11 @@ function repositionBilingualPages(mount, syncGroup) {
   // container, not on the display type of children).
   mount.style.display = 'block';
 
-  // Add/update a normal-flow spacer so iOS -webkit-overflow-scrolling: touch
-  // can compute momentum correctly.  Absolute children alone do not create a
-  // scrollable content area that iOS momentum understands — a static element
-  // with the total content height serves as the canonical scroll extent.
+  // Pages are in normal block flow and already provide the correct
+  // scrollable content area for iOS -webkit-overflow-scrolling: touch.
+  // The spacer is kept as an invisible element (height:0) so that the
+  // early-exit check (spacerSame) still works — it prevents redundant
+  // repositioning when maxH hasn't changed.
   const totalPages = children.length;
   let spacer = mount.querySelector('.bilingual-scroll-spacer');
   if (!spacer) {
@@ -331,7 +381,7 @@ function repositionBilingualPages(mount, syncGroup) {
     spacer.style.cssText = 'width:1px;pointer-events:none;opacity:0;position:static;';
     mount.appendChild(spacer);
   }
-  spacer.style.height = `${totalPages * maxH}px`;
+  spacer.style.height = '0px';
 
   // Proportionally restore scroll position after height change.
   // Set _bilingualRepositioning so the scroll event handler suppresses
@@ -458,6 +508,12 @@ function PdfPane({
   const paneLanguageRef = useRef(paneLanguage);
   // source format: img:book:chapter:file:lang — extract chapter for storage key
   const chapterRef = useRef('default');
+  // Tracks the source that was used to build the CURRENT DOM content.
+  // Needed by the pre-rebuild save — when the effect re-runs with a new
+  // source (e.g. subject/language switch), `source` already points to the
+  // NEW subject, but the DOM still has the OLD subject's pages.  We must
+  // save the old position under the OLD key, not the new one.
+  const activeDomSourceRef = useRef(source || '');
   // Keep refs in sync so the pagehide handler (which runs in an effect with
   // empty deps) can still access the latest values.
   useEffect(() => { syncGroupRef.current = syncGroup; }, [syncGroup]);
@@ -558,6 +614,21 @@ function PdfPane({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [thumbnailsOpen, thumbCols, thumbs]);
+
+  // ── Scroll active thumbnail to center when page changes ──
+  useEffect(() => {
+    if (!thumbnailsOpen) return;
+    const grid = thumbGridRef.current;
+    if (!grid) return;
+    const activeBtn = grid.querySelector(`.thumb-grid-item.active`);
+    if (activeBtn) {
+      // Center the active thumbnail in the grid without animation.
+      const gridRect = grid.getBoundingClientRect();
+      const btnRect = activeBtn.getBoundingClientRect();
+      const targetScrollTop = grid.scrollTop + (btnRect.top - gridRect.top) - (gridRect.height - btnRect.height) / 2;
+      grid.scrollTop = Math.max(0, targetScrollTop);
+    }
+  }, [thumbnailsOpen, renderedPage]);
 
   useEffect(() => {
     const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
@@ -805,8 +876,8 @@ function PdfPane({
     draw();
   }, [isImageMode, pdfDoc, currentPage, numPages, mode, onPageChange, zoom, contentWidth, contentHeight, fitMode, fitRefreshToken]);
 
-  // ── Clamp horizontal scroll in pagination mode ──────────────
-  // Prevents the page from drifting sideways past its edges
+  // ── Clamp scroll in pagination mode ─────────────────────
+  // Prevents the page from drifting past its edges
   // (especially in fit-height mode where maxWidth is "none").
   useEffect(() => {
     if (mode !== 'pagination') return;
@@ -817,12 +888,21 @@ function PdfPane({
     if (!holder) return;
 
     const onScroll = () => {
+      // Horizontal clamp
       const maxScrollLeft = Math.max(0, holder.scrollWidth - holder.clientWidth);
       const holderScrollLeft = getScrollPos(holder).scrollLeft;
       if (holderScrollLeft > maxScrollLeft) {
         mySetScrollLeft(holder, maxScrollLeft);
       } else if (holderScrollLeft < 0) {
         mySetScrollLeft(holder, 0);
+      }
+      // Vertical clamp — never scroll past the last page content
+      const maxScrollTop = Math.max(0, holder.scrollHeight - holder.clientHeight);
+      const holderScrollTop = getScrollPos(holder).scrollTop;
+      if (holderScrollTop > maxScrollTop) {
+        mySetScrollTop(holder, maxScrollTop);
+      } else if (holderScrollTop < 0) {
+        mySetScrollTop(holder, 0);
       }
     };
 
@@ -1164,7 +1244,7 @@ function PdfPane({
           blankPage.style.width = `${blankWidth}px`;
           blankPage.style.setProperty('height', `${pageH}px`, 'important');
           blankPage.textContent = String(p);
-          blankPage.style.display = 'block';
+          // Keep display:flex from CSS for vertical+horizontal centering of page number
           blankPage.dataset.page = String(p);
           blankPage.dataset.blank = 'true';
           fragment.appendChild(blankPage);
@@ -1173,12 +1253,36 @@ function PdfPane({
 
       if (disposed || modeGenRef.current !== gen) return;
 
+      // ── Save current scroll position BEFORE clearing the DOM ──
+      // Ensures the last-viewed position is preserved in localStorage when
+      // the user switches subject/book/language without a recent scroll.
+      // Only fires when the source has CHANGED (activeDomSourceRef differs
+      // from current source) — on initial load they are equal, so we skip
+      // to avoid overwriting the real saved position with (0,0) defaults.
+      if (mount.scrollHeight > 0 && activeDomSourceRef.current && activeDomSourceRef.current !== (source || '')) {
+        const prevDomKey = getScrollCacheKey(activeDomSourceRef.current || source);
+        const prePos = getScrollPos(mount);
+        const { page: prePage, pageEl: prePageEl } = findContainingPage(mount, prePos.scrollTop);
+        const preRelTop = prePageEl ? Math.max(0, prePos.scrollTop - prePageEl.offsetTop) : prePos.scrollTop;
+        const preDispH = getPageHeight(prePageEl);
+        const preFrac = preDispH > 0 ? Math.min(1, Math.max(0, preRelTop / preDispH)) : 0;
+        saveScrollPos(prevDomKey, { top: preFrac, left: prePos.scrollLeft, page: prePage, pageHeight: Math.round(preDispH) });
+        flushScrollStorage(); // persist immediately — next render may clear the DOM
+        if (isDebugScrollingPersistence()) {
+          console.log(`[scroll-save] ${prevDomKey}  PRE-REBUILD  page=${prePage}  fraction=${preFrac.toFixed(4)}  ph=${Math.round(preDispH)}  oldSource=${activeDomSourceRef.current}  newSource=${source}`);
+        }
+      }
+
       // Scroll position was already captured at the effect level (zoomAnchorRef).
       // Read from the ref — NOT from mount — because a second effect run may
       // have already cleared the mount's innerHTML.
 
       mount.innerHTML = '';
       mount.appendChild(fragment);
+
+      // Track which source built this DOM so the pre-rebuild save uses the
+      // correct key on the next effect run (e.g. after a subject/book switch).
+      activeDomSourceRef.current = source || '';
 
       // Bilingual: after DOM settles, position every page at
       // pageY = (pageIndex) × max(all EN+TC heights) via absolute positioning.
@@ -1235,6 +1339,14 @@ function PdfPane({
           scrollRafId = requestAnimationFrame(() => {
             pendingScrollSync = false;
             if (disposed || modeGenRef.current !== gen) return;
+
+            // Clamp vertical scroll — never scroll past the last page content
+            const clampPos = getScrollPos(mount);
+            const maxTop = Math.max(0, mount.scrollHeight - mount.clientHeight);
+            if (clampPos.scrollTop > maxTop) {
+              mySetScrollTop(mount, maxTop);
+            }
+
             syncPageIndicator();
 
             // Save scroll position as fraction of page height — same
@@ -1378,6 +1490,13 @@ function PdfPane({
     // scheduleScrollToCurrent — do NOT interfere by scrolling to
     // currentPage here.  Let the restore logic settle first.
     if (isInitialLoadRef.current) return;
+    // If the DOM currently showing was built for a different source
+    // (subject/book/language switch in progress), suppress this scroll.
+    // The parent may have already set currentPage=1, but the DOM still
+    // contains the OLD subject's content — scrolling it would move the
+    // user away from their last-viewed position before the pre-rebuild
+    // save can capture it.
+    if (activeDomSourceRef.current && activeDomSourceRef.current !== (source || '')) return;
     const mount = scrollRef.current;
     if (!mount || !mount.children.length) return;
     // Skip if the page change was triggered by our own scroll sync
@@ -1468,19 +1587,30 @@ function PdfPane({
       if (!container) return;
       const cpos = getScrollPos(container);
       saveScrollPos(source, { left: cpos.scrollLeft, top: cpos.scrollTop, scrollHeight: container.scrollHeight, scrollWidth: container.scrollWidth });
+      // Also save under the scroll-cache key so the position survives
+      // display-mode switches (scrolling ↔ pagination).  The cache-key
+      // format is used by scrolling mode for initial-load restoration.
+      // Use currentPageRef (kept in sync via useEffect) instead of the
+      // currentPage prop directly — the effect's dependency array does
+      // not include currentPage, so the closure would be stale.
+      const scrollCacheKey = getScrollCacheKey(source);
+      saveScrollPos(scrollCacheKey, { top: cpos.scrollTop, left: cpos.scrollLeft, page: currentPageRef.current, scrollHeight: container.scrollHeight, scrollWidth: container.scrollWidth });
     };
 
     // Save immediately on page unload / tab hide so the latest position is never lost.
     // pagehide fires reliably across all browsers (unlike beforeunload which may
     // be skipped on Chrome desktop during certain navigation patterns).
+    // Skip during initial load — the DOM hasn't settled yet and saving now
+    // would overwrite the real saved position with (page=1, ph=1) defaults.
     const doSaveNow = () => {
+      if (isInitialLoadRef.current) return;
       const container = saveContainerRef.current;
       if (!container || !source) return;
       const cpos2 = getScrollPos(container);
       saveScrollPos(source, { left: cpos2.scrollLeft, top: cpos2.scrollTop, scrollHeight: container.scrollHeight, scrollWidth: container.scrollWidth });
       // Also update the scroll-cache entry (used for initial-load restoration)
-      const scrollCacheKey = getScrollCacheKey(source);
-      saveScrollPos(scrollCacheKey, { top: cpos2.scrollTop, left: cpos2.scrollLeft, page: currentPage });
+      const scrollCacheKey2 = getScrollCacheKey(source);
+      saveScrollPos(scrollCacheKey2, { top: cpos2.scrollTop, left: cpos2.scrollLeft, page: currentPageRef.current });
       // Flush to localStorage immediately — don't wait for debounce.
       flushScrollStorage();
     };
@@ -1535,8 +1665,15 @@ function PdfPane({
   //
   // We also save the *current* scroll position right before the page
   // unloads, because the debounced save (1-2 s) may not have fired yet.
+  //
+  // source is included in the dependency array so the handler always
+  // uses the correct scroll-cache key for the current subject/chapter.
   useEffect(() => {
     const saveAndFlush = () => {
+      // Skip during initial load — the DOM hasn't settled yet and
+      // saving now would overwrite the real saved position with
+      // (page=1, ph=1) defaults from the unloaded state.
+      if (isInitialLoadRef.current) return;
       const mount = scrollRef.current;
       if (mount && mount.scrollHeight > 0) {
         const key = getScrollCacheKey(source);
@@ -1563,7 +1700,7 @@ function PdfPane({
       window.removeEventListener('pagehide', onPageHide);
       window.removeEventListener('visibilitychange', onVisibilityHidden);
     };
-  }, []);
+  }, [source]);
 
   useEffect(() => {
     if (!syncGroup || mode !== 'scrolling') return;
@@ -1670,7 +1807,7 @@ function PdfPane({
     // Helper: scroll so the current page is visible and update parent state
     const scrollToPage = (pageNum) => {
       const p = Math.max(1, Math.min(pageNum, images.length || 1));
-      const n = mount.querySelector(`img[data-page="${p}"]`);
+      const n = mount.querySelector(`[data-page="${p}"]`);
       if (n) {
         myScrollTo(mount, { top: n.offsetTop, behavior: 'instant' });
       }
@@ -1713,6 +1850,26 @@ function PdfPane({
         }
       }
       return;
+    }
+
+    // ── Save current scroll position BEFORE clearing the DOM ──
+    // Ensures the last-viewed position is preserved in localStorage even
+    // if the user switches subject/book/language without a recent scroll.
+    // Only fires when the source has CHANGED (activeDomSourceRef differs
+    // from current source) — on initial load they are equal, so we skip
+    // to avoid overwriting the real saved position with (0,0) defaults.
+    if (mount.scrollHeight > 0 && activeDomSourceRef.current && activeDomSourceRef.current !== (source || '')) {
+      const preRebuildPos = getScrollPos(mount);
+      const { page: prePage, pageEl: prePageEl } = findContainingPage(mount, preRebuildPos.scrollTop);
+      const preRelTop = prePageEl ? Math.max(0, preRebuildPos.scrollTop - prePageEl.offsetTop) : preRebuildPos.scrollTop;
+      const preDispH = getPageHeight(prePageEl);
+      const preFrac = preDispH > 0 ? Math.min(1, Math.max(0, preRelTop / preDispH)) : 0;
+      const prevDomKey = getScrollCacheKey(activeDomSourceRef.current || source);
+      saveScrollPos(prevDomKey, { top: preFrac, left: preRebuildPos.scrollLeft, page: prePage, pageHeight: Math.round(preDispH) });
+      flushScrollStorage(); // persist immediately — next render may clear the DOM
+      if (isDebugScrollingPersistence()) {
+        console.log(`[scroll-save] ${prevDomKey}  PRE-REBUILD  page=${prePage}  fraction=${preFrac.toFixed(4)}  ph=${Math.round(preDispH)}  oldSource=${activeDomSourceRef.current}  newSource=${source}`);
+      }
     }
 
     mount.innerHTML = '';
@@ -1842,12 +1999,48 @@ function PdfPane({
     }
 
     const fragment = document.createDocumentFragment();
-    imgElements.forEach((img) => fragment.appendChild(img));
+
+    // ── Progressive DOM insertion ──────────────────────────
+    // Only insert images within ±3 of the current page into the
+    // initial DOM.  For all other pages, insert lightweight placeholder
+    // <div> elements with the same explicit height so scrollHeight is
+    // correct from the start.  The lazy loader replaces placeholders
+    // with real <img> elements as the user scrolls near them.
+    //
+    // This keeps the initial render fast when switching subjects —
+    // only ~7 pages hit the DOM synchronously instead of 50+.
+    const INITIAL_WINDOW = 3;
+    for (let i = 0; i < imgElements.length; i++) {
+      const dist = Math.abs(i + 1 - currentPage);
+      if (dist <= INITIAL_WINDOW || isBilingual) {
+        // Bilingual: all pages must be real images because the CSS
+        // height rule must apply to actual <img> elements.
+        fragment.appendChild(imgElements[i]);
+      } else {
+        const img = imgElements[i];
+        const ph = document.createElement('div');
+        ph.className = 'page-img page-placeholder';
+        ph.dataset.page = String(i + 1);
+        ph.dataset.placeholder = 'true';
+        if (img.style.height && img.style.height !== 'auto') {
+          ph.style.height = img.style.height;
+        } else {
+          ph.style.minHeight = img.style.minHeight || '120px';
+        }
+        if (img.style.width && img.style.width !== 'auto') {
+          ph.style.width = img.style.width;
+        }
+        ph.style.display = 'block';
+        ph.style.opacity = '0';
+        fragment.appendChild(ph);
+      }
+    }
     mount.appendChild(fragment);
 
     // Update refs after rebuild
     lastImagesRef.current = images;
     maxPagesInGroupRef.current = maxPagesInGroup;
+    activeDomSourceRef.current = source || '';  // track which source built this DOM
 
     // Pad shorter image set with individual blank <div> pages.  Each shows
     // its page number centred.  Height from uniformImgHeight, later locked
@@ -1920,6 +2113,22 @@ function PdfPane({
       const pageNum = idx + 1;
       if (isDebugLoadingPageImages()) {
         console.log(`[img-load] START  page=${pageNum}  concurrent=${loading}  url=${url?.substring(url.lastIndexOf('/') + 1)}`);
+      }
+      // Ensure the real <img> is in the DOM — it may have been deferred
+      // as a placeholder during initial render (progressive insertion).
+      if (!img.parentNode) {
+        const placeholder = mount.querySelector(`[data-page="${pageNum}"][data-placeholder]`);
+        if (placeholder) {
+          placeholder.replaceWith(img);
+        } else {
+          // No placeholder found — insert after the preceding page element
+          const prev = mount.querySelector(`[data-page="${idx}"]`);
+          if (prev && prev.nextSibling) {
+            prev.parentNode.insertBefore(img, prev.nextSibling);
+          } else {
+            mount.appendChild(img);
+          }
+        }
       }
       img.src = withTimestamp(url);
       img.onload = () => {
@@ -2040,13 +2249,20 @@ function PdfPane({
         _scrollRestoreInProgress = true;
 
         const target = mount.querySelector(`[data-page="${savedPage}"]`);
-        // offsetTop: use stored natural height × zoom if available,
-        // otherwise measure the DOM element.
+        // offsetTop: always prefer the DOM element's actual offsetTop.
+        // Even if the element is a placeholder with a small height, its
+        // offsetTop reflects the real CSS layout of preceding pages.
+        // The formula (page-1)×ph×zoom is only a fallback for when the
+        // target element isn't in the DOM yet.
         let offsetTop;
-        if (storedPageHeight > 0) {
-          offsetTop = (savedPage - 1) * storedPageHeight * zoomLevel;
+        if (target) {
+          offsetTop = target.offsetTop;
+        } else if (storedPageHeight > 0) {
+          // storedPageHeight is the CSS display height (includes zoom).
+          // Do NOT multiply by zoomLevel again — that would double-count.
+          offsetTop = (savedPage - 1) * storedPageHeight;
         } else {
-          offsetTop = target ? target.offsetTop : 0;
+          offsetTop = 0;
         }
         // within-page offset: always use the current display height of the
         // target element so the fraction maps to the correct pixel position.
@@ -2122,8 +2338,35 @@ function PdfPane({
     // Wait until layout settles AND the first image has loaded before
     // restoring the scroll position.  The first image's rendered dimensions
     // confirm that CSS heights are applied and offsetTop values are correct.
+    //
+    // In single-language (non-bilingual) mode, images have explicit inline
+    // heights set during DOM creation — offsetTop is correct immediately,
+    // so we can skip the wait and proceed right after a double-RAF for layout.
     const waitForReadyThenScroll = () => {
       try {
+      // Always wait for at least the current page's image to load before
+      // restoring scroll position.  In single-language mode we previously
+      // skipped this (assuming explicit inline heights from API data), but
+      // when API dimensions are unavailable the page elements have no
+      // explicit height and offsetTop values are wrong until images load.
+      // Page 1 is always a real <img> (within ±3 of currentPage), unlike
+      // the saved target page which might be a placeholder.
+      const needsImageLoad = true;  // was: isBilingual
+
+      if (!needsImageLoad) {
+        // Single-language mode: explicit heights are already set inline.
+        // Double-RAF is enough for layout to settle, then restore scroll.
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            if (disposed) return;
+            setShowLoadingOverlay(false);
+            scheduleScrollToCurrent();
+          });
+        });
+        return;
+      }
+
+      // ── Bilingual mode: must wait for the first image to load ──
       // Wait for the SELECTED page's image (the one the lazy loader starts
       // with after the _firstImageLoaded optimization), NOT imgElements[0].
       // Page N is loaded first; page 1 may be far outside the ±3 range and
@@ -2177,36 +2420,46 @@ function PdfPane({
         };
         firstImg.addEventListener('load', onReady, { once: true });
         firstImg.addEventListener('error', onReady, { once: true });
-        // Chrome iOS sometimes reports img.complete=true but naturalHeight=0
-        // (deferred decoding).  Poll on RAF until the image has usable
-        // dimensions so we never show a stuck loading overlay.
-        let pollCount = 0;
-        const pollUntilReady = () => {
-          try {
-            if (ready || disposed) return;
-            pollCount++;
-            if (firstImg && firstImg.naturalHeight > 0) {
-              if (isDebugScrollingPersistence()) console.log(`[scroll-load] first image poll-ready  natural: ${firstImg.naturalWidth}×${firstImg.naturalHeight}  pollCount=${pollCount}`);
-              onReady();
-            } else {
-              setLoadDebugText(`poll#${pollCount} complete=${firstImg?.complete} nh=${firstImg?.naturalHeight} src=${firstImg?.src?.slice(-20)}`);
-              requestAnimationFrame(pollUntilReady);
-            }
-          } catch (e) { setLoadDebugText(`ERR-poll#${pollCount}: ${e.message}`); }
-        };
-        requestAnimationFrame(pollUntilReady);
-        // Safety timeout: guarantee we proceed even if both event + poll fail.
+        // Safety timeout: if the image load/error event never fires, dismiss
+        // the overlay and restore scroll position after 3 s anyway.
         setTimeout(() => {
           try {
-            if (!disposed && !ready && isInitialLoadRef.current) {
+            if (!disposed && !ready) {
               if (isDebugScrollingPersistence()) console.log(`[scroll-load] first image load timeout — trying anyway`);
               onReady();
             }
-          } catch (e) { setLoadDebugText(`ERR-timeout: ${e.message}`); }
+          } catch (e) { /* silent */ }
         }, 3000);
       } else {
-        // No images at all — just go.
-        tryScroll();
+        // Target page may be a placeholder (not a real <img>).  Fall back
+        // to page 1's image — it is always a real <img> within the ±3
+        // range of currentPage.  Wait for it to load so CSS heights are
+        // applied and offsetTop values are correct.
+        const fallbackImg = mount.querySelector(`img.page-img[data-page="1"]`);
+        if (fallbackImg && fallbackImg.complete && fallbackImg.naturalHeight > 0) {
+          if (isDebugScrollingPersistence()) console.log(`[scroll-load] target page is placeholder — page 1 image already loaded, proceeding`);
+          tryScroll();
+        } else if (fallbackImg) {
+          if (isDebugScrollingPersistence()) console.log(`[scroll-load] target page is placeholder — waiting for page 1 image to load`);
+          setLoadDebugText(`wait-fallback complete=${fallbackImg.complete} nh=${fallbackImg.naturalHeight}`);
+          let ready = false;
+          const onReady = () => {
+            try {
+              if (ready) return; ready = true;
+              fallbackImg.removeEventListener('load', onReady);
+              fallbackImg.removeEventListener('error', onReady);
+              if (!disposed) tryScroll();
+            } catch (e) { /* silent */ }
+          };
+          fallbackImg.addEventListener('load', onReady, { once: true });
+          fallbackImg.addEventListener('error', onReady, { once: true });
+          setTimeout(() => {
+            try { if (!disposed && !ready) onReady(); } catch (e) { /* silent */ }
+          }, 3000);
+        } else {
+          // No images at all — just go.
+          tryScroll();
+        }
       }
       } catch (e) { setLoadDebugText(`ERR-waitForReady: ${e.message}`); }
     };
@@ -2288,23 +2541,19 @@ function PdfPane({
       const top = savePos2.scrollTop;
       const { page, pageEl } = findContainingPage(mount, top);
       const relativeTop = pageEl ? Math.max(0, top - pageEl.offsetTop) : top;
-      // Determine the authoritative page height, preferring sources that
-      // are available immediately (before CSS layout settles):
-      // 1. Bilingual shared max height (most reliable, set before DOM build)
-      // 2. Natural image height from API data (invariant to zoom/viewport)
-      // 3. CSS-displayed height (measured from the element)
-      const bilingualH = _bilingualMaxHeights.get(syncGroup) || 0;
-      const imgData = (page > 0 && page <= images.length) ? images[page - 1] : null;
-      const natH = (imgData && typeof imgData === 'object') ? imgData.h : 0;
-      const natW = (imgData && typeof imgData === 'object') ? imgData.w : 0;
       const displayHeight = getPageHeight(pageEl);
-      const pageHeight = natH || bilingualH || displayHeight;
-      // Fraction is always computed from the display height for zoom
-      // invariance — both numerator and denominator scale the same way.
+      // Never save when the page height is unreliable (≤ 1px).  This
+      // indicates the layout hasn't settled — images haven't loaded,
+      // CSS hasn't been applied — and saving would corrupt the stored
+      // position with (page=1, ph=1) defaults.
+      if (displayHeight <= 1) return;
       const fraction = displayHeight > 0 ? Math.min(1, Math.max(0, relativeTop / displayHeight)) : 0;
-      saveScrollPos(scrollCacheKey, { top: fraction, left: savePos2.scrollLeft, page, pageHeight: Math.round(pageHeight), pageWidth: natW });
+      // Also capture natural dimensions for potential future use.
+      const imgData = (page > 0 && page <= images.length) ? images[page - 1] : null;
+      const natW = (imgData && typeof imgData === 'object') ? imgData.w : 0;
+      saveScrollPos(scrollCacheKey, { top: fraction, left: savePos2.scrollLeft, page, pageHeight: Math.round(displayHeight), pageWidth: natW });
       if (isDebugScrollingPersistence()) {
-        console.log(`[scroll-save] ${scrollCacheKey}  page=${page}  scrollTop=${Math.round(top)}  scrollLeft=${Math.round(savePos2.scrollLeft)}  relPx=${Math.round(relativeTop)}  fraction=${fraction.toFixed(4)}  ph=${Math.round(pageHeight)}  pw=${natW}`);
+        console.log(`[scroll-save] ${scrollCacheKey}  page=${page}  scrollTop=${Math.round(top)}  scrollLeft=${Math.round(savePos2.scrollLeft)}  relPx=${Math.round(relativeTop)}  fraction=${fraction.toFixed(4)}  ph=${Math.round(displayHeight)}  pw=${natW}`);
       }
     };
     const onScrollWithSave = () => {
@@ -2313,7 +2562,9 @@ function PdfPane({
       // event (60+/s during momentum scrolling), calling querySelectorAll
       // + getBoundingClientRect + localStorage.setItem — killing
       // performance, especially on iOS.
-      if (syncingFromRemoteRef.current || pendingScroll2) return;
+      // Also skip during programmatic scrolling (scroll-to-page effect) —
+      // the scroll position may not have settled yet.
+      if (syncingFromRemoteRef.current || pendingScroll2 || programmaticScrollingRef.current) return;
       pendingScroll2 = true;
       scrollRafId2 = requestAnimationFrame(() => {
         pendingScroll2 = false;
@@ -2441,6 +2692,14 @@ function PdfPane({
       const pageW = Math.round(sharedW * zoom);
       const imgs = mount.querySelectorAll('img.page-img');
       imgs.forEach((img) => { img.style.width = `${pageW}px`; });
+      // Update blank page heights to match the new layout dimensions.
+      // Blank pages are created once (not recreated on resize), so their
+      // inline heights become stale when the column width changes
+      // (e.g. horizontal ↔ vertical bilingual split, window resize).
+      const blankPages = mount.querySelectorAll('.pdf-blank-page');
+      blankPages.forEach((bp) => {
+        bp.style.setProperty('height', `${estH}px`, 'important');
+      });
       // Re-measure and reposition — image dimensions changed.
       // reset=true allows the shared max to shrink if needed.
       normalizeBilingualHeights(mount, syncGroup, true);
