@@ -4,6 +4,305 @@
   background: linear-gradient(180deg, #eef4f8 0%, #f7fafc 100%);
 }
 
+/* ══════════════════════════════════════════════════════════
+   DARK THEME — Global overrides via :root.dark
+   ══════════════════════════════════════════════════════════ */
+
+:root.dark {
+  --bg: #1a1a2e;
+  --bg-secondary: #16213e;
+  --bg-surface: rgba(26, 26, 46, 0.95);
+  --text: #e0e0e0;
+  --text-secondary: #a0a0b0;
+  --border: #2a2a3e;
+  --border-light: rgba(255, 255, 255, 0.08);
+  --accent: #89b4fa;
+  --shadow: rgba(0, 0, 0, 0.3);
+  color-scheme: dark;
+}
+
+:root.dark body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+:root.dark .app-shell {
+  background: var(--bg);
+}
+
+/* ── Sidebar ──────────────────────────────────────────── */
+:root.dark .sidebar {
+  background: var(--bg-surface);
+  border-right-color: var(--border);
+  color: var(--text);
+}
+
+:root.dark .sidebar-title-row h1 {
+  color: var(--text);
+}
+
+:root.dark .sidebar-logo {
+  fill: var(--accent);
+}
+
+:root.dark .sidebar-label-icon {
+  color: var(--text-secondary);
+}
+
+:root.dark .sidebar-label-icon svg {
+  fill: var(--accent);
+}
+
+:root.dark .sidebar-user-row {
+  border-bottom-color: var(--border);
+}
+
+:root.dark .sidebar-user-id {
+  color: var(--text-secondary);
+}
+
+:root.dark .sidebar-user-id code {
+  color: var(--text);
+}
+
+:root.dark .sidebar-logout-btn {
+  color: var(--accent);
+}
+
+/* ── Sidebar toggle buttons ───────────────────────────── */
+:root.dark .sidebar-toggle {
+  background: linear-gradient(180deg, #2a2a3e 0%, #1e1e30 100%);
+  color: var(--text);
+  border-color: var(--border);
+  box-shadow: 0 10px 24px var(--shadow);
+}
+
+:root.dark .sidebar-toggle:hover {
+  background: linear-gradient(180deg, #313144 0%, #252538 100%);
+  border-color: rgba(255, 255, 255, 0.15);
+  box-shadow: 0 14px 28px var(--shadow);
+}
+
+:root.dark .sidebar-hide-btn {
+  background: #3d1a1a;
+  color: #fca5a5;
+  border-color: #5c2a2a;
+}
+
+:root.dark .sidebar-hide-btn:hover {
+  background: #4d2020;
+}
+
+/* ── Theme toggle button ──────────────────────────────── */
+.sidebar-theme-btn {
+  min-width: 40px;
+  padding: 0 10px;
+  background: linear-gradient(180deg, #fff8e1 0%, #ffecb3 100%);
+  color: #f59e0b;
+  border-color: #fcd34d;
+}
+
+.sidebar-theme-btn:hover {
+  background: linear-gradient(180deg, #ffecb3 0%, #ffe082 100%);
+  border-color: #fbbf24;
+}
+
+.sidebar-theme-btn .sidebar-toggle-icon svg {
+  stroke: currentColor;
+}
+
+:root.dark .sidebar-theme-btn {
+  background: linear-gradient(180deg, #2a2a3e 0%, #1e1e30 100%);
+  color: #f1c40f;
+  border-color: var(--border);
+}
+
+:root.dark .sidebar-theme-btn:hover {
+  background: linear-gradient(180deg, #3a3520 0%, #2a2818 100%);
+  border-color: #4a4520;
+}
+
+/* ── Toggle group buttons ─────────────────────────────── */
+:root.dark .toggle-btn {
+  background: #2a2a3e;
+  color: var(--text-secondary);
+  border-color: var(--border);
+}
+
+:root.dark .toggle-btn:hover {
+  background: #313144;
+  color: var(--text);
+}
+
+:root.dark .toggle-btn.active {
+  background: var(--accent);
+  color: #1a1a2e;
+  border-color: var(--accent);
+}
+
+/* ── Hidden sidebar restore button ────────────────────── */
+:root.dark .hidden-sidebar-restore {
+  background: rgba(26, 26, 46, 0.96);
+  border-color: var(--border);
+  color: var(--text);
+  box-shadow: 0 10px 28px var(--shadow);
+}
+
+:root.dark .hidden-sidebar-restore-icon {
+  background: #2a2a3e;
+}
+
+:root.dark .hidden-sidebar-restore-icon svg {
+  stroke: var(--accent);
+}
+
+/* ── Sidebar collapsed icon stack ─────────────────────── */
+:root.dark .sidebar-icon-btn {
+  background: #2a2a3e;
+  border-color: var(--border);
+  color: var(--text);
+}
+
+:root.dark .sidebar-icon-btn:hover {
+  background: #313144;
+}
+
+:root.dark .sidebar-account-btn {
+  color: var(--text-secondary);
+}
+
+:root.dark .sidebar-account-id code {
+  color: var(--text);
+}
+
+/* ══════════════════════════════════════════════════════════
+   PDF PAGE CONTENT — Invert canvas & images for dark mode
+   ══════════════════════════════════════════════════════════ */
+
+:root.dark .pdf-single-page canvas,
+:root.dark .pdf-scroll-pages canvas,
+:root.dark .pdf-single-page .page-img,
+:root.dark .pdf-scroll-pages .page-img {
+  filter: invert(1) hue-rotate(180deg);
+}
+
+:root.dark .pdf-blank-page {
+  filter: invert(1) hue-rotate(180deg);
+}
+
+/* Annotation overlay canvas — invert so strokes stay visible */
+:root.dark .annotation-canvas {
+  filter: invert(1) hue-rotate(180deg);
+}
+
+/* ── PDF loading overlay ──────────────────────────────── */
+:root.dark .pdf-loading-overlay {
+  background: #1a1a2e;
+  color: #a0a0b0;
+}
+
+:root.dark .pdf-loading-spinner {
+  border-color: #2a2a3e;
+  border-top-color: var(--accent);
+}
+
+/* ── Toolbar / annotation panel ───────────────────────── */
+:root.dark .annotation-panel {
+  background: var(--bg-surface);
+  border-top-color: var(--border);
+  color: var(--text);
+}
+
+:root.dark .tool-btn {
+  background: #2a2a3e;
+  color: var(--text);
+  border-color: var(--border);
+}
+
+:root.dark .tool-btn:hover {
+  background: #313144;
+}
+
+:root.dark .tool-btn.active {
+  background: var(--accent);
+  color: #1a1a2e;
+}
+
+/* ── Zoom / page indicator ────────────────────────────── */
+:root.dark .zoom-indicator,
+:root.dark .page-indicator,
+:root.dark .jump-indicator {
+  background: rgba(26, 26, 46, 0.9);
+  color: var(--text);
+}
+
+/* ── Thumbnails panel ─────────────────────────────────── */
+:root.dark .thumbnails-panel {
+  background: var(--bg);
+}
+
+:root.dark .thumb-grid-item {
+  background: #2a2a3e;
+  border-color: var(--border);
+}
+
+:root.dark .thumb-grid-item.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+/* ── Autocomplete dropdowns ────────────────────────────── */
+:root.dark .autocomplete-list {
+  background: #2a2a3e;
+  border-color: var(--border);
+  box-shadow: 0 12px 32px var(--shadow);
+}
+
+:root.dark .autocomplete-item {
+  color: var(--text);
+}
+
+:root.dark .autocomplete-item:hover,
+:root.dark .autocomplete-item.highlighted {
+  background: #313144;
+}
+
+:root.dark .autocomplete-item.selected {
+  background: var(--accent);
+  color: #1a1a2e;
+}
+
+/* ── Resources drawer overlay ─────────────────────────── */
+:root.dark .resources-drawer-overlay {
+  background: rgba(0, 0, 0, 0.6);
+}
+
+/* ── SweetAlert2 ──────────────────────────────────────── */
+:root.dark .swal2-popup {
+  background: #2a2a3e;
+  color: var(--text);
+}
+
+/* ── Scrollbar ────────────────────────────────────────── */
+:root.dark .sidebar::-webkit-scrollbar-thumb {
+  background: #3a3a4e;
+}
+
+:root.dark .sidebar::-webkit-scrollbar-track {
+  background: #1e1e30;
+}
+
+/* ── Stepper select ───────────────────────────────────── */
+:root.dark .stepper-select {
+  background: #2a2a3e;
+  color: var(--text);
+  border-color: var(--border);
+}
+
+:root.dark .stepper-select:focus {
+  border-color: var(--accent);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -2556,6 +2855,66 @@ button, input, select {
   width: 12px;
   height: 12px;
   color: #64748b;
+}
+
+/* ── Line width slider in tool menu popup ─────────────── */
+
+.tool-menu-line-width {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 6px;
+}
+
+.tool-menu-line-width-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  transition: width 80ms ease, height 80ms ease, background 120ms ease;
+}
+
+.tool-menu-line-width-slider {
+  flex: 1 1 auto;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: #d1dbe7;
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.tool-menu-line-width-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #1a3a5c;
+  cursor: pointer;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+
+.tool-menu-line-width-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #1a3a5c;
+  cursor: pointer;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+
+.tool-menu-line-width-num {
+  font-size: 0.8rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  min-width: 1.6em;
+  text-align: right;
+  color: #1a3a5c;
+  flex: 0 0 auto;
 }
 
 /* ── Zoom percent label in split button ───────────────── */

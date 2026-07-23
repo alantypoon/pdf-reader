@@ -11,8 +11,9 @@ import StepperSelect from './StepperSelect';
 import AutocompleteDropdown from './components/AutocompleteDropdown';
 import MathText from './components/MathText';
 import { t, uiLang } from './i18n';
-import { isDebugScrollingMomentum, isDebugScrollingPersistence, isDebugZooming } from './debug';
+import { isDebugScrollingMomentum, isDebugScrollingPersistence, isDebugZooming, isDebugAnnoStrokes } from './debug';
 import { myScrollBy, myScrollTo } from './MyScroll';
+import { initQueue, enqueue, updateScope, getPendingCount } from './annotationQueue';
 
 const PREFERENCES_KEY = 'pdfReaderPreferences';
 const AI_FONT_SIZE_KEY = 'pdfReaderAiFontSize';
@@ -26,8 +27,8 @@ const COLOR_TOOLS = new Set(['pen', 'highlight', 'text']);
 // 1 = show click-position tooltip + console logs
 // 2 = also copy crop image data URL to clipboard
 // 3 = also trigger a Save-As file download
-// const DEBUG_QRCODE_CAPTURE = 0;
-const DEBUG_QRCODE_CAPTURE = 2;
+const DEBUG_QRCODE_CAPTURE = 0;
+// const DEBUG_QRCODE_CAPTURE = 2;
 
 /** Return an ISO-8601 timestamp in Hong Kong time (UTC+8) */
 function hkNow() {
@@ -354,6 +355,18 @@ function App() {
   const moveStartPointRef = useRef(null);
   const moveHasMovedRef = useRef(false);
   const activePointersRef = useRef(new Set()); // track active pointer IDs for multi-touch detection
+  // Some browsers (esp. iOS WebKit) fire pointerup/pointerleave/pointercancel
+  // multiple times for a single lift.  Without dedup, the first event saves
+  // the stroke and the subsequent duplicates hit the "drawingRef=false" skip
+  // — but between those duplicates a fast new pointerdown can start a fresh
+  // stroke, and then a stale pointerup with a NEW pointerId would corrupt it.
+  // This set ensures each pointerId is processed exactly once on UP.
+  const processedUpIdsRef = useRef(new Set());
+  // Eraser drag mode: when the user drags the eraser tool, we track which
+  // annotations have already been erased in this drag session to avoid
+  // calling deleteRemarkByCreatedAt repeatedly for the same stroke.
+  const eraserActiveRef = useRef(false);
+  const erasedThisDragRef = useRef(new Set()); // set of createdAt strings
   const displayModeInitializedRef = useRef(false);
   const initialSubjectRestoreRef = useRef('');
   const restoringUserSelectsRef = useRef(false);
@@ -418,6 +431,16 @@ function App() {
   });
   const [annotationToolsOpen, setAnnotationToolsOpen] = useState(Boolean(savedPrefs.annotationToolsOpen));
   const [textColor, setTextColor] = useState(initialTextColor);
+  const textColorRef = useRef(textColor);
+  useEffect(() => { textColorRef.current = textColor; }, [textColor]);
+  const [lineWidth, setLineWidth] = useState(() => {
+    const saved = savedPrefs.lineWidth;
+    return typeof saved === 'number' && saved >= 1 && saved <= 10 ? saved : 2;
+  });
+  const lineWidthRef = useRef(lineWidth);
+  useEffect(() => { lineWidthRef.current = lineWidth; }, [lineWidth]);
+  const toolRef = useRef(tool);
+  useEffect(() => { toolRef.current = tool; }, [tool]);
   const [textInputState, setTextInputState] = useState(null);
   const textInputRef = useRef(null);
   const textInputCommittedRef = useRef(false);
@@ -459,6 +482,8 @@ function App() {
   const [renderScaleByLanguage, setRenderScaleByLanguage] = useState({});
   const [pageCounts, setPageCounts] = useState({});
   const [redrawTick, setRedrawTick] = useState(0);
+  // Offline annotation queue pending count (shown in toolbar badge)
+  const [pendingQueueCount, setPendingQueueCount] = useState(0);
   const [modalInfo, setModalInfo] = useState(null);
   const modalIframeRef = useRef(null);
   const modalFrameTimeoutRef = useRef(null);
@@ -482,7 +507,7 @@ function App() {
       window.localStorage.setItem(AI_FONT_SIZE_KEY, String(aiFontSize));
     }
   }, [aiFontSize]);
-  const [aiTheme, setAiTheme] = useState(() => {
+  const [globalTheme, setGlobalTheme] = useState(() => {
     if (typeof window === 'undefined') return 'light';
     try {
       const v = window.localStorage.getItem(AI_THEME_KEY);
@@ -492,9 +517,15 @@ function App() {
   });
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      window.localStorage.setItem(AI_THEME_KEY, aiTheme);
+      window.localStorage.setItem(AI_THEME_KEY, globalTheme);
     }
-  }, [aiTheme]);
+  }, [globalTheme]);
+  // Apply dark class to <html> so all CSS can react
+  useEffect(() => {
+    if (typeof document !== 'undefined') {
+      document.documentElement.classList.toggle('dark', globalTheme === 'dark');
+    }
+  }, [globalTheme]);
   const [aiContent, setAiContent] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState(null);
@@ -911,6 +942,32 @@ function App() {
     pageViewRef.current.loginLogged = true;
     logUserAction('login');
   }, [userId]);
+
+  // ── Initialize offline annotation queue ──────────────────
+  const annotationQueueInitializedRef = useRef(false);
+  useEffect(() => {
+    if (!userId || !selectedBook || !selectedChapter || !sessionUserResolved) return;
+    if (annotationQueueInitializedRef.current) {
+      // Queue already initialized — just update scope on navigation
+      updateScope({
+        userId,
+        subjectId: selectedBook,
+        bookId: selectedChapter,
+        sectionId: selectedFile,
+      });
+      return;
+    }
+
+    annotationQueueInitializedRef.current = true;
+    initQueue({
+      fetchJson,
+      userId,
+      subjectId: selectedBook,
+      bookId: selectedChapter,
+      sectionId: selectedFile,
+      onPendingCountChange: (count) => setPendingQueueCount(count),
+    });
+  }, [userId, selectedBook, selectedChapter, selectedFile, sessionUserResolved]);
 
   const visibleLanguages = useMemo(() => {
     if (selectedLanguage !== 'bilingual') {
@@ -1520,6 +1577,7 @@ function App() {
         tool,
         annotationToolsOpen,
         textColor,
+        lineWidth,
         zoomLevel: zoomLevelRef.current,
         fitMode,
         panelPos,
@@ -1565,6 +1623,7 @@ function App() {
     tool,
     annotationToolsOpen,
     textColor,
+    lineWidth,
     zoomLevel,
     fitMode,
     panelPos,
@@ -1988,9 +2047,7 @@ function App() {
           const normalizedStroke = imageRect
             ? normalizeAnnotationCoords(stroke, imageRect)
             : stroke;
-          saveRemark(normalizedStroke).catch((err) =>
-            console.error('[draw] failed to save touch-scroll-cancelled stroke:', err)
-          );
+          saveRemark(normalizedStroke);
         }
       } else if (e.touches.length === 1 && tool === 'hand') {
         const touch = e.touches[0];
@@ -2002,6 +2059,13 @@ function App() {
         touchScrollTarget = getScrollTargetForGesture(e);
         touchPending = true;  // wait for move to activate drag
       } else {
+        // Non-hand tool with single touch (pen/highlight/eraser):
+        // Must prevent default to stop iOS Safari from consuming the
+        // touch as a scroll gesture, which would suppress pointer events.
+        // Without this, iOS never fires pointerdown/pointermove/pointerup.
+        if (e.touches.length === 1 && tool !== 'hand') {
+          e.preventDefault();
+        }
         touchActive = false;
         touchFingerMode = 0;
         touchScrollTarget = null;
@@ -2009,6 +2073,12 @@ function App() {
     };
 
     const onTouchMove = (e) => {
+      // Non-hand single touch (pen/highlight/eraser): keep the gesture
+      // cancelled so iOS Safari continues to fire pointer events.
+      if (e.touches.length === 1 && tool !== 'hand' && !touchActive) {
+        e.preventDefault();
+        return;
+      }
       // Activate pending hand-mode touch drag on first movement > 3px
       if (touchPending && e.touches.length === 1) {
         const dx = e.touches[0].clientX - touchStartX;
@@ -2696,7 +2766,21 @@ function App() {
     } catch { /* invalid URL, use modal */ }
     setModalInfo({ url: resource.url, name: resource.name });
   };
-  const saveRemark = async (remark) => {
+  // annotationScopeLangId must be declared BEFORE saveRemark (which uses it
+  // in its useCallback dependency array) to avoid a TDZ ReferenceError.
+  const annotationScopeLangId = useMemo(() => {
+    if (selectedLanguage === 'bilingual') {
+      return visibleLanguages.includes(activeAnnotationLangId)
+        ? activeAnnotationLangId
+        : (visibleLanguages[0] || 'en');
+    }
+    if (visibleLanguages[0]) {
+      return visibleLanguages[0];
+    }
+    return selectedLanguage === 'tc' ? 'tc' : 'en';
+  }, [activeAnnotationLangId, selectedLanguage, visibleLanguages]);
+  const saveRemark = useCallback((remark) => {
+    if (isDebugAnnoStrokes()) console.log('[anno-stroke] 💾 saveRemark lang=' + remark.langId + ' page=' + remark.page + ' points=' + (remark.points?.length || 0) + ' type=' + remark.type);
     const savedRemark = {
       ...remark,
       page: remark.page || selectedPage,
@@ -2704,46 +2788,27 @@ function App() {
     };
 
     // Optimistic: add to local remarks immediately so the stroke/annotation
-    // appears instantly even if the backend is slow.
+    // appears instantly — no network delay, no await.
     const optimistic = { ...savedRemark, chapter: savedRemark.chapter || selectedChapter, _optimistic: true };
     setRemarks((prev) => [...prev, optimistic]);
 
-    try {
-      const data = await fetchJson('api/remarks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId,
-          subjectId: selectedBook,
-          bookId: selectedChapter,
-          sectionId: selectedFile,
-          pageId: savedRemark.page,
-          langId: savedRemark.langId,
-          ...savedRemark,
-        })
-      });
-      setUndoStack((prev) => [...prev, { type: 'add', remark: savedRemark }]);
-      setRedoStack([]);
-      // Confirm the optimistic entry — remove _optimistic flag and merge any
-      // server-assigned fields (like _id) instead of replacing all remarks.
-      // A full reload (loadRemarksForCurrentScope) would wipe the optimistic
-      // entry if the server hasn't indexed it yet, causing the annotation to
-      // disappear briefly until the next refresh.
-      const savedAt = savedRemark.createdAt;
-      const serverSaved = Array.isArray(data.remarks)
-        ? data.remarks.find((r) => r.createdAt === savedAt)
-        : null;
-      setRemarks((prev) => prev.map((r) =>
-        r._optimistic && r.createdAt === savedAt
-          ? { ...r, ...serverSaved, _optimistic: false }
-          : r
-      ));
-    } catch (err) {
-      // Rollback: remove the optimistic remark on failure
-      setRemarks((prev) => prev.filter((r) => !(r._optimistic && r.createdAt === savedRemark.createdAt)));
-      throw err;
-    }
-  };
+    // Enqueue for batched send — non-blocking, returns instantly.
+    // If offline, the action is persisted to localStorage and will be
+    // sent automatically when the network comes back.
+    enqueue('addRemark', {
+      ...savedRemark,
+      userId,
+      subjectId: selectedBook,
+      bookId: selectedChapter,
+      sectionId: selectedFile,
+      pageId: savedRemark.page,
+      langId: savedRemark.langId,
+    });
+
+    // Record undo entry optimistically (confirmed when batch succeeds)
+    setUndoStack((prev) => [...prev, { type: 'add', remark: savedRemark }]);
+    setRedoStack([]);
+  }, [userId, selectedBook, selectedChapter, selectedFile, annotationScopeLangId]);
 
   const clearPageRemarks = async () => {
     const targetPage = Math.max(1, Number(selectedPageRef.current || selectedPage || 1));
@@ -2879,14 +2944,13 @@ function App() {
     }
   };
 
-  const deleteRemarkByCreatedAt = async (createdAtValue, langId = annotationScopeLangId, pageIdOverrideOrOptions) => {
+  const deleteRemarkByCreatedAt = useCallback((createdAtValue, langId = annotationScopeLangId, pageIdOverrideOrOptions) => {
     const options = (pageIdOverrideOrOptions && typeof pageIdOverrideOrOptions === 'object' && !Array.isArray(pageIdOverrideOrOptions))
       ? pageIdOverrideOrOptions
       : { pageIdOverride: pageIdOverrideOrOptions };
     const resolvedPageId = options.pageIdOverride != null ? options.pageIdOverride : selectedPage;
 
-    // Optimistic: remove from local remarks immediately so the erased stroke
-    // disappears instantly even while the backend is processing.
+    // Optimistic: remove from local remarks instantly — no network delay.
     const removed = remarks.find(
       (r) => r.createdAt === createdAtValue && r.langId === langId
     ) || options.deletedRemark || null;
@@ -2896,64 +2960,46 @@ function App() {
       ));
     }
 
-    try {
-      const data = await fetchJson(
-        `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&sectionId=${selectedFile}&pageId=${resolvedPageId}&langId=${encodeURIComponent(langId)}&createdAt=${encodeURIComponent(createdAtValue)}`,
-        { method: 'DELETE' }
-      );
-      if (options.recordUndo && removed) {
-        setUndoStack((prev) => [...prev, { type: 'delete', remark: removed }]);
-        setRedoStack([]);
-      }
-      // Confirm the optimistic removal — the remark is already filtered out.
-      // Do NOT call loadRemarksForCurrentScope() or setRemarks(data.remarks)
-      // because the server may not have indexed the deletion yet, causing the
-      // erased annotation to reappear momentarily.
-      return data.remarks || [];
-    } catch (err) {
-      // Rollback: restore the removed remark if the server call fails
-      if (removed) {
-        setRemarks((prev) => {
-          if (prev.some((r) => r.createdAt === removed.createdAt && r.langId === removed.langId)) return prev;
-          return [...prev, removed];
-        });
-      }
-      throw err;
-    }
-  };
+    // Record the erased timestamp so that even if the queue hasn't flushed
+    // yet when the user reloads, loadRemarksForCurrentScope() will filter
+    // this stroke out of the server response (same mechanism as bulk erase).
+    setClearedTimestamps((prev) => {
+      if (prev.includes(createdAtValue)) return prev;
+      return [...prev, createdAtValue];
+    });
 
-  const undoRemark = async () => {
+    // Enqueue for batched send — non-blocking, persists offline.
+    enqueue('deleteRemark', {
+      userId,
+      subjectId: selectedBook,
+      bookId: selectedChapter,
+      sectionId: selectedFile,
+      pageId: resolvedPageId,
+      langId,
+      createdAt: createdAtValue,
+    });
+
+    if (options.recordUndo && removed) {
+      setUndoStack((prev) => [...prev, { type: 'delete', remark: removed }]);
+      setRedoStack([]);
+    }
+  }, [userId, selectedBook, selectedChapter, selectedFile, selectedPage, remarks, annotationScopeLangId]);
+
+  const undoRemark = () => {
     // If there are actions on the undo stack, reverse the last one
     if (undoStack.length > 0) {
       const action = undoStack[undoStack.length - 1];
 
       if (action.type === 'add') {
-        await deleteRemarkByCreatedAt(action.remark.createdAt, action.remark.langId || annotationScopeLangId, action.remark.page || selectedPage);
+        deleteRemarkByCreatedAt(action.remark.createdAt, action.remark.langId || annotationScopeLangId, action.remark.page || selectedPage);
         setUndoStack((prev) => prev.slice(0, -1));
         setRedoStack((prev) => [...prev, action]);
         return;
       }
 
       if (action.type === 'delete') {
-        // Re-add a deleted remark
-        const data = await fetchJson('api/remarks', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            userId,
-            subjectId: selectedBook,
-            bookId: selectedChapter,
-            sectionId: selectedFile,
-            pageId: selectedPage,
-            langId: action.remark.langId || annotationScopeLangId,
-            ...action.remark,
-          })
-        });
-        if (sectionScopedAnnotations) {
-          await loadRemarksForCurrentScope();
-        } else {
-          setRemarks(data.remarks || []);
-        }
+        // Re-add a deleted remark — use saveRemark to go through the queue
+        saveRemark(action.remark);
         setUndoStack((prev) => prev.slice(0, -1));
         setRedoStack((prev) => [...prev, action]);
         return;
@@ -2962,21 +3008,8 @@ function App() {
       if (action.type === 'erasePage' || action.type === 'eraseSection' || action.type === 'eraseBook') {
         // Re-add all erased remarks
         for (const r of action.remarks) {
-          await fetchJson('api/remarks', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              userId,
-              subjectId: selectedBook,
-              bookId: selectedChapter,
-              sectionId: selectedFile,
-              pageId: r.page || selectedPage,
-              langId: r.langId || annotationScopeLangId,
-              ...r,
-            })
-          });
+          saveRemark(r);
         }
-        await loadRemarksForCurrentScope();
         setUndoStack((prev) => prev.slice(0, -1));
         setRedoStack((prev) => [...prev, action]);
         return;
@@ -2991,34 +3024,17 @@ function App() {
     );
     if (!pageRemarks.length) return;
     const last = pageRemarks[pageRemarks.length - 1];
-    await deleteRemarkByCreatedAt(last.createdAt, last.langId || annotationScopeLangId);
+    deleteRemarkByCreatedAt(last.createdAt, last.langId || annotationScopeLangId);
     setUndoStack((prev) => [...prev, { type: 'delete', remark: last }]);
     setRedoStack([{ type: 'delete', remark: last }]);
   };
 
-  const redoRemark = async () => {
+  const redoRemark = () => {
     if (!redoStack.length) return;
     const action = redoStack[redoStack.length - 1];
 
     if (action.type === 'add') {
-      const data = await fetchJson('api/remarks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId,
-          subjectId: selectedBook,
-          bookId: selectedChapter,
-          sectionId: selectedFile,
-          pageId: action.remark.page || selectedPage,
-          langId: action.remark.langId || annotationScopeLangId,
-          ...action.remark,
-        })
-      });
-      if (sectionScopedAnnotations) {
-        await loadRemarksForCurrentScope();
-      } else {
-        setRemarks(data.remarks || []);
-      }
+      saveRemark(action.remark);
       setUndoStack((prev) => [...prev, action]);
       setRedoStack((prev) => prev.slice(0, -1));
       return;
@@ -3026,21 +3042,17 @@ function App() {
 
     if (action.type === 'delete') {
       // Re-delete the remark
-      await deleteRemarkByCreatedAt(action.remark.createdAt, action.remark.langId || annotationScopeLangId);
+      deleteRemarkByCreatedAt(action.remark.createdAt, action.remark.langId || annotationScopeLangId);
       setUndoStack((prev) => [...prev, action]);
       setRedoStack((prev) => prev.slice(0, -1));
       return;
     }
 
     if (action.type === 'erasePage' || action.type === 'eraseSection' || action.type === 'eraseBook') {
-      // Re-erase all remarks
+      // Re-erase all remarks — enqueue each delete
       for (const r of action.remarks) {
-        await fetchJson(
-          `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&sectionId=${selectedFile}&pageId=${r.page || selectedPage}&langId=${encodeURIComponent(r.langId || annotationScopeLangId)}&createdAt=${encodeURIComponent(r.createdAt)}`,
-          { method: 'DELETE' }
-        );
+        deleteRemarkByCreatedAt(r.createdAt, r.langId || annotationScopeLangId, r.page || selectedPage);
       }
-      await loadRemarksForCurrentScope();
       setUndoStack((prev) => [...prev, action]);
       setRedoStack((prev) => prev.slice(0, -1));
       return;
@@ -3418,7 +3430,8 @@ function App() {
             context.strokeStyle = denorm.color;
             context.globalAlpha = denorm.mode === 'highlight' ? 0.28 : 1;
             const strokeScale = Math.max(0.2, imageRect.width / 800);
-            context.lineWidth = (denorm.mode === 'highlight' ? 18 : 4) * strokeScale;
+            const lw = (denorm.lineWidth != null ? denorm.lineWidth : 2);
+            context.lineWidth = (denorm.mode === 'highlight' ? lw * 4.5 : lw) * strokeScale;
             context.beginPath();
             context.moveTo(imageRect.left + points[0].x, imageRect.top + points[0].y);
             for (const point of points.slice(1)) {
@@ -3478,7 +3491,8 @@ function App() {
             context.strokeStyle = denorm.color;
             context.globalAlpha = denorm.mode === 'highlight' ? 0.28 : 1;
             const strokeScale = Math.max(0.2, imageRect.width / 800);
-            context.lineWidth = (denorm.mode === 'highlight' ? 18 : 4) * strokeScale;
+            const lw = (denorm.lineWidth != null ? denorm.lineWidth : 2);
+            context.lineWidth = (denorm.mode === 'highlight' ? lw * 4.5 : lw) * strokeScale;
             context.beginPath();
             context.moveTo(imageRect.left + points[0].x, imageRect.top + points[0].y);
             for (const point of points.slice(1)) {
@@ -3536,7 +3550,8 @@ function App() {
           context.strokeStyle = denorm.color;
           context.globalAlpha = denorm.mode === 'highlight' ? 0.28 : 1;
           const strokeScale = Math.max(0.2, imageRect.width / 800);
-          context.lineWidth = (denorm.mode === 'highlight' ? 18 : 4) * strokeScale;
+          const lw = (denorm.lineWidth != null ? denorm.lineWidth : 2);
+          context.lineWidth = (denorm.mode === 'highlight' ? lw * 4.5 : lw) * strokeScale;
           context.beginPath();
           context.moveTo(imageRect.left + points[0].x, imageRect.top + points[0].y);
           for (const point of points.slice(1)) {
@@ -3619,41 +3634,56 @@ function App() {
   };
 
   const handlePointerDown = (event) => {
-    // console.log('[draw] pointerdown — tool:', tool, 'pointerId:', event.pointerId, 'target:', event.target?.tagName, event.target?.className);
-    if (tool !== 'pen' && tool !== 'highlight' && tool !== 'move') {
-      // console.log('[draw] SKIP: tool not pen/highlight/move');
+    if (isDebugAnnoStrokes()) console.log('[anno-stroke] ↓ pointerdown id=' + event.pointerId + ' tool=' + tool + ' drawing=' + drawingRef.current + ' activePtrs=' + activePointersRef.current.size);
+    if (tool !== 'pen' && tool !== 'highlight' && tool !== 'move' && tool !== 'eraser') {
       return;
     }
 
-    // Multi-touch: if another pointer is already down, finish the current
-    // stroke (save it) before switching to scroll mode.  Without this,
-    // accidental second-finger touches on iPad would silently discard the
-    // in-progress stroke with no way to recover it.
+    // Multi-touch guard
     activePointersRef.current.add(event.pointerId);
     if (activePointersRef.current.size > 1) {
-      // console.log('[draw] SKIP: multi-touch (' + activePointersRef.current.size + ' pointers)');
+      if (isDebugAnnoStrokes()) console.log('[anno-stroke] ↓ SKIP multi-touch — ' + activePointersRef.current.size + ' active pointers');
       if (drawingRef.current && currentStrokeRef.current) {
         const stroke = currentStrokeRef.current;
         drawingRef.current = false;
         currentStrokeRef.current = null;
-        // Save the partial stroke before discarding.
-        // Use the imageRect captured at pointer-down if available.
         const isScrollMode = displayModeRef.current === 'scrolling';
         const rectKey = isScrollMode ? `${stroke.langId}-${stroke.page || selectedPage}` : stroke.langId;
         const imageRect = stroke.imageRect || getPageImageRects()[rectKey];
         const normalizedStroke = imageRect
           ? normalizeAnnotationCoords(stroke, imageRect)
           : stroke;
-        saveRemark(normalizedStroke).catch((err) =>
-          console.error('[draw] failed to save multi-touch-cancelled stroke:', err)
-        );
+        saveRemark(normalizedStroke);
+      }
+      if (eraserActiveRef.current) { eraserActiveRef.current = false; erasedThisDragRef.current.clear(); }
+      return;
+    }
+
+    // Eraser tool: activate drag-to-erase mode
+    if (tool === 'eraser') {
+      eraserActiveRef.current = true;
+      erasedThisDragRef.current.clear();
+      event.preventDefault();
+      // Erase the annotation at the initial touch point
+      const eraserTarget = resolveAnnotationTarget(event);
+      if (eraserTarget) {
+        setActiveAnnotationLangId(eraserTarget.langId);
+        const hit = findAnnotationAtPoint(eraserTarget.langId, eraserTarget.point, eraserTarget.pageNum);
+        if (hit?.createdAt) {
+          erasedThisDragRef.current.add(hit.createdAt);
+          deleteRemarkByCreatedAt(hit.createdAt, hit.langId || eraserTarget.langId, {
+            pageIdOverride: hit.page,
+            recordUndo: true,
+            deletedRemark: hit,
+          });
+        }
       }
       return;
     }
 
     const target = resolveAnnotationTarget(event);
     if (!target) {
-      // console.log('[draw] SKIP: resolveAnnotationTarget returned null');
+      if (isDebugAnnoStrokes()) console.log('[anno-stroke] ↓ SKIP — resolveAnnotationTarget returned null');
       return;
     }
     // console.log('[draw] target found — langId:', target.langId, 'point:', target.point);
@@ -3674,6 +3704,14 @@ function App() {
     // console.log('[draw] drawingRef set to TRUE');
     // Prevent browser from interpreting this drag as a scroll
     event.preventDefault();
+    // Remove this pointerId from the dedup set so that iOS pointerId
+    // recycling doesn't silently drop strokes.  iOS may reuse pointerId
+    // values across fast successive strokes, and a stale entry in
+    // processedUpIdsRef would cause handlePointerUp to reject the new
+    // stroke as a "duplicate".  Clearing on each new stroke start
+    // ensures the dedup only protects against genuine double-fires
+    // within the same gesture (~microseconds), not across gestures.
+    processedUpIdsRef.current.delete(event.pointerId);
     currentStrokeRef.current = {
       type: 'stroke',
       chapter: selectedChapter,
@@ -3682,6 +3720,12 @@ function App() {
       mode: tool,
       color: textColor,
       points: [target.point],
+      // Track pointerId so we can reject stale pointerup events
+      // that arrive after a new stroke has already started (Apple Pencil
+      // fires pointerleave before pointerup on lift, causing a race when
+      // the user starts the next stroke immediately).
+      pointerId: event.pointerId,
+      lineWidth,
       // Capture the image dimensions at pointer-down so normalization
       // at pointer-up uses the SAME rect the points were collected against.
       // If the DOM layout changes during the gesture (e.g. bilingual
@@ -3695,6 +3739,23 @@ function App() {
   const handlePointerMove = (event) => {
     // Multi-touch: don't draw when multiple pointers are active
     if (activePointersRef.current.size > 1) return;
+
+    // Eraser drag: find and erase any annotation that intersects the pointer path
+    if (eraserActiveRef.current) {
+      const etarget = resolveAnnotationTarget(event);
+      if (etarget) {
+        const hit = findAnnotationAtPoint(etarget.langId, etarget.point, etarget.pageNum);
+        if (hit?.createdAt && !erasedThisDragRef.current.has(hit.createdAt)) {
+          erasedThisDragRef.current.add(hit.createdAt);
+          deleteRemarkByCreatedAt(hit.createdAt, hit.langId || etarget.langId, {
+            pageIdOverride: hit.page,
+            recordUndo: true,
+            deletedRemark: hit,
+          });
+        }
+      }
+      return;
+    }
 
     // Handle move tool dragging
     if (moveAnnotationRef.current && moveStartPointRef.current) {
@@ -3763,10 +3824,28 @@ function App() {
     redraw(context, rect.width, rect.height, [...(displayMode === 'scrolling' ? allSectionAnnotations : pageAnnotations), currentStrokeRef.current]);
   };
 
-  const handlePointerUp = async (event) => {
+  const handlePointerUp = (event) => {
+    // Some browsers fire pointerup/pointerleave/pointercancel multiple times
+    // for the same pointerId on a single lift.  Only process each pointerId once.
+    const pid = event?.pointerId;
+    if (pid != null) {
+      if (processedUpIdsRef.current.has(pid)) {
+        if (isDebugAnnoStrokes()) console.log('[anno-stroke] ↑ DEDUP REJECTED — pointerId already processed id=' + pid);
+        return;
+      }
+      processedUpIdsRef.current.add(pid);
+    }
+    if (isDebugAnnoStrokes()) console.log('[anno-stroke] ↑ pointerup id=' + pid + ' drawing=' + drawingRef.current + ' moveAnnotation=' + !!moveAnnotationRef.current + ' activePtrs=' + activePointersRef.current.size);
     // Clean up pointer tracking for multi-touch detection
     if (event?.pointerId != null) {
       activePointersRef.current.delete(event.pointerId);
+    }
+
+    // Clean up eraser drag mode
+    if (eraserActiveRef.current) {
+      eraserActiveRef.current = false;
+      erasedThisDragRef.current.clear();
+      return;
     }
 
     // Handle move tool drop
@@ -3779,7 +3858,7 @@ function App() {
         moveHasMovedRef.current = false;
         // Delete old annotation and save moved version
         if (moved.createdAt) {
-          await deleteRemarkByCreatedAt(moved.createdAt, moved.langId || annotationScopeLangId);
+          deleteRemarkByCreatedAt(moved.createdAt, moved.langId || annotationScopeLangId);
         }
         // Re-save with updated coordinates
         const remarkToSave = {
@@ -3796,12 +3875,20 @@ function App() {
           coordsNormalized: moved.coordsNormalized,
           createdAt: hkNow()
         };
-        await saveRemark(remarkToSave);
+        saveRemark(remarkToSave);
       }
       return;
     }
 
-    if (!drawingRef.current || !currentStrokeRef.current) return;
+    if (!drawingRef.current || !currentStrokeRef.current) { if (isDebugAnnoStrokes()) console.log('[anno-stroke] ↑ SKIP — drawingRef=' + drawingRef.current + ' stroke=' + !!currentStrokeRef.current); return; }
+    // Guard against stale pointerup events from a previous stroke that
+    // arrive after a new pointerdown has already started.  Apple Pencil
+    // fires pointerleave→pointerdown→pointerup on fast successive strokes,
+    // so the old pointerup can land when drawingRef is already true again.
+    if (event?.pointerId != null && currentStrokeRef.current.pointerId !== event.pointerId) {
+      if (isDebugAnnoStrokes()) console.log('[anno-stroke] ↑ STALE REJECTED — event.pointerId=' + event.pointerId + ' stroke.pointerId=' + currentStrokeRef.current.pointerId);
+      return;
+    }
     drawingRef.current = false;
     const stroke = currentStrokeRef.current;
     currentStrokeRef.current = null;
@@ -3830,11 +3917,8 @@ function App() {
           : null,
       });
     }
-    try {
-      await saveRemark(normalizedStroke);
-    } catch (err) {
-      console.error('[draw] failed to save stroke:', err);
-    }
+    if (isDebugAnnoStrokes()) console.log('[anno-stroke] 💾 handlePointerUp → saveRemark: points=' + normalizedStroke.points?.length + ' lang=' + normalizedStroke.langId + ' page=' + normalizedStroke.page);
+    saveRemark(normalizedStroke);
   };
 
   // Native pointermove/pointerup listeners on the DOCUMENT to work around
@@ -3843,30 +3927,76 @@ function App() {
   // every render creates a gap where pointerup events can be permanently lost.
   const handlePointerMoveRef = useRef(handlePointerMove);
   const handlePointerUpRef = useRef(handlePointerUp);
+  const resolveAnnotationTargetRef = useRef(resolveAnnotationTarget);
   useEffect(() => { handlePointerMoveRef.current = handlePointerMove; }, [handlePointerMove]);
   useEffect(() => { handlePointerUpRef.current = handlePointerUp; }, [handlePointerUp]);
+  useEffect(() => { resolveAnnotationTargetRef.current = resolveAnnotationTarget; }, [resolveAnnotationTarget]);
 
   useEffect(() => {
     const onNativeMove = (e) => {
-      if (!drawingRef.current && !moveAnnotationRef.current) return;
+      // Auto-init stroke: Apple Pencil on iOS sometimes suppresses pointerdown
+      // on fast successive strokes due to palm-rejection / predictive touch.
+      // If a pen/highlighter move arrives with no active stroke, start one.
+      if (!drawingRef.current && !moveAnnotationRef.current) {
+        if (e.pointerType === 'pen' && (toolRef.current === 'pen' || toolRef.current === 'highlight')) {
+          const target = resolveAnnotationTargetRef.current(e);
+          if (target) {
+            if (isDebugAnnoStrokes()) console.log('[anno-stroke] ↓ AUTO-INIT from pointermove id=' + e.pointerId + ' (pointerdown was suppressed by iOS)');
+            // Synthesize a pointerdown-like initialisation
+            activePointersRef.current.add(e.pointerId);
+            setActiveAnnotationLangId(target.langId);
+            drawingRef.current = true;
+            e.preventDefault();
+            processedUpIdsRef.current.delete(e.pointerId); // prevent iOS pointerId recycling from dropping strokes
+            currentStrokeRef.current = {
+              type: 'stroke',
+              chapter: selectedChapterRef.current,
+              page: target.pageNum || selectedPageRef.current,
+              langId: target.langId,
+              mode: toolRef.current,
+              color: textColorRef.current,
+              points: [target.point],
+              pointerId: e.pointerId,
+              lineWidth: lineWidthRef.current,
+              imageRect: target.imageRect,
+              createdAt: hkNow()
+            };
+          }
+        }
+        return;
+      }
+      if (isDebugAnnoStrokes()) console.log('[anno-stroke] → document-pointermove id=' + e.pointerId);
       handlePointerMoveRef.current(e);
     };
+    const onNativeDown = (e) => {
+      // Log ALL pen pointerdowns on the document so we can see if canvas misses any
+      if (isDebugAnnoStrokes()) console.log('[anno-stroke] ↓ doc-pointerdown id=' + e.pointerId + ' type=' + e.pointerType + ' isPrimary=' + e.isPrimary + ' target=' + (e.target?.tagName || '?'));
+    };
     const onNativeUp = (e) => {
-      if (!drawingRef.current && !moveAnnotationRef.current) return;
+      // Let eraser events through even when not drawing — eraserActiveRef
+      // needs cleanup in handlePointerUp.  Also handle the case where the
+      // canvas element misses the event (known iOS/Apple Pencil bug).
+      if (!drawingRef.current && !moveAnnotationRef.current && !eraserActiveRef.current) {
+        if (isDebugAnnoStrokes()) console.log('[anno-stroke] ↑ doc-pointerup id=' + e.pointerId + ' (IGNORED — not drawing/moving/erasing)');
+        return;
+      }
+      if (isDebugAnnoStrokes()) console.log('[anno-stroke] ↑ doc-pointerup id=' + e.pointerId);
       handlePointerUpRef.current(e);
     };
 
     document.addEventListener('pointermove', onNativeMove, true);
+    document.addEventListener('pointerdown', onNativeDown, true);
     document.addEventListener('pointerup', onNativeUp, true);
     document.addEventListener('pointercancel', onNativeUp, true);
     return () => {
       document.removeEventListener('pointermove', onNativeMove, true);
+      document.removeEventListener('pointerdown', onNativeDown, true);
       document.removeEventListener('pointerup', onNativeUp, true);
       document.removeEventListener('pointercancel', onNativeUp, true);
     };
   }, []); // empty deps — listeners attached once, never re-attached
 
-  const commitTextAnnotation = async () => {
+  const commitTextAnnotation = () => {
     const el = textInputRef.current;
     const state = textInputState;
     if (!el || !state) return;
@@ -3878,7 +4008,7 @@ function App() {
     }
     // If editing an existing annotation, delete the old one first
     if (state.existingCreatedAt) {
-      await deleteRemarkByCreatedAt(state.existingCreatedAt, state.existingLangId || state.langId, {
+      deleteRemarkByCreatedAt(state.existingCreatedAt, state.existingLangId || state.langId, {
         recordUndo: true,
         deletedRemark: state.existingRemark,
       });
@@ -3898,7 +4028,7 @@ function App() {
       ? normalizeAnnotationCoords(remark, state.imageRect)
       : remark;
     textInputCommittedRef.current = true;
-    await saveRemark(normalizedRemark);
+    saveRemark(normalizedRemark);
     setTextInputState(null);
   };
 
@@ -4375,7 +4505,7 @@ function App() {
     setModalInfo({ url: url.href });
   };
 
-  const handleCanvasClick = async (event) => {
+  const handleCanvasClick = (event) => {
     // If a text input is already active, handle reposition or ignore
     if (textInputState) {
       // Check if this click is a reposition (blur flag was set by mousedown listener)
@@ -4412,7 +4542,7 @@ function App() {
     if (tool === 'eraser') {
       const annotation = findAnnotationAtPoint(target.langId, target.point, target.pageNum);
       if (!annotation?.createdAt) return;
-      await deleteRemarkByCreatedAt(annotation.createdAt, annotation.langId || target.langId, {
+      deleteRemarkByCreatedAt(annotation.createdAt, annotation.langId || target.langId, {
         pageIdOverride: annotation.page,
         recordUndo: true,
         deletedRemark: annotation,
@@ -4741,18 +4871,6 @@ function App() {
   const pageSelectOptions = useMemo(() => (
     pageOptions.map((page) => ({ id: page, label: String(page) }))
   ), [pageOptions]);
-
-  const annotationScopeLangId = useMemo(() => {
-    if (selectedLanguage === 'bilingual') {
-      return visibleLanguages.includes(activeAnnotationLangId)
-        ? activeAnnotationLangId
-        : (visibleLanguages[0] || 'en');
-    }
-    if (visibleLanguages[0]) {
-      return visibleLanguages[0];
-    }
-    return selectedLanguage === 'tc' ? 'tc' : 'en';
-  }, [activeAnnotationLangId, selectedLanguage, visibleLanguages]);
 
   useEffect(() => {
     setActiveAnnotationLangId((current) => {
@@ -5648,6 +5766,22 @@ function App() {
                 </svg>
               </button>
             </div>
+            <span className="tool-menu-sep" />
+            <div className="tool-menu-section-label">{_('lineWidth') || 'Thickness'}</div>
+            <div className="tool-menu-line-width">
+              <span className="tool-menu-line-width-dot" style={{ width: `${lineWidth}px`, height: `${lineWidth}px`, background: textColor }} />
+              <input
+                type="range"
+                className="tool-menu-line-width-slider"
+                min="1"
+                max="10"
+                step="1"
+                value={lineWidth}
+                onChange={(e) => setLineWidth(Number(e.target.value))}
+                aria-label={_('lineWidth') || 'Line thickness'}
+              />
+              <span className="tool-menu-line-width-num">{lineWidth}</span>
+            </div>
           </div>
         )}
       </div>
@@ -5856,6 +5990,32 @@ function App() {
                   <svg viewBox="0 0 24 24" role="presentation" focusable="false">
                     <path d="M15 7l-5 5 5 5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
                     <path d="M19 7l-5 5 5 5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                )}
+              </span>
+            </button>
+            <button
+              className="sidebar-toggle sidebar-theme-btn"
+              onClick={() => setGlobalTheme(t => t === 'light' ? 'dark' : 'light')}
+              aria-label={globalTheme === 'light' ? _('darkTheme') : _('lightTheme')}
+              title={globalTheme === 'light' ? _('darkTheme') : _('lightTheme')}
+            >
+              <span aria-hidden="true" className="sidebar-toggle-icon">
+                {globalTheme === 'light' ? (
+                  <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" fill="currentColor" />
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                    <circle cx="12" cy="12" r="5" fill="none" stroke="currentColor" strokeWidth="2" />
+                    <line x1="12" y1="1" x2="12" y2="3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    <line x1="12" y1="21" x2="12" y2="23" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    <line x1="1" y1="12" x2="3" y2="12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    <line x1="21" y1="12" x2="23" y2="12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
                   </svg>
                 )}
               </span>
@@ -6473,6 +6633,7 @@ function App() {
             className="annotation-canvas"
             style={{
               pointerEvents: tool === 'hand' ? 'none' : 'auto',
+              touchAction: tool === 'hand' ? 'auto' : 'none',
               cursor: tool === 'move' ? 'move' : tool === 'eraser' ? 'pointer' : tool === 'text' ? 'text' : tool === 'pen' || tool === 'highlight' ? 'crosshair' : 'default'
             }}
             onPointerDown={handlePointerDown}
@@ -6694,7 +6855,7 @@ function App() {
       {/* ── AI Generation Drawer ─────────────────────────── */}
       {aiDrawerOpen && (
         <div className="resources-drawer-overlay" onClick={() => setAiDrawerOpen(false)}>
-          <section className={`ai-drawer ${aiTheme === 'dark' ? 'ai-dark' : ''}`} onClick={(e) => e.stopPropagation()}>
+          <section className={`ai-drawer ${globalTheme === 'dark' ? 'ai-dark' : ''}`} onClick={(e) => e.stopPropagation()}>
             <div className="ai-drawer-header">
               <h2>
                 <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="ai-header-icon">
@@ -6735,30 +6896,6 @@ function App() {
                     aria-label={_('increaseFontSize')}
                   >+</button>
                 </div>
-                <button
-                  className="ai-theme-toggle"
-                  onClick={() => setAiTheme(t => t === 'light' ? 'dark' : 'light')}
-                  title={aiTheme === 'light' ? _('darkTheme') : _('lightTheme')}
-                  aria-label={aiTheme === 'light' ? _('darkTheme') : _('lightTheme')}
-                >
-                  {aiTheme === 'light' ? (
-                    <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="ai-theme-icon">
-                      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-                    </svg>
-                  ) : (
-                    <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="ai-theme-icon">
-                      <circle cx="12" cy="12" r="5" />
-                      <line x1="12" y1="1" x2="12" y2="3" />
-                      <line x1="12" y1="21" x2="12" y2="23" />
-                      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
-                      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
-                      <line x1="1" y1="12" x2="3" y2="12" />
-                      <line x1="21" y1="12" x2="23" y2="12" />
-                      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
-                      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
-                    </svg>
-                  )}
-                </button>
                 <button className="modal-close" onClick={() => setAiDrawerOpen(false)} aria-label={_('close')}>✕</button>
               </div>
             </div>

@@ -501,6 +501,8 @@ function PdfPane({
   const renderedPageRef = useRef(1);
   const syncingFromRemoteRef = useRef(false);
   const programmaticScrollingRef = useRef(false);  // true while the scroll-to-page effect is scrolling (per-instance, not shared across panes)
+  const postRestoreUntilRef = useRef(0);     // timestamp: suppress saveScrollNow for detected-page changes until this time
+  const lastRestoredPageRef = useRef(0);      // page number that was just restored — if saveScrollNow detects a different page within the grace period, skip
   const modeGenRef = useRef(0);
   const scrollRestoredRef = useRef(false);
   const isInitialLoadRef = useRef(true);  // true until first content load completes
@@ -1334,7 +1336,7 @@ function PdfPane({
         // and kill momentum scrolling in bilingual mode.
         // Also skip during bilingual repositioning to avoid redundant
         // syncPageIndicator calls and cross-pane scroll-sync dispatches.
-        if (!pendingScrollSync && !syncingFromRemoteRef.current && !_bilingualRepositioning) {
+        if (!pendingScrollSync && !syncingFromRemoteRef.current && !_bilingualRepositioning && !programmaticScrollingRef.current) {
           pendingScrollSync = true;
           scrollRafId = requestAnimationFrame(() => {
             pendingScrollSync = false;
@@ -1351,7 +1353,7 @@ function PdfPane({
 
             // Save scroll position as fraction of page height — same
             // format as the image-scrolling mode for consistency.
-            if (!isInitialLoadRef.current) {
+            if (!isInitialLoadRef.current && !programmaticScrollingRef.current) {
               const savePos = getScrollPos(mount);
               const top = savePos.scrollTop;
               const { page, pageEl } = findContainingPage(mount, top);
@@ -1360,7 +1362,7 @@ function PdfPane({
               const fraction = pageHeight > 0 ? Math.min(1, Math.max(0, relativeTop / pageHeight)) : 0;
               saveScrollPos(scrollCacheKey, { top: fraction, left: savePos.scrollLeft, page, pageHeight: Math.round(pageHeight) });
               if (isDebugScrollingPersistence()) {
-                console.log(`[scroll-save] ${scrollCacheKey}  page=${page}  scrollTop=${Math.round(top)}  fraction=${fraction.toFixed(4)}  ph=${Math.round(pageHeight)}`);
+                console.log(`[scroll-save] ${scrollCacheKey}  p=${page}  t=${fraction.toFixed(4)}  scrollTop=${Math.round(top)}  ph=${Math.round(pageHeight)}`);
               }
             }
 
@@ -1542,7 +1544,12 @@ function PdfPane({
 
     programmaticScrollingRef.current = true;
     myScrollTo(mount, { top: scrollTarget, behavior: 'instant' });
-    programmaticScrollingRef.current = false;
+    // Reset in next RAF so scroll events (sync or async) and any
+    // previously-scheduled RAF callbacks still see the flag and skip
+    // saving the programmatic position.
+    const resetFlagRaf = requestAnimationFrame(() => {
+      programmaticScrollingRef.current = false;
+    });
     const actualPos = getScrollPos(mount);
     console.log(`[trace] scroll-to-page  RESULT  ${chapter}.${currentPage}  actualPage=${findContainingPage(mount, actualPos.scrollTop).page}  actualTop=${Math.round(actualPos.scrollTop)}`);
 
@@ -1674,6 +1681,15 @@ function PdfPane({
       // saving now would overwrite the real saved position with
       // (page=1, ph=1) defaults from the unloaded state.
       if (isInitialLoadRef.current) return;
+      // Skip during post-restore grace period — the re-save above already
+      // stored the authoritative restored position.  Recomputing from DOM
+      // here would capture the post-reposition (bilingual layout shift)
+      // scrollTop, causing fraction drift on every reload cycle.
+      if (Date.now() < postRestoreUntilRef.current && lastRestoredPageRef.current > 0) {
+        if (isDebugScrollingPersistence()) console.log(`[scroll-save] ${getScrollCacheKey(source)}  SKIP pagehide flush — post-restore grace period, restored=p${lastRestoredPageRef.current}`);
+        flushScrollStorage();
+        return;
+      }
       const mount = scrollRef.current;
       if (mount && mount.scrollHeight > 0) {
         const key = getScrollCacheKey(source);
@@ -1683,9 +1699,12 @@ function PdfPane({
         const relativeTop = pageEl ? Math.max(0, top - pageEl.offsetTop) : top;
         const pageHeight = getPageHeight(pageEl);
         const fraction = pageHeight > 0 ? Math.min(1, Math.max(0, relativeTop / pageHeight)) : 0;
-        saveScrollPos(key, { top: fraction, left: savePos.scrollLeft, page, pageHeight: Math.round(pageHeight) });
+        // Capture natural width for pw so it survives across reloads.
+        const imgData = (page > 0 && page <= (images?.length || 0)) ? images[page - 1] : null;
+        const natW = (imgData && typeof imgData === 'object') ? imgData.w : 0;
+        saveScrollPos(key, { top: fraction, left: savePos.scrollLeft, page, pageHeight: Math.round(pageHeight), pageWidth: natW });
         if (isDebugScrollingPersistence()) {
-          console.log(`[scroll-save] ${key}  page=${page}  scrollTop=${Math.round(top)}  scrollLeft=${Math.round(savePos.scrollLeft)}  relPx=${Math.round(relativeTop)}  fraction=${fraction.toFixed(4)}  ph=${Math.round(pageHeight)}`);
+          console.log(`[scroll-save] ${key}  p=${page}  t=${fraction.toFixed(4)}  scrollTop=${Math.round(top)}  scrollLeft=${Math.round(savePos.scrollLeft)}  ph=${Math.round(pageHeight)}  pw=${natW || '-'}`);
         }
       }
       flushScrollStorage();
@@ -2249,18 +2268,24 @@ function PdfPane({
         _scrollRestoreInProgress = true;
 
         const target = mount.querySelector(`[data-page="${savedPage}"]`);
-        // offsetTop: always prefer the DOM element's actual offsetTop.
-        // Even if the element is a placeholder with a small height, its
-        // offsetTop reflects the real CSS layout of preceding pages.
-        // The formula (page-1)×ph×zoom is only a fallback for when the
-        // target element isn't in the DOM yet.
+        // ── Compute offsetTop for the target page ─────────
+        // Prefer the stored page height formula over the DOM element's
+        // offsetTop.  During early load (especially in bilingual mode),
+        // preceding pages may not have their final CSS heights applied
+        // yet, so target.offsetTop can be significantly wrong.  The stored
+        // page height from the previous session represents the settled
+        // layout where ALL pages had their correct heights.
         let offsetTop;
+        let domOffsetTop = 0;
         if (target) {
-          offsetTop = target.offsetTop;
-        } else if (storedPageHeight > 0) {
+          domOffsetTop = target.offsetTop;
+        }
+        if (storedPageHeight > 0) {
           // storedPageHeight is the CSS display height (includes zoom).
           // Do NOT multiply by zoomLevel again — that would double-count.
           offsetTop = (savedPage - 1) * storedPageHeight;
+        } else if (target) {
+          offsetTop = domOffsetTop;
         } else {
           offsetTop = 0;
         }
@@ -2272,8 +2297,11 @@ function PdfPane({
 
         if (isDebugScrollingPersistence()) {
           const displayH = target ? getPageHeight(target) : '?';
+          const actualOffsetTop = Math.round(offsetTop);
+          const domDelta = domOffsetTop > 0 && Math.abs(domOffsetTop - offsetTop) > 2
+            ? ` (DOM=${Math.round(domOffsetTop)} Δ=${Math.round(domOffsetTop - offsetTop)})` : '';
           console.log(`[scroll-load] ${scrollCacheKey}  →  page=${savedPage}  ` +
-            `offsetTop=(${savedPage}-1)×${storedPageHeight || '?'}×${zoomLevel}=${Math.round(offsetTop)}  ` +
+            `offsetTop=${actualOffsetTop}${domDelta}  ` +
             `offset=${displayH}×${savedTop?.toFixed?.(4) || savedTop}=${Math.round(offset)}  ` +
             `scrollTo(left=${Math.round(savedLeft)},top=${Math.round(targetTop)})`);
         }
@@ -2296,14 +2324,23 @@ function PdfPane({
                 const realTop = t.offsetTop + resolveScrollOffset(savedTop, t);
                 myScrollTo(mount, { top: Math.min(realTop, mount.scrollHeight - mount.clientHeight), left: savedLeft, behavior: 'instant' });
               }
-              // Now clear flags and save.
+              // Now clear flags and save the RESTORED position.
               requestAnimationFrame(() => {
                 requestAnimationFrame(() => {
                   _scrollRestoreInProgress = false;
                   isInitialLoadRef.current = false;
-                  saveScrollNow();
+                  const storedPageWidth2 = storedPos?.pageWidth ?? cachedPos?.pageWidth;
+                  saveScrollPos(scrollCacheKey, { top: savedTop, left: savedLeft, page: savedPage, pageHeight: Math.round(storedPageHeight), pageWidth: storedPageWidth2 });
+                  if (isDebugScrollingPersistence()) console.log(`[scroll-save] ${scrollCacheKey}  p=${savedPage}  t=${typeof savedTop==='number'?savedTop.toFixed(4):savedTop}  pw=${storedPageWidth2 || '-'}  (clamped retry, re-saved)`);
+                  // Start post-restore grace period (same as normal path).
+                  lastRestoredPageRef.current = savedPage;
+                  postRestoreUntilRef.current = Date.now() + 2000;
                   const { page: curPage } = findContainingPage(mount, getScrollPos(mount).scrollTop);
                   loadVisibleRange(curPage);
+                  programmaticScrollingRef.current = true;
+                  requestAnimationFrame(() => {
+                    programmaticScrollingRef.current = false;
+                  });
                 });
               });
             }
@@ -2323,15 +2360,41 @@ function PdfPane({
         }
       }
 
-      // Clear flags and save position after layout settles.
+      // Clear flags and save the RESTORED position (not the DOM-detected
+      // position).  After bilingual layout height adjustment, the detected
+      // page can differ from the restored page — saving the detected page
+      // would corrupt the stored position (e.g. p=5 becomes p=4).
+      // Use the values we INTENDED to restore, keeping the stored position
+      // stable across reloads until the user scrolls on their own.
+      // Also suppress scroll-save for one extra frame after the re-save
+      // so that any layout-triggered scroll events from bilingual height
+      // recalculation don't immediately overwrite the restored position.
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           _scrollRestoreInProgress = false;
           isInitialLoadRef.current = false;
-          saveScrollNow();
+          // Save EXACTLY what we restored, not what the DOM currently shows.
+          // Preserve pageWidth (pw) from the stored position so it survives
+          // across reloads — the normal saveScrollNow includes it but our
+          // re-save must too, otherwise pw is lost on the first reload.
+          const storedPageWidth = storedPos?.pageWidth ?? cachedPos?.pageWidth;
+          saveScrollPos(scrollCacheKey, { top: savedTop, left: savedLeft, page: savedPage, pageHeight: Math.round(storedPageHeight), pageWidth: storedPageWidth });
+          if (isDebugScrollingPersistence()) console.log(`[scroll-save] ${scrollCacheKey}  p=${savedPage}  t=${typeof savedTop==='number'?savedTop.toFixed(4):savedTop}  pw=${storedPageWidth || '-'}  (restored position re-saved)`);
+          // Start post-restore grace period: suppress saveScrollNow for 2 s
+          // if the detected page differs from the restored page.  This lets
+          // bilingual layout recalculation settle without corrupting the
+          // stored position.
+          lastRestoredPageRef.current = savedPage;
+          postRestoreUntilRef.current = Date.now() + 2000;
           // Load ±3 pages around the restored/current position.
           const { page: curPage } = findContainingPage(mount, getScrollPos(mount).scrollTop);
           loadVisibleRange(curPage);
+          // Suppress scroll-save for one extra frame so the initial layout
+          // scroll events don't fire before the grace period check kicks in.
+          programmaticScrollingRef.current = true;
+          requestAnimationFrame(() => {
+            programmaticScrollingRef.current = false;
+          });
         });
       });
     };
@@ -2540,6 +2603,16 @@ function PdfPane({
       const savePos2 = getScrollPos(mount);
       const top = savePos2.scrollTop;
       const { page, pageEl } = findContainingPage(mount, top);
+      // ── Post-restore grace period ──────────────────────
+      // After scroll restoration, the bilingual layout height recalculation
+      // triggers scroll events that can land on a different page than the
+      // restored one.  During the grace period, if the detected page differs
+      // from the restored page, skip the save — the restored position (saved
+      // by the re-save above) is authoritative until the user scrolls.
+      if (Date.now() < postRestoreUntilRef.current && lastRestoredPageRef.current > 0 && page !== lastRestoredPageRef.current) {
+        if (isDebugScrollingPersistence()) console.log(`[scroll-save] ${scrollCacheKey}  SKIP — post-restore grace period, restored=p${lastRestoredPageRef.current} detected=p${page}`);
+        return;
+      }
       const relativeTop = pageEl ? Math.max(0, top - pageEl.offsetTop) : top;
       const displayHeight = getPageHeight(pageEl);
       // Never save when the page height is unreliable (≤ 1px).  This
@@ -2553,7 +2626,7 @@ function PdfPane({
       const natW = (imgData && typeof imgData === 'object') ? imgData.w : 0;
       saveScrollPos(scrollCacheKey, { top: fraction, left: savePos2.scrollLeft, page, pageHeight: Math.round(displayHeight), pageWidth: natW });
       if (isDebugScrollingPersistence()) {
-        console.log(`[scroll-save] ${scrollCacheKey}  page=${page}  scrollTop=${Math.round(top)}  scrollLeft=${Math.round(savePos2.scrollLeft)}  relPx=${Math.round(relativeTop)}  fraction=${fraction.toFixed(4)}  ph=${Math.round(displayHeight)}  pw=${natW}`);
+        console.log(`[scroll-save] ${scrollCacheKey}  p=${page}  t=${fraction.toFixed(4)}  scrollTop=${Math.round(top)}  scrollLeft=${Math.round(savePos2.scrollLeft)}  ph=${Math.round(displayHeight)}  pw=${natW}`);
       }
     };
     const onScrollWithSave = () => {
@@ -2568,7 +2641,11 @@ function PdfPane({
       pendingScroll2 = true;
       scrollRafId2 = requestAnimationFrame(() => {
         pendingScroll2 = false;
-        if (disposed) return;
+        // Also skip in RAF callback — a previously-scheduled RAF can fire
+        // after a programmatic scroll (scroll-to-page) has already moved
+        // the viewport, and saving that position would overwrite the user's
+        // real last-scroll position.
+        if (disposed || programmaticScrollingRef.current) return;
         doScrollWork();
         saveScrollNow();
       });
@@ -2586,7 +2663,7 @@ function PdfPane({
     if (isInitialLoadRef.current) {
       const saved = loadScrollPos(scrollCacheKey);
       if (saved && typeof saved.page === 'number' && saved.page >= 1) {
-        if (isDebugScrollingPersistence()) console.log(`[scroll-load] ${scrollCacheKey}  stored(p=${saved.page},t=${saved.top},ph=${saved.pageHeight},pw=${saved.pageWidth})  restorePageState`);
+        if (isDebugScrollingPersistence()) console.log(`[scroll-load] ${scrollCacheKey}  restorePageState p=${saved.page}`);
         setRenderedPage(saved.page);
         onPageChange(saved.page);
       }

@@ -833,6 +833,124 @@ app.delete('/api/remarks', requireValidUserId(true), asyncRoute(async (request, 
   }
 }));
 
+// ── Batch add/delete actions (offline-queue support) ──────
+app.post('/api/remarks/actions', requireValidUserId(true), asyncRoute(async (request, response) => {
+  try {
+    const userId = request.validatedUserId;
+    const { subjectId, bookId, sectionId, actions } = request.body || {};
+
+    if (!annotationsCollection) {
+      response.status(500).json({ error: 'MongoDB not connected', remarks: [] });
+      return;
+    }
+    if (!Array.isArray(actions) || actions.length === 0) {
+      response.status(400).json({ error: 'actions array required', remarks: [] });
+      return;
+    }
+
+    const identity = {
+      userId,
+      subjectId: String(subjectId || '').trim(),
+      bookId: String(bookId || '').trim(),
+      sectionId: Number(sectionId),
+    };
+
+    console.log(`[remarks/actions] POST — user=${userId.slice(0,6)} subject=${identity.subjectId} book=${identity.bookId} §${identity.sectionId} actions=${actions.length}`);
+
+    // Group actions by (pageId, langId) for efficient MongoDB operations.
+    // addRemark actions are batched with $push { $each }.
+    // deleteRemark actions remove one remark by createdAt from each document.
+
+    const addGroups = new Map();  // key "pageId|langId" → [remarks]
+    const deleteActions = [];     // { pageId, langId, createdAt }
+
+    for (const action of actions) {
+      if (action.type === 'addRemark') {
+        const p = action.payload || {};
+        const pageId = Number(p.pageId || p.page);
+        const langId = normalizeAnnotationLangId(p.langId);
+        const key = `${pageId}|${langId}`;
+        if (!addGroups.has(key)) {
+          addGroups.set(key, { pageId, langId, remarks: [] });
+        }
+        addGroups.get(key).remarks.push({ ...p, langId });
+      } else if (action.type === 'deleteRemark') {
+        const p = action.payload || {};
+        deleteActions.push({
+          pageId: Number(p.pageId),
+          langId: normalizeAnnotationLangId(p.langId),
+          createdAt: String(p.createdAt),
+        });
+      }
+    }
+
+    // Execute all add operations ($push with $each)
+    const addPromises = [...addGroups.values()].map((group) =>
+      annotationsCollection.updateOne(
+        {
+          ...identity,
+          pageId: group.pageId,
+          langId: group.langId,
+        },
+        {
+          $push: { remarks: { $each: group.remarks } },
+          $set: { updatedAt: hkNow() },
+          $setOnInsert: {
+            ...identity,
+            pageId: group.pageId,
+            langId: group.langId,
+            createdAt: hkNow(),
+          },
+        },
+        { upsert: true }
+      )
+    );
+
+    // Execute all delete operations (remove individual remarks by createdAt).
+    // Use $pull for atomic removal — avoids race conditions where concurrent
+    // read-then-write deletes to the same document cause lost updates
+    // (one delete overwrites another's write, resurrecting erased strokes).
+    const deletePromises = deleteActions.map(async (del) => {
+      const docIdentity = {
+        ...identity,
+        pageId: del.pageId,
+        langId: del.langId,
+      };
+      await annotationsCollection.updateOne(
+        docIdentity,
+        {
+          $pull: { remarks: { createdAt: del.createdAt } },
+          $set: { updatedAt: hkNow() },
+        },
+      );
+      // If the document is now empty (no remarks left), clean it up
+      const doc = await annotationsCollection.findOne(docIdentity);
+      if (doc && (!Array.isArray(doc.remarks) || doc.remarks.length === 0)) {
+        await annotationsCollection.deleteOne(docIdentity);
+      }
+      return 1;
+    });
+
+    const results = await Promise.all([...addPromises, ...deletePromises]);
+    const addUpsertsMatched = addPromises.length;
+    const deleteCount = deletePromises.length;
+    console.log(`[remarks/actions] POST result — ${addUpsertsMatched} add group(s), ${deleteCount} delete(s)`);
+
+    // Return all remarks so the client can confirm optimistic entries
+    const allRemarks = await listAnnotationRemarks({
+      userId: identity.userId,
+      subjectId: identity.subjectId,
+      bookId: identity.bookId,
+      sectionId: identity.sectionId,
+    });
+    console.log(`[remarks/actions] POST response — ${allRemarks.length} total remarks`);
+    response.json({ remarks: allRemarks, processed: actions.length });
+  } catch (err) {
+    console.error('[remarks/actions] POST error:', err.message);
+    response.status(500).json({ error: 'Failed to process actions', remarks: [] });
+  }
+}));
+
 // ── Proxy for OUP resources (bypasses X-Frame-Options) ──────
 // All external hosts are now allowed through the proxy.
 // (The whitelist was removed — any URL can be proxied.)
