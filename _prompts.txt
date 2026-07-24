@@ -243,3 +243,13 @@ add an option --dry-run to show the matched list only
 
 
 https://e-aristo.hk/r/cmnmvev2101.e
+
+
+////
+
+
+After any previous or next page buttons (on left sidebar page number select, the left and right button on bottom bar, or the left and right keys) is clicked, check how many undo stacks are on this page and determine to enable or disable the undo button. 
+
+check how many undo stacks are on the modal tool dialog as well
+
+

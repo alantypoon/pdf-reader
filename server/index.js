@@ -54,6 +54,7 @@ let aiGenerations;
 let userActions;
 let userSelects;
 let annotationsCollection;
+let annotationsRedoCollection;
 
 function normalizeStringId(value, fallback = '') {
   return String(value != null ? value : fallback).trim();
@@ -171,6 +172,7 @@ async function connectMongo() {
     userActions = db.collection('user-actions');
     userSelects = db.collection('user-selects');
     annotationsCollection = db.collection('annotations');
+    annotationsRedoCollection = db.collection('annotations-redo');
     await migrateAiGenerationSubjectIds();
     await aiGenerations.createIndex(
       { subjectId: 1, bookId: 1, sectionId: 1, pageId: 1 },
@@ -194,6 +196,10 @@ async function connectMongo() {
     await annotationsCollection.createIndex(
       { userId: 1, subjectId: 1, bookId: 1, sectionId: 1, pageId: 1 },
       { name: 'annotations_page_lookup' }
+    );
+    await annotationsRedoCollection.createIndex(
+      { userId: 1, subjectId: 1, bookId: 1, sectionId: 1, pageId: 1 },
+      { unique: true, name: 'annotations_redo_page_unique' }
     );
     console.log('[mongo] connected to', MONGO_URI.replace(/\/\/.*@/, '//<credentials>@'));
   } catch (err) {
@@ -948,6 +954,118 @@ app.post('/api/remarks/actions', requireValidUserId(true), asyncRoute(async (req
   } catch (err) {
     console.error('[remarks/actions] POST error:', err.message);
     response.status(500).json({ error: 'Failed to process actions', remarks: [] });
+  }
+}));
+
+// ── Redo history (page-level) ────────────────────────────
+// GET  /api/annotations-redo?subjectId=&bookId=&sectionId=&pageId=
+app.get('/api/annotations-redo', requireValidUserId(true), asyncRoute(async (request, response) => {
+  const userId = request.validatedUserId;
+  response.setHeader('Cache-Control', 'no-store');
+  if (!annotationsRedoCollection) {
+    response.json({ actions: [] });
+    return;
+  }
+  const query = { userId };
+  if (request.query.subjectId != null) query.subjectId = String(request.query.subjectId);
+  if (request.query.bookId != null) query.bookId = String(request.query.bookId);
+  if (request.query.sectionId != null) query.sectionId = Number(request.query.sectionId);
+  if (request.query.pageId != null) query.pageId = Number(request.query.pageId);
+  const doc = await annotationsRedoCollection.findOne(query);
+  response.json({ actions: doc?.actions || [] });
+}));
+
+// POST /api/annotations-redo  { subjectId, bookId, sectionId, pageId, action }
+app.post('/api/annotations-redo', requireValidUserId(true), asyncRoute(async (request, response) => {
+  try {
+    const userId = request.validatedUserId;
+    const { subjectId, bookId, sectionId, pageId, action } = request.body || {};
+    if (!annotationsRedoCollection) {
+      response.status(500).json({ error: 'MongoDB not connected' });
+      return;
+    }
+    if (!action) {
+      response.status(400).json({ error: 'action is required' });
+      return;
+    }
+    const identity = {
+      userId,
+      subjectId: String(subjectId || '').trim(),
+      bookId: String(bookId || '').trim(),
+      sectionId: Number(sectionId),
+      pageId: Number(pageId),
+    };
+    await annotationsRedoCollection.updateOne(
+      identity,
+      {
+        $push: { actions: { ...action, pushedAt: hkNow() } },
+        $set: { updatedAt: hkNow() },
+        $setOnInsert: { ...identity, createdAt: hkNow() },
+      },
+      { upsert: true }
+    );
+    const doc = await annotationsRedoCollection.findOne(identity);
+    response.json({ actions: doc?.actions || [], ok: true });
+  } catch (err) {
+    console.error('[redo] POST error:', err.message);
+    response.status(500).json({ error: 'Failed to push redo action' });
+  }
+}));
+
+// DELETE /api/annotations-redo/last?subjectId=&bookId=&sectionId=&pageId=
+app.delete('/api/annotations-redo/last', requireValidUserId(true), asyncRoute(async (request, response) => {
+  try {
+    const userId = request.validatedUserId;
+    if (!annotationsRedoCollection) {
+      response.json({ action: null });
+      return;
+    }
+    const identity = {
+      userId,
+      subjectId: String(request.query.subjectId || '').trim(),
+      bookId: String(request.query.bookId || '').trim(),
+      sectionId: Number(request.query.sectionId),
+      pageId: Number(request.query.pageId),
+    };
+    const doc = await annotationsRedoCollection.findOne(identity);
+    if (!doc || !Array.isArray(doc.actions) || doc.actions.length === 0) {
+      response.json({ action: null });
+      return;
+    }
+    const popped = doc.actions[doc.actions.length - 1];
+    const remaining = doc.actions.slice(0, -1);
+    if (remaining.length > 0) {
+      await annotationsRedoCollection.updateOne(identity, { $set: { actions: remaining, updatedAt: hkNow() } });
+    } else {
+      await annotationsRedoCollection.deleteOne(identity);
+    }
+    response.json({ action: popped });
+  } catch (err) {
+    console.error('[redo] DELETE last error:', err.message);
+    response.status(500).json({ error: 'Failed to pop redo action' });
+  }
+}));
+
+// DELETE /api/annotations-redo?subjectId=&bookId=&sectionId=&pageId=
+app.delete('/api/annotations-redo', requireValidUserId(true), asyncRoute(async (request, response) => {
+  try {
+    const userId = request.validatedUserId;
+    if (!annotationsRedoCollection) {
+      response.json({ ok: true });
+      return;
+    }
+    const identity = {
+      userId,
+      subjectId: String(request.query.subjectId || '').trim(),
+      bookId: String(request.query.bookId || '').trim(),
+      sectionId: Number(request.query.sectionId),
+      pageId: Number(request.query.pageId),
+    };
+    await annotationsRedoCollection.deleteOne(identity);
+    response.json({ ok: true });
+  } catch (err) {
+    console.error('[redo] DELETE page error:', err.message);
+    response.status(500).json({ error: 'Failed to clear redo' });
   }
 }));
 

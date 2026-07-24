@@ -845,9 +845,9 @@ button, input, select {
   margin: 0 0 8px;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
   white-space: nowrap;
-  font-size: 23px;
+  font-size: 17px;
 
 }
 
@@ -2773,6 +2773,27 @@ button, input, select {
 
 .tool-menu-item.active .tool-menu-item-icon {
   color: #ffffff;
+}
+
+.tool-menu-stack-count {
+  margin-left: auto;
+  background: #667eea;
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 10px;
+  min-width: 18px;
+  text-align: center;
+}
+
+.tool-menu-item.active .tool-menu-stack-count {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.tool-menu-item:disabled .tool-menu-stack-count {
+  background: #b0bec5;
 }
 
 .tool-menu-sep {

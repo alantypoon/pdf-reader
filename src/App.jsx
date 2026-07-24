@@ -465,8 +465,61 @@ function App() {
   const clickMarkerTimeoutRef = useRef(null);
   const [qrCropRect, setQrCropRect] = useState(null);     // { left, top, width, height } dashed overlay for QR crop
   const qrCropRectTimeoutRef = useRef(null);
-  const [undoStack, setUndoStack] = useState([]);
-  const [redoStack, setRedoStack] = useState([]);
+  // ── Page-level redo store (localStorage-synced, server-backed) ──────
+  const REDO_STORAGE_KEY = 'pdfReaderAnnotationsRedo';
+  const [redoStore, setRedoStore] = useState(() => {
+    if (typeof window === 'undefined') return {};
+    try {
+      const raw = window.localStorage.getItem(REDO_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch { return {}; }
+  });
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      if (Object.keys(redoStore).length === 0) {
+        window.localStorage.removeItem(REDO_STORAGE_KEY);
+      } else {
+        window.localStorage.setItem(REDO_STORAGE_KEY, JSON.stringify(redoStore));
+      }
+    } catch {}
+  }, [redoStore]);
+
+  const redoKeyBuilder = (uid, subj, bk, sec, pg) => `${uid}|${subj}|${bk}|${sec}|${pg}`;
+  const getPageRedo = (store, uid, subj, bk, sec, pg) => store[redoKeyBuilder(uid, subj, bk, sec, pg)] || [];
+
+  const pushRedo = (uid, subj, bk, sec, pg, action) => {
+    const key = redoKeyBuilder(uid, subj, bk, sec, pg);
+    setRedoStore((prev) => ({ ...prev, [key]: [...(prev[key] || []), action] }));
+    fetchJson('api/annotations-redo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: uid, subjectId: subj, bookId: bk, sectionId: sec, pageId: pg, action }),
+    }).catch(() => {});
+  };
+
+  const popRedo = (uid, subj, bk, sec, pg) => {
+    const key = redoKeyBuilder(uid, subj, bk, sec, pg);
+    setRedoStore((prev) => {
+      if (!prev[key] || !prev[key].length) return prev;
+      const next = { ...prev };
+      next[key] = prev[key].slice(0, -1);
+      if (next[key].length === 0) delete next[key];
+      return next;
+    });
+    fetchJson('api/annotations-redo/last?userId=' + encodeURIComponent(uid) + '&subjectId=' + encodeURIComponent(subj) + '&bookId=' + encodeURIComponent(bk) + '&sectionId=' + sec + '&pageId=' + pg, { method: 'DELETE' }).catch(() => {});
+  };
+
+  const clearPageRedo = (uid, subj, bk, sec, pg) => {
+    const key = redoKeyBuilder(uid, subj, bk, sec, pg);
+    setRedoStore((prev) => {
+      if (!prev[key]) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    fetchJson('api/annotations-redo?userId=' + encodeURIComponent(uid) + '&subjectId=' + encodeURIComponent(subj) + '&bookId=' + encodeURIComponent(bk) + '&sectionId=' + sec + '&pageId=' + pg, { method: 'DELETE' }).catch(() => {});
+  };
   const [zoomLevel, setZoomLevel] = useState(Number(savedPrefs.zoomLevel || 1));
   const [fitMode, setFitMode] = useState(
     savedPrefs.fitMode === 'height' ? 'height' : savedPrefs.fitMode === 'none' ? 'none' : 'width'
@@ -2781,10 +2834,11 @@ function App() {
   }, [activeAnnotationLangId, selectedLanguage, visibleLanguages]);
   const saveRemark = useCallback((remark) => {
     if (isDebugAnnoStrokes()) console.log('[anno-stroke] 💾 saveRemark lang=' + remark.langId + ' page=' + remark.page + ' points=' + (remark.points?.length || 0) + ' type=' + remark.type);
+    const { _skipUndoRecord, ...remarkData } = remark;
     const savedRemark = {
-      ...remark,
-      page: remark.page || selectedPage,
-      langId: remark.langId || annotationScopeLangId,
+      ...remarkData,
+      page: remarkData.page || selectedPage,
+      langId: remarkData.langId || annotationScopeLangId,
     };
 
     // Optimistic: add to local remarks immediately so the stroke/annotation
@@ -2806,8 +2860,10 @@ function App() {
     });
 
     // Record undo entry optimistically (confirmed when batch succeeds)
-    setUndoStack((prev) => [...prev, { type: 'add', remark: savedRemark }]);
-    setRedoStack([]);
+    // A new stroke invalidates the redo history for this page.
+    if (!_skipUndoRecord) {
+      clearPageRedo(userId, selectedBook, selectedChapter, selectedFile, savedRemark.page || selectedPage);
+    }
   }, [userId, selectedBook, selectedChapter, selectedFile, annotationScopeLangId]);
 
   const clearPageRemarks = async () => {
@@ -2835,8 +2891,7 @@ function App() {
       // re-sends them in a subsequent GET (eventual consistency delay).
       setClearedTimestamps((prev) => [...new Set([...prev, ...currentPageRemarks.map((r) => r.createdAt)])]);
       if (currentPageRemarks.length > 0) {
-        setUndoStack((prev) => [...prev, { type: 'erasePage', remarks: currentPageRemarks }]);
-        setRedoStack([]);
+        clearPageRedo(userId, selectedBook, selectedChapter, selectedFile, targetPage);
       }
     } catch (err) {
       console.error('[erase] failed to clear page remarks:', err);
@@ -2863,10 +2918,12 @@ function App() {
       );
       console.log(`[erase] clearSection — server response:`, res);
       setClearedTimestamps((prev) => [...new Set([...prev, ...currentSectionRemarks.map((r) => r.createdAt)])]);
-      if (currentSectionRemarks.length > 0) {
-        setUndoStack((prev) => [...prev, { type: 'eraseSection', remarks: currentSectionRemarks }]);
-        setRedoStack([]);
-      }
+      // Clear redo for all pages in this section
+      setRedoStore((prev) => {
+        const prefix = redoKeyBuilder(userId, selectedBook, selectedChapter, selectedFile, '');
+        const next = Object.fromEntries(Object.entries(prev).filter(function(_a) { var k = _a[0]; return !k.startsWith(prefix); }));
+        return next;
+      });
     } catch (err) {
       console.error('[erase] failed to clear section remarks:', err);
       setRemarks((prev) => [...prev, ...currentSectionRemarks]);
@@ -2881,8 +2938,7 @@ function App() {
     // ── Aggressive cleanup: clear state, localStorage, and force server delete ──
     setRemarks([]);
     setClearedTimestamps([]);
-    setUndoStack([]);
-    setRedoStack([]);
+    setRedoStore({});
     try {
       window.localStorage.removeItem('pdfReaderClearedTimestamps');
     } catch {}
@@ -2902,10 +2958,7 @@ function App() {
       );
       console.log(`[erase] clearBook — verify: ${verify.remarks?.length || 0} remarks remain`);
 
-      if (currentBookRemarks.length > 0) {
-        setUndoStack((prev) => [...prev, { type: 'eraseBook', remarks: currentBookRemarks }]);
-        setRedoStack([]);
-      }
+      // redo already cleared above
     } catch (err) {
       console.error('[erase] failed to clear book remarks:', err);
     }
@@ -2979,44 +3032,18 @@ function App() {
       createdAt: createdAtValue,
     });
 
-    if (options.recordUndo && removed) {
-      setUndoStack((prev) => [...prev, { type: 'delete', remark: removed }]);
-      setRedoStack([]);
+    // A manual erase/edit-delete (eraser tool, text re-edit) is an independent
+    // user action — it invalidates any pending redo for this page. undoRemark
+    // calls this function WITHOUT recordUndo (it manages redo itself via
+    // pushRedo), so this only fires for real user-initiated deletions.
+    if (options.recordUndo) {
+      clearPageRedo(userId, selectedBook, selectedChapter, selectedFile, resolvedPageId);
     }
   }, [userId, selectedBook, selectedChapter, selectedFile, selectedPage, remarks, annotationScopeLangId]);
 
   const undoRemark = () => {
-    // If there are actions on the undo stack, reverse the last one
-    if (undoStack.length > 0) {
-      const action = undoStack[undoStack.length - 1];
-
-      if (action.type === 'add') {
-        deleteRemarkByCreatedAt(action.remark.createdAt, action.remark.langId || annotationScopeLangId, action.remark.page || selectedPage);
-        setUndoStack((prev) => prev.slice(0, -1));
-        setRedoStack((prev) => [...prev, action]);
-        return;
-      }
-
-      if (action.type === 'delete') {
-        // Re-add a deleted remark — use saveRemark to go through the queue
-        saveRemark(action.remark);
-        setUndoStack((prev) => prev.slice(0, -1));
-        setRedoStack((prev) => [...prev, action]);
-        return;
-      }
-
-      if (action.type === 'erasePage' || action.type === 'eraseSection' || action.type === 'eraseBook') {
-        // Re-add all erased remarks
-        for (const r of action.remarks) {
-          saveRemark(r);
-        }
-        setUndoStack((prev) => prev.slice(0, -1));
-        setRedoStack((prev) => [...prev, action]);
-        return;
-      }
-    }
-
-    // No undo stack — undo the last individual remark on current page
+    // Undo = delete the last remark on the current page for the active lang,
+    // then push it to the page-level redo store so redo can bring it back.
     const pageRemarks = remarks.filter(
       (r) => r.chapter === selectedChapter
         && Number(r.page) === Number(selectedPage)
@@ -3024,41 +3051,21 @@ function App() {
     );
     if (!pageRemarks.length) return;
     const last = pageRemarks[pageRemarks.length - 1];
-    deleteRemarkByCreatedAt(last.createdAt, last.langId || annotationScopeLangId);
-    setUndoStack((prev) => [...prev, { type: 'delete', remark: last }]);
-    setRedoStack([{ type: 'delete', remark: last }]);
+    deleteRemarkByCreatedAt(last.createdAt, last.langId || annotationScopeLangId, { pageIdOverride: last.page || selectedPage });
+    // Push to redo store so the user can restore it
+    pushRedo(userId, selectedBook, selectedChapter, selectedFile, selectedPage, { type: 'add', remark: last });
   };
 
   const redoRemark = () => {
-    if (!redoStack.length) return;
-    const action = redoStack[redoStack.length - 1];
-
+    const actions = getPageRedo(redoStore, userId, selectedBook, selectedChapter, selectedFile, selectedPage);
+    if (!actions.length) return;
+    const action = actions[actions.length - 1];
     if (action.type === 'add') {
-      saveRemark(action.remark);
-      setUndoStack((prev) => [...prev, action]);
-      setRedoStack((prev) => prev.slice(0, -1));
-      return;
-    }
-
-    if (action.type === 'delete') {
-      // Re-delete the remark
-      deleteRemarkByCreatedAt(action.remark.createdAt, action.remark.langId || annotationScopeLangId);
-      setUndoStack((prev) => [...prev, action]);
-      setRedoStack((prev) => prev.slice(0, -1));
-      return;
-    }
-
-    if (action.type === 'erasePage' || action.type === 'eraseSection' || action.type === 'eraseBook') {
-      // Re-erase all remarks — enqueue each delete
-      for (const r of action.remarks) {
-        deleteRemarkByCreatedAt(r.createdAt, r.langId || annotationScopeLangId, r.page || selectedPage);
-      }
-      setUndoStack((prev) => [...prev, action]);
-      setRedoStack((prev) => prev.slice(0, -1));
-      return;
+      saveRemark({ ...action.remark, _skipUndoRecord: true });
+      setClearedTimestamps((prev) => prev.filter((ts) => ts !== action.remark.createdAt));
+      popRedo(userId, selectedBook, selectedChapter, selectedFile, selectedPage);
     }
   };
-
   /**
    * Get the bounding rect (relative to the annotation canvas) of the
    * rendered page IMAGE (canvas or img) inside each language pane.
@@ -5717,19 +5724,19 @@ function App() {
             <div className="tool-menu-grid">
             <button
               className="tool-menu-item undo-redo-mobile"
-              disabled={!undoStack.length && !remarks.filter(r => r.chapter === selectedChapter && Number(r.page) === Number(selectedPage)).length}
+              disabled={!remarks.filter(r => r.chapter === selectedChapter && Number(r.page) === Number(selectedPage)).length}
               onClick={() => { undoRemark(); setToolMenuOpen(false); }}
             >
               <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon" fill="currentColor"><path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z" /></svg>
-              {_('undo')}
+              {_('undo')}{(() => { const n = remarks.filter(r => r.chapter === selectedChapter && Number(r.page) === Number(selectedPage)).length; return n > 0 ? <span className="tool-menu-stack-count">{n}</span> : null; })()}
             </button>
             <button
               className="tool-menu-item undo-redo-mobile"
-              disabled={!redoStack.length}
+              disabled={!getPageRedo(redoStore, userId, selectedBook, selectedChapter, selectedFile, selectedPage).length}
               onClick={() => { redoRemark(); setToolMenuOpen(false); }}
             >
               <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon" fill="currentColor"><path d="M18.4 10.6C16.55 8.99 14.15 8 11.5 8c-4.65 0-8.58 3.03-9.96 7.22L3.9 16a8.002 8.002 0 0 1 7.6-5.5c1.95 0 3.73.72 5.12 1.88L13 16h9V7l-3.6 3.6z" /></svg>
-              {_('redo')}
+              {_('redo')}{(() => { const n = getPageRedo(redoStore, userId, selectedBook, selectedChapter, selectedFile, selectedPage).length; return n > 0 ? <span className="tool-menu-stack-count">{n}</span> : null; })()}
             </button>
             </div>
             <span className="tool-menu-sep" />
@@ -5796,7 +5803,7 @@ function App() {
       />
       <button
         className="tool-btn undo-btn"
-        disabled={isRightDrawerOpen || (!undoStack.length && !remarks.filter(r => r.chapter === selectedChapter && Number(r.page) === Number(selectedPage)).length)}
+        disabled={isRightDrawerOpen || !remarks.filter(r => r.chapter === selectedChapter && Number(r.page) === Number(selectedPage)).length}
         onClick={undoRemark}
         data-tooltip={_('undo')}
         aria-label={_('undo')}
@@ -5804,10 +5811,11 @@ function App() {
         <svg viewBox="0 0 24 24" role="presentation" focusable="false" fill="currentColor">
           <path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z" />
         </svg>
+        {(() => { const n = remarks.filter(r => r.chapter === selectedChapter && Number(r.page) === Number(selectedPage)).length; return n > 0 ? <span style={{ fontSize: "calc(0.6rem * var(--toolbar-scale, 1))", lineHeight: 1 }}>{n}</span> : null; })()}
       </button>
       <button
         className="tool-btn redo-btn"
-        disabled={isRightDrawerOpen || !redoStack.length}
+        disabled={isRightDrawerOpen || !getPageRedo(redoStore, userId, selectedBook, selectedChapter, selectedFile, selectedPage).length}
         onClick={redoRemark}
         data-tooltip={_('redo')}
         aria-label={_('redo')}
@@ -5815,6 +5823,7 @@ function App() {
         <svg viewBox="0 0 24 24" role="presentation" focusable="false" fill="currentColor">
           <path d="M18.4 10.6C16.55 8.99 14.15 8 11.5 8c-4.65 0-8.58 3.03-9.96 7.22L3.9 16a8.002 8.002 0 0 1 7.6-5.5c1.95 0 3.73.72 5.12 1.88L13 16h9V7l-3.6 3.6z" />
         </svg>
+        {(() => { const n = getPageRedo(redoStore, userId, selectedBook, selectedChapter, selectedFile, selectedPage).length; return n > 0 ? <span style={{ fontSize: "calc(0.6rem * var(--toolbar-scale, 1))", lineHeight: 1 }}>{n}</span> : null; })()}
       </button>
       <span className="toolbar-sep undo-redo-sep" />
       {/* Study dropdown: Resources, AI Generation, Search */}
