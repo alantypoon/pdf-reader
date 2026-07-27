@@ -1,0 +1,1 @@
+./remove-watermark.sh /var/www/html/pdf-reader/_ref/biology-oup-tn/ENG

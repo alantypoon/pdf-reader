@@ -22,6 +22,13 @@ const DEFAULT_ANNOTATION_COLOR = '#9acd32';
 const ANNOTATION_TOOLS = new Set(['pen', 'highlight', 'text', 'eraser', 'move', 'hand']);
 const COLOR_TOOLS = new Set(['pen', 'highlight', 'text']);
 
+// ── Resize handle constants ──────────────────────────────
+const HANDLE_RADIUS = 5;
+const HANDLE_HIT_RADIUS = 12;
+const MIN_TEXT_WIDTH = 40;
+const MIN_TEXT_HEIGHT = 28;
+const TEXT_BOX_PADDING = 6;
+
 // ── QR code debug capture levels ──────────────────────────
 // 0 = no debug
 // 1 = show click-position tooltip + console logs
@@ -140,13 +147,23 @@ function hasRenderableSource(source) {
   return typeof source === 'string' && source.trim().length > 0;
 }
 
+function getPageSourceKey(language, role = 'student') {
+  return `${language}:${role}`;
+}
+
+/** Check if page content is fully visible horizontally in a scroll container. */
+function isPageFullyVisibleH(el) {
+  return el.scrollWidth <= el.clientWidth + 1;
+}
+
 function getSubjectLabel(subjectId, selectedLanguage = 'en') {
   const normalized = String(subjectId || '').trim().toLowerCase();
   const showChinese = selectedLanguage === 'tc';
-  if (normalized === 'biology-oup') return showChinese ? '生物' : 'Biology';
-  if (normalized === 'chemistry-aristo') return showChinese ? '化學' : 'Chemistry';
+  if (normalized === 'biology-oup') return showChinese ? '生物' : 'Bio';
+  if (normalized === 'chemistry-aristo') return showChinese ? '化學' : 'Chem';
   if (normalized === 'chemistry-winter') return showChinese ? '化學.W' : 'Chem.W';
-  if (normalized === 'physics-oup') return showChinese ? '物理' : 'Physics';
+  if (normalized === 'math-oup') return showChinese ? '數學' : 'Math';
+  if (normalized === 'physics-oup') return showChinese ? '物理' : 'Phy';
   return String(subjectId || '').trim();
 }
 
@@ -157,6 +174,7 @@ function getSubjectAbbreviation(subjectId, selectedLanguage = 'en') {
   if (normalized === 'biology-oup') result = selectedLanguage === 'tc' ? '生物' : 'Bio';
   else if (normalized === 'chemistry-aristo') result = selectedLanguage === 'tc' ? '化學' : 'Chem';
   else if (normalized === 'chemistry-winter') result = selectedLanguage === 'tc' ? '化學' : 'CheW';
+  else if (normalized === 'math-oup') result = selectedLanguage === 'tc' ? '數學' : 'Math';
   else if (normalized === 'physics-oup') result = selectedLanguage === 'tc' ? '物理' : 'Phy';
   else result = getSubjectLabel(subjectId, selectedLanguage);
   // console.log('[subjectBtn] getSubjectAbbreviation', { subjectId, selectedLanguage, normalized, result });
@@ -354,6 +372,11 @@ function App() {
   const moveAnnotationRef = useRef(null);
   const moveStartPointRef = useRef(null);
   const moveHasMovedRef = useRef(false);
+  const selectedAnnotationRef = useRef(null);
+  const resizeHandleRef = useRef(null);
+  const resizeStartRef = useRef(null);
+  const textEditDragRef = useRef(null);
+  const annotationCursorRef = useRef('default');
   const activePointersRef = useRef(new Set()); // track active pointer IDs for multi-touch detection
   // Some browsers (esp. iOS WebKit) fire pointerup/pointerleave/pointercancel
   // multiple times for a single lift.  Without dedup, the first event saves
@@ -404,6 +427,8 @@ function App() {
   const regenSkipQuizRef = useRef(false);
   const [selectedLanguage, setSelectedLanguage] = useState(savedPrefs.selectedLanguage || 'bilingual');
   const selectedLanguageRef = useRef(selectedLanguage);
+  const [selectedRoleMode, setSelectedRoleMode] = useState(savedPrefs.selectedRoleMode || savedPrefs.selectedAudienceMode || 'student');
+  const selectedRoleModeRef = useRef(selectedRoleMode);
 
   // Auto-fallback to English if the selected language isn't available for the current book.
   // 'bilingual' is a UI mode combining en+tc — only skip fallback when both languages exist.
@@ -443,8 +468,11 @@ function App() {
   useEffect(() => { toolRef.current = tool; }, [tool]);
   const [textInputState, setTextInputState] = useState(null);
   const textInputRef = useRef(null);
+  const textInputStateRef = useRef(null);
+  useLayoutEffect(() => { textInputStateRef.current = textInputState; }, [textInputState]);
   const textInputCommittedRef = useRef(false);
   const textInputBlurFlagRef = useRef(false);
+  const [annotationCursor, setAnnotationCursor] = useState('default');
   const [clearedTimestamps, setClearedTimestamps] = useState(() => {
     if (typeof window === 'undefined') return [];
     try {
@@ -1022,30 +1050,56 @@ function App() {
     });
   }, [userId, selectedBook, selectedChapter, selectedFile, sessionUserResolved]);
 
-  const visibleLanguages = useMemo(() => {
-    if (selectedLanguage !== 'bilingual') {
-      if (hasRenderableSource(pageSources[selectedLanguage])) {
-        return [selectedLanguage];
-      }
-      const fallbackLanguage = selectedLanguage === 'en' ? 'tc' : 'en';
-      return hasRenderableSource(pageSources[fallbackLanguage]) ? [fallbackLanguage] : [];
+  const visiblePanes = useMemo(() => {
+    if (selectedLanguage === 'bilingual') {
+      return ['en', 'tc']
+        .map((language) => ({ language, role: 'student', sourceKey: getPageSourceKey(language, 'student') }))
+        .filter((pane) => hasRenderableSource(pageSources[pane.sourceKey]));
     }
-    return ['en', 'tc'].filter((language) => hasRenderableSource(pageSources[language]));
-  }, [selectedLanguage, pageSources]);
+
+    const primaryLanguage = (
+      hasRenderableSource(pageSources[getPageSourceKey(selectedLanguage, 'student')])
+      || hasRenderableSource(pageSources[getPageSourceKey(selectedLanguage, 'teacher')])
+    )
+      ? selectedLanguage
+      : (selectedLanguage === 'en' ? 'tc' : 'en');
+
+    if (selectedRoleMode === 'dual') {
+      return ['student', 'teacher']
+        .map((role) => ({ language: primaryLanguage, role, sourceKey: getPageSourceKey(primaryLanguage, role) }))
+        .filter((pane) => hasRenderableSource(pageSources[pane.sourceKey]));
+    }
+
+    const role = selectedRoleMode === 'teacher' ? 'teacher' : 'student';
+    const sourceKey = getPageSourceKey(primaryLanguage, role);
+    return hasRenderableSource(pageSources[sourceKey])
+      ? [{ language: primaryLanguage, role, sourceKey }]
+      : [];
+  }, [selectedRoleMode, selectedLanguage, pageSources]);
+
+  const visibleLanguages = useMemo(() => {
+    return [...new Set(visiblePanes.map((pane) => pane.language))];
+  }, [visiblePanes]);
+
+  // Visible pane keys: "lang:role" for each visible pane — used for annotation rendering
+  const visiblePaneKeys = useMemo(() => {
+    return visiblePanes.map((pane) => `${pane.language}:${pane.role}`);
+  }, [visiblePanes]);
+  const visiblePaneKeysRef = useRef(visiblePaneKeys);
 
   // Keep visibleLanguagesRef in sync for use inside callbacks that can't list visibleLanguages as a dependency
   useEffect(() => {
     visibleLanguagesRef.current = visibleLanguages;
-  }, [visibleLanguages]);
+    visiblePaneKeysRef.current = visiblePaneKeys;
+  }, [visibleLanguages, visiblePaneKeys]);
 
   const sectionScopedAnnotations = displayMode === 'scrolling' || displayMode === 'thumbnails';
   const remarksLoadGenRef = useRef(0);
 
   const loadRemarksForCurrentScope = useCallback(async () => {
-    const langTargets = selectedLanguage === 'bilingual'
-      ? visibleLanguages
-      : visibleLanguages.slice(0, 1);
-    if (!langTargets.length) {
+    // Build targets: each visible pane has a language+role combo
+    const paneTargets = visiblePanes.map((p) => ({ langId: p.language, role: p.role }));
+    if (!paneTargets.length) {
       setRemarks([]);
       return [];
     }
@@ -1054,13 +1108,14 @@ function App() {
     const gen = ++remarksLoadGenRef.current;
 
     const responses = await Promise.all(
-      langTargets.map((langId) => {
+      paneTargets.map(({ langId, role }) => {
         const params = new URLSearchParams({
           userId,
           subjectId: selectedBook,
           bookId: selectedChapter,
           sectionId: String(selectedFile),
           langId,
+          role,
         });
         if (!sectionScopedAnnotations) {
           params.set('pageId', String(selectedPage));
@@ -1087,7 +1142,7 @@ function App() {
       return [...filtered, ...optimistic];
     });
     return nextRemarks;
-  }, [userId, selectedBook, selectedChapter, selectedFile, selectedLanguage, selectedPage, visibleLanguages, sectionScopedAnnotations]);
+  }, [userId, selectedBook, selectedChapter, selectedFile, selectedLanguage, selectedPage, visiblePanes, sectionScopedAnnotations]);
 
   useEffect(() => {
     const loadRemarks = async () => {
@@ -1117,11 +1172,12 @@ function App() {
     );
     const normalized = existing.map((remark) => ({
       ...remark,
-      langId: remark.langId === 'tc' ? 'tc' : 'en'
+      langId: remark.langId === 'tc' ? 'tc' : 'en',
+      role: remark.role || 'student',
     }));
-    // Strictly enforce: only include annotations whose language is currently visible
-    setPageAnnotations(normalized.filter((r) => visibleLanguages.includes(r.langId)));
-  }, [remarks, selectedChapter, selectedPage, clearedTimestamps, visibleLanguages]);
+    // Strictly enforce: only include annotations whose paneKey is currently visible
+    setPageAnnotations(normalized.filter((r) => visiblePaneKeys.includes(`${r.langId}:${r.role}`)));
+  }, [remarks, selectedChapter, selectedPage, clearedTimestamps, visiblePaneKeys]);
 
   // All annotations for the current section (all pages) — used in thumbnails & scrolling modes
   const allSectionAnnotations = useMemo(() => {
@@ -1132,11 +1188,12 @@ function App() {
       )
       .map((remark) => ({
         ...remark,
-        langId: remark.langId === 'tc' ? 'tc' : 'en'
+        langId: remark.langId === 'tc' ? 'tc' : 'en',
+        role: remark.role || 'student',
       }));
-    // Strictly enforce: only include annotations whose language is currently visible
-    return normalized.filter((r) => visibleLanguages.includes(r.langId));
-  }, [remarks, selectedChapter, clearedTimestamps, visibleLanguages]);
+    // Strictly enforce: only include annotations whose paneKey is currently visible
+    return normalized.filter((r) => visiblePaneKeys.includes(`${r.langId}:${r.role}`));
+  }, [remarks, selectedChapter, clearedTimestamps, visiblePaneKeys]);
 
   const currentChapter = useMemo(
     () => structure.find((chapter) => chapter.id === selectedChapter),
@@ -1308,7 +1365,7 @@ function App() {
   };
 
   const subjectToggleOptions = useMemo(() => {
-    const desiredOrder = ['physics-oup', 'chemistry-aristo', 'chemistry-winter', 'biology-oup'];
+    const desiredOrder = ['math-oup', 'physics-oup', 'chemistry-aristo', 'chemistry-winter', 'biology-oup'];
     const existing = new Set((dataBooks || []).map((item) => String(item)));
     return desiredOrder
       .filter((id) => existing.has(id))
@@ -1428,37 +1485,54 @@ function App() {
         const targets = selectedLanguage === 'bilingual'
           ? ['en', 'tc']
           : [selectedLanguage, selectedLanguage === 'en' ? 'tc' : 'en'];
+        const roleTargets = selectedLanguage === 'bilingual'
+          ? ['student']
+          : selectedRoleMode === 'dual'
+            ? ['student', 'teacher']
+            : [selectedRoleMode === 'teacher' ? 'teacher' : 'student'];
         const bookParam = selectedBook ? `&book=${encodeURIComponent(selectedBook)}` : '';
-        console.log(`[loadPages] chapter=${selectedChapter} file=${selectedFile} languages=${targets.join(',')}`);
+        console.log(`[loadPages] chapter=${selectedChapter} file=${selectedFile} languages=${targets.join(',')} role=${selectedRoleMode}`);
         const entries = await Promise.allSettled(
-          targets.map(async (language) => {
-            let url = `api/page?chapter=${selectedChapter}&language=${language}&page=${selectedFile}${bookParam}`;
-            // Cache-bust the API call when ?timestamp is in the page URL
+          targets.flatMap((language) => roleTargets.map(async (role) => {
+            let url = `api/page?chapter=${selectedChapter}&language=${language}&page=${selectedFile}${bookParam}&role=${encodeURIComponent(role)}`;
+            // Cache-bust the API call and returned image URLs when ?timestamp is in the page URL
+            let bustTimestamp = '';
             if (typeof window !== 'undefined') {
               try {
                 const sp = new URLSearchParams(window.location.search);
                 if (sp.has('timestamp')) {
-                  url += `&_t=${Date.now()}`;
+                  bustTimestamp = String(Date.now());
+                  url += `&_t=${bustTimestamp}`;
                 }
               } catch { /* ignore */ }
             }
             console.log(`[loadPages] fetching: ${url}`);
             const data = await fetchJson(url);
-            const result = data.images || data.url || '';
-            console.log(`[loadPages]   ${language}: images=${Array.isArray(data.images) ? data.images.length : 'N/A'} url=${typeof data.url === 'string' ? data.url : 'N/A'} result=${Array.isArray(result) ? result.length + ' imgs' : result}`);
-            return [language, result];
-          })
+            let result = data.images || data.url || '';
+            // Append cache-bust timestamp to each image/PDF URL
+            if (bustTimestamp) {
+              if (Array.isArray(result)) {
+                result = result.map((img) => ({
+                  ...img,
+                  url: img.url ? `${img.url}${img.url.includes('?') ? '&' : '?'}_t=${bustTimestamp}` : img.url,
+                }));
+              } else if (typeof result === 'string' && result) {
+                result = `${result}${result.includes('?') ? '&' : '?'}_t=${bustTimestamp}`;
+              }
+            }
+            console.log(`[loadPages]   ${language}/${role}: images=${Array.isArray(data.images) ? data.images.length : 'N/A'} url=${typeof data.url === 'string' ? data.url : 'N/A'} result=${Array.isArray(result) ? result.length + ' imgs' : result}`);
+            return [language, role, result];
+          }))
         );
         const nextSources = {};
-        entries.forEach((entry, index) => {
-          const language = targets[index];
+        entries.forEach((entry) => {
           if (entry.status !== 'fulfilled') {
-            console.warn(`[loadPages] ${language} unavailable:`, entry.reason?.message || entry.reason);
+            console.warn('[loadPages] source unavailable:', entry.reason?.message || entry.reason);
             return;
           }
-          const [resolvedLanguage, source] = entry.value;
+          const [resolvedLanguage, role, source] = entry.value;
           if (hasRenderableSource(source)) {
-            nextSources[resolvedLanguage] = source;
+            nextSources[getPageSourceKey(resolvedLanguage, role)] = source;
           }
         });
         console.log(`[loadPages] setting pageSources:`, Object.keys(nextSources));
@@ -1468,12 +1542,12 @@ function App() {
         // works immediately, before the PDF renderer reports its own count.
         setPageCounts((current) => {
           const updated = { ...current };
-          entries.forEach((entry, index) => {
-            const language = targets[index];
+          entries.forEach((entry) => {
             if (entry.status !== 'fulfilled') return;
-            const [, source] = entry.value;
-            if (Array.isArray(source) && source.length > 0 && !updated[language]) {
-              updated[language] = source.length;
+            const [language, role, source] = entry.value;
+            const countKey = getPageSourceKey(language, role);
+            if (Array.isArray(source) && source.length > 0 && !updated[countKey]) {
+              updated[countKey] = source.length;
             }
           });
           console.log('[page-count] seeded from server:', updated);
@@ -1490,7 +1564,7 @@ function App() {
     if (selectedChapter) {
       loadPages();
     }
-  }, [selectedChapter, selectedFile, selectedLanguage, selectedBook]);
+  }, [selectedChapter, selectedFile, selectedLanguage, selectedBook, selectedRoleMode]);
 
   useEffect(() => {
     if (!displayModeInitializedRef.current) {
@@ -1554,6 +1628,10 @@ function App() {
   useEffect(() => {
     selectedLanguageRef.current = selectedLanguage;
   }, [selectedLanguage]);
+
+  useEffect(() => {
+    selectedRoleModeRef.current = selectedRoleMode;
+  }, [selectedRoleMode]);
 
   useEffect(() => {
     // Don't save while chapter is empty — this is a transitional state
@@ -1625,6 +1703,7 @@ function App() {
         selectedPage: selectedPageRef.current,
         displayMode: displayModeRef.current,
         selectedLanguage: selectedLanguageRef.current,
+        selectedRoleMode: selectedRoleModeRef.current,
         sidebarCollapsed,
         sidebarHidden,
         tool,
@@ -1773,7 +1852,7 @@ function App() {
       cancelAnimationFrame(raf1);
       if (timerId) clearTimeout(timerId);
     };
-  }, [pageAnnotations, allSectionAnnotations, pageSources, displayMode, selectedLanguage, sidebarCollapsed, zoomLevel, fitMode, fitRefreshToken, visibleLanguages, redrawTick]);
+  }, [pageAnnotations, allSectionAnnotations, pageSources, displayMode, selectedLanguage, sidebarCollapsed, zoomLevel, fitMode, fitRefreshToken, visiblePaneKeys, redrawTick]);
 
   // Sync annotationToolsOpen with panelVisible
   useEffect(() => {
@@ -1820,10 +1899,12 @@ function App() {
       const stage = stageRef.current;
       if (stage) {
         stage.querySelectorAll('.pdf-scroll-pages, .pdf-single-page').forEach((el) => {
-          myScrollBy(el, { left: dx, top: dy, behavior: 'auto' });
+          const hDx = isPageFullyVisibleH(el) ? 0 : dx;
+          myScrollBy(el, { left: hDx, top: dy, behavior: 'auto' });
         });
       } else {
-        myScrollBy(m.target, { left: dx, top: dy, behavior: 'auto' });
+        const hDx = isPageFullyVisibleH(m.target) ? 0 : dx;
+        myScrollBy(m.target, { left: hDx, top: dy, behavior: 'auto' });
       }
 
       const frictionBase = isIOSDevice.current ? 0.975 : 0.95;
@@ -1955,6 +2036,17 @@ function App() {
     if (!stage) return;
 
     const onWheel = (e) => {
+      // Trackpad pinch-to-zoom fires as wheel events with ctrlKey=true
+      if (e.ctrlKey) {
+        e.preventDefault();
+        const delta = -e.deltaY * 0.01;
+        setFitMode('none');
+        setZoomLevel((current) => {
+          const next = current + delta;
+          return Math.min(5, Math.max(0.1, Number(next.toFixed(2))));
+        });
+        return;
+      }
       if (Date.now() - lastTouchScrollAtRef.current < 250) return;
       cancelMomentum();
 
@@ -1965,7 +2057,8 @@ function App() {
       const scrollTarget = getScrollTargetForGesture(e);
       if (!scrollTarget) return;
       e.preventDefault();
-      myScrollBy(scrollTarget, { left: e.deltaX, top: e.deltaY, behavior: 'auto' });
+      const hDx = isPageFullyVisibleH(scrollTarget) ? 0 : e.deltaX;
+      myScrollBy(scrollTarget, { left: hDx, top: e.deltaY, behavior: 'auto' });
     };
     stage.addEventListener('wheel', onWheel, { passive: false });
     return () => stage.removeEventListener('wheel', onWheel);
@@ -2012,6 +2105,26 @@ function App() {
     let accumulatedDeltaX = 0;
     let accumulatedDeltaY = 0;
 
+    // Pinch-to-zoom state (2-finger gesture). A 2-finger gesture must
+    // resolve to EITHER panning OR zooming — never both — so scrolling
+    // never jitters the zoom level and pinching never causes a scroll
+    // jump. `gestureLockMode` records the decision (null while undecided).
+    let pinchActive = false;
+    let pinchStartDistance = 0;
+    let pinchStartZoom = 1;
+    let gestureStartMidX = 0;
+    let gestureStartMidY = 0;
+    let gestureLockMode = null; // null | 'pan' | 'zoom'
+    // Fixed anchor captured ONCE when zoom gesture is confirmed — used for
+    // all subsequent zoom steps so the scroll correction is always computed
+    // from the same reference, eliminating jitter/drift.
+    let pinchStartAnchor = null;
+    // Minimum combined finger movement (px) before committing to a mode.
+    const GESTURE_LOCK_DISTANCE = 10;
+    // Pinch-distance change must exceed pan distance by this factor to
+    // win as 'zoom' — biases ambiguous gestures toward scrolling.
+    const ZOOM_LOCK_BIAS = 1.5;
+
     let velocityX = 0;
     let velocityY = 0;
     let lastVelocityTime = 0;
@@ -2024,6 +2137,13 @@ function App() {
         x: (touches[0].clientX + touches[1].clientX) / 2,
         y: (touches[0].clientY + touches[1].clientY) / 2,
       };
+    };
+
+    const getTouchDistance = (touches) => {
+      if (!touches || touches.length < 2) return 0;
+      const dx = touches[0].clientX - touches[1].clientX;
+      const dy = touches[0].clientY - touches[1].clientY;
+      return Math.hypot(dx, dy);
     };
 
     const applyScroll = () => {
@@ -2039,14 +2159,148 @@ function App() {
       const stage = stageRef.current;
       if (stage) {
         stage.querySelectorAll('.pdf-scroll-pages, .pdf-single-page').forEach((el) => {
-          myScrollBy(el, { left: dx, top: dy, behavior: 'auto' });
+          const hDx = isPageFullyVisibleH(el) ? 0 : dx;
+          myScrollBy(el, { left: hDx, top: dy, behavior: 'auto' });
         });
       } else if (touchScrollTarget) {
-        myScrollBy(touchScrollTarget, { left: dx, top: dy, behavior: 'auto' });
+        const hDx = isPageFullyVisibleH(touchScrollTarget) ? 0 : dx;
+        myScrollBy(touchScrollTarget, { left: hDx, top: dy, behavior: 'auto' });
       }
     };
 
     let touchDebugLastLog = 0;
+
+    // Pinch-to-zoom: throttle zoom-level state updates to one per animation
+    // frame, mirroring the applyScroll() pattern used for panning above.
+    let pendingZoomRaf = null;
+    let latestPinchZoom = null;
+    let pinchAnchorToken = 0;
+
+    const capturePinchZoomAnchor = (midpoint, nextZoom) => {
+      const target = touchScrollTarget || getScrollTargetForGesture({ clientX: midpoint.x, clientY: midpoint.y });
+      if (!target) return null;
+      const containerRect = target.getBoundingClientRect();
+      // Find the actual page image/canvas inside the scroll container —
+      // CSS grid centers it, so its rect may differ from the container's.
+      const pageEl = target.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
+      const pageRect = pageEl ? pageEl.getBoundingClientRect() : containerRect;
+      // offsetX/Y: distance from the midpoint to the container's viewport edge
+      // (this is what we subtract from the new content coordinate after zoom
+      // to keep the pinch point at the same screen position).
+      const offsetX = midpoint.x - containerRect.left;
+      const offsetY = midpoint.y - containerRect.top;
+      // contentX/Y: the pinch point in content-space. For a centered image,
+      // we compute relative to the image, then add the image's offset within
+      // the scrollable content area.
+      const imgOffsetLeft = pageRect.left - containerRect.left + target.scrollLeft;
+      const imgOffsetTop = pageRect.top - containerRect.top + target.scrollTop;
+      const pointInImgX = midpoint.x - pageRect.left;
+      const pointInImgY = midpoint.y - pageRect.top;
+      // Fraction of the image where the pinch point lands (0..1)
+      const fracX = pageRect.width > 0 ? pointInImgX / pageRect.width : 0.5;
+      const fracY = pageRect.height > 0 ? pointInImgY / pageRect.height : 0.5;
+      if (!Number.isFinite(offsetX) || !Number.isFinite(offsetY)) return null;
+      return {
+        target,
+        offsetX,
+        offsetY,
+        fracX,
+        fracY,
+        imgOffsetLeft,
+        imgOffsetTop,
+        imgWidth: pageRect.width,
+        imgHeight: pageRect.height,
+        scrollLeft: target.scrollLeft || 0,
+        scrollTop: target.scrollTop || 0,
+        scrollWidth: Math.max(1, target.scrollWidth || 0),
+        scrollHeight: Math.max(1, target.scrollHeight || 0),
+        clientWidth: target.clientWidth || 0,
+        clientHeight: target.clientHeight || 0,
+        nextZoom,
+      };
+    };
+
+    const applyPinchZoomAnchor = (anchor, token) => {
+      if (!anchor || token !== pinchAnchorToken) return;
+      const target = anchor.target;
+      if (!target || !target.isConnected) return;
+
+      // After zoom, find the page image again to see where it is now.
+      const pageEl = target.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
+      const containerRect = target.getBoundingClientRect();
+      const pageRect = pageEl ? pageEl.getBoundingClientRect() : null;
+      if (pageRect && pageRect.width > 0 && pageRect.height > 0) {
+        const newPointInImgX = anchor.fracX * pageRect.width;
+        const newPointInImgY = anchor.fracY * pageRect.height;
+        const currentScreenX = pageRect.left + newPointInImgX;
+        const currentScreenY = pageRect.top + newPointInImgY;
+        const desiredScreenX = containerRect.left + anchor.offsetX;
+        const desiredScreenY = containerRect.top + anchor.offsetY;
+        const dx = currentScreenX - desiredScreenX;
+        const dy = currentScreenY - desiredScreenY;
+        if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+          const newLeft = target.scrollLeft + dx;
+          const newTop = target.scrollTop + dy;
+          const maxLeft = Math.max(0, target.scrollWidth - target.clientWidth);
+          const maxTop = Math.max(0, target.scrollHeight - target.clientHeight);
+          myScrollTo(target, {
+            left: Math.max(0, Math.min(newLeft, maxLeft)),
+            top: Math.max(0, Math.min(newTop, maxTop)),
+            behavior: 'instant',
+          });
+        }
+      } else {
+        // Fallback: use ratio-based approach if page image not found
+        const newScrollWidth = Math.max(1, target.scrollWidth);
+        const newScrollHeight = Math.max(1, target.scrollHeight);
+        const scaleX = newScrollWidth / anchor.scrollWidth;
+        const scaleY = newScrollHeight / anchor.scrollHeight;
+        const contentX = anchor.scrollLeft + anchor.offsetX;
+        const contentY = anchor.scrollTop + anchor.offsetY;
+        const newLeft = contentX * scaleX - anchor.offsetX;
+        const newTop = contentY * scaleY - anchor.offsetY;
+        const maxLeft = Math.max(0, newScrollWidth - target.clientWidth);
+        const maxTop = Math.max(0, newScrollHeight - target.clientHeight);
+        myScrollTo(target, {
+          left: Math.max(0, Math.min(newLeft, maxLeft)),
+          top: Math.max(0, Math.min(newTop, maxTop)),
+          behavior: 'instant',
+        });
+      }
+    };
+
+    const schedulePinchZoomAnchor = (anchor) => {
+      if (!anchor) return;
+      pinchAnchorToken += 1;
+      const token = pinchAnchorToken;
+      window.__pdfReaderPinchZoomAnchor = {
+        ...anchor,
+        token,
+        createdAt: Date.now(),
+      };
+      // Apply scroll correction after React re-renders at the new zoom.
+      // A single rAF + one follow-up is sufficient — PdfPane's own
+      // centerAnchoredScroll also uses this anchor for its scroll effect.
+      requestAnimationFrame(() => {
+        applyPinchZoomAnchor(anchor, token);
+        window.setTimeout(() => {
+          applyPinchZoomAnchor(anchor, token);
+          if (window.__pdfReaderPinchZoomAnchor?.token === token) {
+            window.__pdfReaderPinchZoomAnchor = null;
+          }
+        }, 80);
+      });
+    };
+
+    const applyPinchZoom = () => {
+      pendingZoomRaf = null;
+      if (latestPinchZoom == null) return;
+      const { zoom: z, anchor } = latestPinchZoom;
+      latestPinchZoom = null;
+      setFitMode('none'); // release fit-width / fit-height so pinch-zoom works standalone
+      setZoomLevel(z);
+      schedulePinchZoomAnchor(anchor);
+    };
 
     const onTouchStart = (e) => {
       // Log ALL touch-starts on the canvas to diagnose whether events reach us at all
@@ -2075,12 +2329,29 @@ function App() {
         touchScrollingRef.current = true;
         window.__momentumDragging = true;
 
+        // Pinch-to-zoom: capture the starting inter-finger distance and
+        // the current zoom level so onTouchMove can compute a scale ratio.
+        // gestureLockMode stays null until onTouchMove sees enough
+        // movement to confidently decide pan vs. zoom.
+        pinchActive = true;
+        pinchStartDistance = getTouchDistance(e.touches);
+        pinchStartZoom = zoomLevelRef.current || 1;
+        gestureStartMidX = midpoint.x;
+        gestureStartMidY = midpoint.y;
+        gestureLockMode = null;
+
         if (isDebugScrollingMomentum()) {
           console.log('[momentum] touch-start: 2-finger scroll begin', {
             midpointX: midpoint.x.toFixed(1),
             midpointY: midpoint.y.toFixed(1),
             displayMode: displayModeRef.current,
             scrollTargetClass: touchScrollTarget?.className || 'null',
+          });
+        }
+        if (isDebugZooming()) {
+          console.log('[pinch-zoom] touch-start: pinch begin', {
+            pinchStartDistance: pinchStartDistance.toFixed(1),
+            pinchStartZoom,
           });
         }
 
@@ -2095,7 +2366,7 @@ function App() {
           currentStrokeRef.current = null;
           const pageImageRects = getPageImageRects();
           const isScrollMode = displayModeRef.current === 'scrolling';
-          const rectKey = isScrollMode ? `${stroke.langId}-${stroke.page || selectedPage}` : stroke.langId;
+          const rectKey = isScrollMode ? `${stroke.langId}:${stroke.role || 'student'}-${stroke.page || selectedPage}` : `${stroke.langId}:${stroke.role || 'student'}`;
           const imageRect = pageImageRects[rectKey];
           const normalizedStroke = imageRect
             ? normalizeAnnotationCoords(stroke, imageRect)
@@ -2122,6 +2393,9 @@ function App() {
         touchActive = false;
         touchFingerMode = 0;
         touchScrollTarget = null;
+        pinchActive = false;
+        gestureLockMode = null;
+        pinchStartAnchor = null;
       }
     };
 
@@ -2153,9 +2427,13 @@ function App() {
         touchActive = false;
         touchFingerMode = 0;
         touchScrollTarget = null;
+        pinchActive = false;
+        gestureLockMode = null;
+        pinchStartAnchor = null;
         return;
       }
       let curX, curY;
+      let skipPanAccumulation = false;
       if (touchFingerMode === 1) {
         curX = e.touches[0].clientX;
         curY = e.touches[0].clientY;
@@ -2164,9 +2442,89 @@ function App() {
         if (!midpoint) return;
         curX = midpoint.x;
         curY = midpoint.y;
+
+        // Gesture disambiguation: a 2-finger move must resolve to EITHER
+        // panning OR pinch-zooming, never both. We measure total midpoint
+        // displacement (panDelta) and total inter-finger distance change
+        // (pinchDelta) since the gesture started, and lock in whichever
+        // wins once movement clears a small deadzone. Zoom must clearly
+        // dominate (by ZOOM_LOCK_BIAS) to win — ties/ambiguous gestures
+        // default to panning, per product requirement.
+        if (pinchActive && touchFingerMode === 2 && pinchStartDistance > 0) {
+          const curDistance = getTouchDistance(e.touches);
+          const panDelta = Math.hypot(curX - gestureStartMidX, curY - gestureStartMidY);
+          const pinchDelta = Math.abs(curDistance - pinchStartDistance);
+
+          if (gestureLockMode === null && (panDelta >= GESTURE_LOCK_DISTANCE || pinchDelta >= GESTURE_LOCK_DISTANCE)) {
+            gestureLockMode = (pinchDelta > panDelta * ZOOM_LOCK_BIAS) ? 'zoom' : 'pan';
+            if (gestureLockMode === 'zoom') {
+              // Discard any pan motion accumulated during the deadzone so
+              // switching to zoom doesn't also trigger a scroll/momentum.
+              accumulatedDeltaX = 0;
+              accumulatedDeltaY = 0;
+              velocityX = 0;
+              velocityY = 0;
+              lastVelocityTime = 0;
+            }
+            if (isDebugZooming()) {
+              console.log('[pinch-zoom] gesture locked', {
+                gestureLockMode,
+                panDelta: panDelta.toFixed(1),
+                pinchDelta: pinchDelta.toFixed(1),
+              });
+            }
+          }
+
+          if (gestureLockMode === 'zoom') {
+            skipPanAccumulation = true;
+            // Capture the scroll anchor ONCE when zoom gesture first locks in.
+            // Reusing this single reference for every subsequent zoom step
+            // prevents jitter (re-reading scrollLeft/Top after each step would
+            // use values already shifted by the previous correction).
+            if (!pinchStartAnchor) {
+              pinchStartAnchor = capturePinchZoomAnchor({ x: gestureStartMidX, y: gestureStartMidY }, pinchStartZoom);
+            }
+            // Direct 1:1 mapping of finger-distance ratio to zoom — matches
+            // Safari's native pinch-zoom feel: zoom tracks the fingers
+            // exactly, no easing/blending.
+            const scaleRatio = curDistance / pinchStartDistance;
+            const rawZoom = pinchStartZoom * scaleRatio;
+            const clampedZoom = Math.min(5, Math.max(0.1, Number(rawZoom.toFixed(3))));
+            if (isDebugZooming()) {
+              console.log('[pinch-zoom] touch-move: pinch scale', {
+                curDistance: curDistance.toFixed(1),
+                pinchStartDistance: pinchStartDistance.toFixed(1),
+                scaleRatio: scaleRatio.toFixed(3),
+                pinchStartZoom,
+                rawZoom: rawZoom.toFixed(3),
+                clampedZoom,
+              });
+            }
+            latestPinchZoom = {
+              zoom: clampedZoom,
+              // Use the fixed anchor captured at gesture start — never re-read
+              // scroll positions mid-gesture to avoid compounding errors.
+              anchor: pinchStartAnchor ? { ...pinchStartAnchor, nextZoom: clampedZoom } : null,
+            };
+            if (!pendingZoomRaf) {
+              pendingZoomRaf = requestAnimationFrame(applyPinchZoom);
+            }
+          }
+        }
       }
       e.preventDefault();
       lastTouchScrollAtRef.current = Date.now();
+
+      if (skipPanAccumulation) {
+        // Locked into zoom mode — track position/velocity baselines only,
+        // never accumulate scroll delta or momentum velocity.
+        touchStartX = curX;
+        touchStartY = curY;
+        lastVelocityX = curX;
+        lastVelocityY = curY;
+        lastVelocityTime = performance.now();
+        return;
+      }
 
       const now = performance.now();
       const dt = now - lastVelocityTime;
@@ -2209,6 +2567,15 @@ function App() {
       touchFingerMode = 0;
       touchScrollingRef.current = false;
       lastTouchScrollAtRef.current = Date.now();
+      pinchActive = false;
+      pinchStartDistance = 0;
+      gestureLockMode = null;
+      pinchStartAnchor = null;
+      if (pendingZoomRaf) {
+        cancelAnimationFrame(pendingZoomRaf);
+        pendingZoomRaf = null;
+        latestPinchZoom = null;
+      }
       if (pendingRaf) {
         cancelAnimationFrame(pendingRaf);
         pendingRaf = null;
@@ -2385,6 +2752,7 @@ function App() {
 
     return () => {
       if (pendingRaf) cancelAnimationFrame(pendingRaf);
+      if (pendingZoomRaf) cancelAnimationFrame(pendingZoomRaf);
       const stage = stageRef.current;
       canvas.removeEventListener('touchstart', onTouchStart);
       canvas.removeEventListener('touchmove', onTouchMove);
@@ -2436,8 +2804,8 @@ function App() {
       });
     } else {
       setZoomLevel((prev) => {
-        // Clamp to 200% max for pagination/scrolling; restore 100% if at thumbnail default
-        const clamped = Math.min(prev, 2.0);
+        // Clamp to 500% max for pagination/scrolling; restore 100% if at thumbnail default
+        const clamped = Math.min(prev, 5.0);
         const result = Math.abs(clamped - 0.25) < 0.01 ? 1.0 : clamped;
         if (isDebugZooming()) console.log('[zoom-app] thumbnails mode exited', { prev, clamped, result });
         return result;
@@ -2663,7 +3031,7 @@ function App() {
     setFitMode('none'); // release fit-width / fit-height so zoom works standalone
     setZoomLevel((current) => {
       const next = current + delta;
-      const clamped = Math.min(2, Math.max(0.1, Number(next.toFixed(2))));
+      const clamped = Math.min(5, Math.max(0.1, Number(next.toFixed(2))));
       if (isDebugZooming()) {
         console.log('[zoom-app] changeZoom', { delta, from: current, raw: next, clamped, fitMode: 'none' });
       }
@@ -2708,7 +3076,7 @@ function App() {
   };
 
   // Refs for collapsed sidebar buttons – used to position the autocomplete dropdowns
-  const collapsedBtnRefs = useRef({ subject: null, book: null, section: null, page: null, language: null, displayMode: null });
+  const collapsedBtnRefs = useRef({ subject: null, book: null, section: null, page: null, language: null, displayMode: null, role: null });
   const subjectBtnTextRef = useRef(null);
   const [collapsedDropdownId, setCollapsedDropdownId] = useState(null);
   const [collapsedDropdownPos, setCollapsedDropdownPos] = useState({ top: 0, left: 0 });
@@ -2832,13 +3200,23 @@ function App() {
     }
     return selectedLanguage === 'tc' ? 'tc' : 'en';
   }, [activeAnnotationLangId, selectedLanguage, visibleLanguages]);
+
+  // The active role for annotation scope — derived from which pane was last interacted with
+  const [activeAnnotationRole, setActiveAnnotationRole] = useState('student');
+  const annotationScopeRole = useMemo(() => {
+    // In dual mode, use the actively selected role; otherwise use the single visible role
+    if (selectedRoleMode === 'dual') return activeAnnotationRole;
+    return selectedRoleMode === 'teacher' ? 'teacher' : 'student';
+  }, [selectedRoleMode, activeAnnotationRole]);
+
   const saveRemark = useCallback((remark) => {
-    if (isDebugAnnoStrokes()) console.log('[anno-stroke] 💾 saveRemark lang=' + remark.langId + ' page=' + remark.page + ' points=' + (remark.points?.length || 0) + ' type=' + remark.type);
+    if (isDebugAnnoStrokes()) console.log('[anno-stroke] 💾 saveRemark lang=' + remark.langId + ' role=' + remark.role + ' page=' + remark.page + ' points=' + (remark.points?.length || 0) + ' type=' + remark.type);
     const { _skipUndoRecord, ...remarkData } = remark;
     const savedRemark = {
       ...remarkData,
       page: remarkData.page || selectedPage,
       langId: remarkData.langId || annotationScopeLangId,
+      role: remarkData.role || annotationScopeRole,
     };
 
     // Optimistic: add to local remarks immediately so the stroke/annotation
@@ -2857,6 +3235,7 @@ function App() {
       sectionId: selectedFile,
       pageId: savedRemark.page,
       langId: savedRemark.langId,
+      role: savedRemark.role,
     });
 
     // Record undo entry optimistically (confirmed when batch succeeds)
@@ -2864,7 +3243,7 @@ function App() {
     if (!_skipUndoRecord) {
       clearPageRedo(userId, selectedBook, selectedChapter, selectedFile, savedRemark.page || selectedPage);
     }
-  }, [userId, selectedBook, selectedChapter, selectedFile, annotationScopeLangId]);
+  }, [userId, selectedBook, selectedChapter, selectedFile, annotationScopeLangId, annotationScopeRole]);
 
   const clearPageRemarks = async () => {
     const targetPage = Math.max(1, Number(selectedPageRef.current || selectedPage || 1));
@@ -2881,6 +3260,14 @@ function App() {
 
     console.log(`[erase] clearPage — userId=${userId.slice(0,6)} subject=${selectedBook} book=${selectedChapter} section=${selectedFile} page=${targetPage} localRemarks=${currentPageRemarks.length}`);
 
+    if (currentPageRemarks.length > 0) {
+      clearPageRedo(userId, selectedBook, selectedChapter, selectedFile, targetPage);
+      pushRedo(userId, selectedBook, selectedChapter, selectedFile, targetPage, {
+        type: 'restore-page',
+        remarks: currentPageRemarks.map((remark) => ({ ...remark })),
+      });
+    }
+
     try {
       const res = await fetchJson(
         `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(selectedChapter)}&sectionId=${selectedFile}&pageId=${targetPage}`,
@@ -2890,12 +3277,12 @@ function App() {
       // Remember erased timestamps so they stay filtered even if the server
       // re-sends them in a subsequent GET (eventual consistency delay).
       setClearedTimestamps((prev) => [...new Set([...prev, ...currentPageRemarks.map((r) => r.createdAt)])]);
-      if (currentPageRemarks.length > 0) {
-        clearPageRedo(userId, selectedBook, selectedChapter, selectedFile, targetPage);
-      }
     } catch (err) {
       console.error('[erase] failed to clear page remarks:', err);
       setRemarks((prev) => [...prev, ...currentPageRemarks]);
+      if (currentPageRemarks.length > 0) {
+        popRedo(userId, selectedBook, selectedChapter, selectedFile, targetPage);
+      }
     }
   };
 
@@ -2969,13 +3356,14 @@ function App() {
 
     const result = await Swal.fire({
       title: _('erase'),
-      text: _('confirmEraseBook'),
+      text: _('eraseTargetPrompt'),
       input: 'radio',
       inputOptions: {
-        page: _('erasePage'),
-        section: _('eraseSection'),
-        book: _('eraseBook'),
+        page: _('page'),
+        section: _('section'),
+        book: _('book'),
       },
+      inputValue: 'page',
       inputValidator: (value) => {
         if (!value) return _('cancel');
         return undefined;
@@ -3005,11 +3393,11 @@ function App() {
 
     // Optimistic: remove from local remarks instantly — no network delay.
     const removed = remarks.find(
-      (r) => r.createdAt === createdAtValue && r.langId === langId
+      (r) => r.createdAt === createdAtValue && ((r.langId === 'tc' ? 'tc' : 'en') === (langId === 'tc' ? 'tc' : 'en'))
     ) || options.deletedRemark || null;
     if (removed) {
       setRemarks((prev) => prev.filter(
-        (r) => !(r.createdAt === createdAtValue && r.langId === langId)
+        (r) => !(r.createdAt === createdAtValue && ((r.langId === 'tc' ? 'tc' : 'en') === (langId === 'tc' ? 'tc' : 'en')))
       ));
     }
 
@@ -3018,7 +3406,9 @@ function App() {
     // this stroke out of the server response (same mechanism as bulk erase).
     setClearedTimestamps((prev) => {
       if (prev.includes(createdAtValue)) return prev;
-      return [...prev, createdAtValue];
+      const next = [...prev, createdAtValue];
+      clearedTimestampsRef.current = next;
+      return next;
     });
 
     // Enqueue for batched send — non-blocking, persists offline.
@@ -3029,6 +3419,7 @@ function App() {
       sectionId: selectedFile,
       pageId: resolvedPageId,
       langId,
+      role: (removed && removed.role) || annotationScopeRole,
       createdAt: createdAtValue,
     });
 
@@ -3064,6 +3455,15 @@ function App() {
       saveRemark({ ...action.remark, _skipUndoRecord: true });
       setClearedTimestamps((prev) => prev.filter((ts) => ts !== action.remark.createdAt));
       popRedo(userId, selectedBook, selectedChapter, selectedFile, selectedPage);
+    } else if (action.type === 'restore-page') {
+      const restoreRemarks = Array.isArray(action.remarks) ? action.remarks : [];
+      restoreRemarks.forEach((remark) => {
+        saveRemark({ ...remark, _skipUndoRecord: true });
+      });
+      if (restoreRemarks.length) {
+        setClearedTimestamps((prev) => prev.filter((ts) => !restoreRemarks.some((remark) => remark.createdAt === ts)));
+      }
+      popRedo(userId, selectedBook, selectedChapter, selectedFile, selectedPage);
     }
   };
   /**
@@ -3086,12 +3486,14 @@ function App() {
     for (const pane of panes) {
       const langId = pane.getAttribute('data-annotation-language');
       if (!langId) continue;
+      const roleId = pane.getAttribute('data-annotation-role') || 'student';
+      const paneKey = `${langId}:${roleId}`;
 
       // Pagination mode: the single rendered page inside .pdf-single-page
       let pageImage = pane.querySelector('.pdf-single-page canvas, .pdf-single-page img.page-img');
 
       if (!pageImage) {
-        // Scrolling mode: collect ALL page canvases/images, keyed by langId-pageNum
+        // Scrolling mode: collect ALL page canvases/images, keyed by paneKey-pageNum
         const candidates = pane.querySelectorAll('canvas[data-page], img[data-page]');
         if (candidates.length > 1 && isScrolling) {
           for (const el of candidates) {
@@ -3099,7 +3501,7 @@ function App() {
             if (!elPage) continue;
             const r = el.getBoundingClientRect();
             if (r.width > 0 && r.height > 0) {
-              result[`${langId}-${elPage}`] = {
+              result[`${paneKey}-${elPage}`] = {
                 left: r.left - canvasRect.left,
                 top: r.top - canvasRect.top,
                 width: r.width,
@@ -3151,7 +3553,7 @@ function App() {
       if (!pageImage) continue;
 
       const rect = pageImage.getBoundingClientRect();
-      result[langId] = {
+      result[paneKey] = {
         left: rect.left - canvasRect.left,
         top: rect.top - canvasRect.top,
         width: rect.width,
@@ -3178,9 +3580,11 @@ function App() {
     for (const pane of panes) {
       const langId = pane.getAttribute('data-annotation-language');
       if (!langId) continue;
+      const roleId = pane.getAttribute('data-annotation-role') || 'student';
+      const paneKey = `${langId}:${roleId}`;
       const r = pane.getBoundingClientRect();
       if (r.width > 0 && r.height > 0) {
-        result[langId] = {
+        result[paneKey] = {
           left: r.left - canvasRect.left,
           top: r.top - canvasRect.top,
           width: r.width,
@@ -3192,7 +3596,7 @@ function App() {
   }, []);
 
   /**
-   * In thumbnails mode, get rects for ALL thumbnail images keyed by "langId-pageNum".
+   * In thumbnails mode, get rects for ALL thumbnail images keyed by "lang:role-pageNum".
    */
   const getAllThumbnailRects = useCallback(() => {
     const canvas = canvasRef.current;
@@ -3204,13 +3608,15 @@ function App() {
     for (const pane of panes) {
       const langId = pane.getAttribute('data-annotation-language');
       if (!langId) continue;
+      const roleId = pane.getAttribute('data-annotation-role') || 'student';
+      const paneKey = `${langId}:${roleId}`;
       const thumbImgs = pane.querySelectorAll('.thumb-grid-item img[data-page]');
       for (const img of thumbImgs) {
         const page = Number(img.getAttribute('data-page'));
         if (!page) continue;
         const r = img.getBoundingClientRect();
         if (r.width > 0 && r.height > 0) {
-          result[`${langId}-${page}`] = {
+          result[`${paneKey}-${page}`] = {
             left: r.left - canvasRect.left,
             top: r.top - canvasRect.top,
             width: r.width,
@@ -3239,6 +3645,12 @@ function App() {
     if (annotation.type === 'text') {
       normalized.x = (annotation.x / imageRect.width) * 100;
       normalized.y = (annotation.y / imageRect.height) * 100;
+      if (annotation.width != null && annotation.width > 0) {
+        normalized.width = (annotation.width / imageRect.width) * 100;
+      }
+      if (annotation.height != null && annotation.height > 0) {
+        normalized.height = (annotation.height / imageRect.height) * 100;
+      }
     }
     return normalized;
   }, []);
@@ -3263,6 +3675,12 @@ function App() {
     if (annotation.type === 'text') {
       denorm.x = (annotation.x / 100) * imageRect.width;
       denorm.y = (annotation.y / 100) * imageRect.height;
+      if (annotation.width != null && annotation.width > 0) {
+        denorm.width = (annotation.width / 100) * imageRect.width;
+      }
+      if (annotation.height != null && annotation.height > 0) {
+        denorm.height = (annotation.height / 100) * imageRect.height;
+      }
     }
     return denorm;
   }, []);
@@ -3278,16 +3696,13 @@ function App() {
     const pageImageRects = getPageImageRects();
     const paneRects = getPaneRects();
     const isScrollMode = displayModeRef.current === 'scrolling';
+    const paneKeys = visiblePaneKeysRef.current;
 
     /**
      * Returns true when canvasPoint lies within the given pane rect.
-     * Used as a secondary guard to prevent an oversized page-image rect
-     * (e.g. EN image taller than its grid row in bilingual-stacked layout)
-     * from "leaking" into the adjacent language pane and causing the wrong
-     * langId to be matched.
      */
-    const isWithinPane = (langId) => {
-      const pr = paneRects[langId];
+    const isWithinPane = (paneKey) => {
+      const pr = paneRects[paneKey];
       if (!pr) return true; // no pane rect → allow (degraded fallback)
       return canvasPoint.x >= pr.left
         && canvasPoint.x <= pr.left + pr.width
@@ -3296,28 +3711,32 @@ function App() {
     };
 
     if (isScrollMode) {
-      // In scrolling mode, rects are keyed by "langId-pageNum"
-      for (const langId of visibleLanguages) {
-        if (!isWithinPane(langId)) continue;
-        // Check all page rects for this language; find the one containing the click
+      // In scrolling mode, rects are keyed by "lang:role-pageNum"
+      for (const paneKey of paneKeys) {
+        if (!isWithinPane(paneKey)) continue;
+        const [langId, roleId] = paneKey.split(':');
+        // Check all page rects for this pane; find the one containing the click
         for (const [key, imageRect] of Object.entries(pageImageRects)) {
-          if (!key.startsWith(langId + '-')) continue;
+          if (!key.startsWith(paneKey + '-')) continue;
           if (canvasPoint.x >= imageRect.left
             && canvasPoint.x <= imageRect.left + imageRect.width
             && canvasPoint.y >= imageRect.top
             && canvasPoint.y <= imageRect.top + imageRect.height) {
+            const pageNum = Number(key.slice(paneKey.length + 1));
             const result = {
               langId,
+              role: roleId,
+              paneKey,
               point: {
                 x: canvasPoint.x - imageRect.left,
                 y: canvasPoint.y - imageRect.top
               },
-              imageRect: { width: imageRect.width, height: imageRect.height },
-              pageNum: Number(key.split('-')[1]),
+              imageRect: { left: imageRect.left, top: imageRect.top, width: imageRect.width, height: imageRect.height },
+              pageNum,
             };
             if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('dbg-ann')) {
               console.log('[ann] resolveAnnotationTarget HIT', {
-                key, langId, pageNum: result.pageNum,
+                key, paneKey, langId, roleId, pageNum: result.pageNum,
                 canvasPoint: { x: Math.round(canvasPoint.x), y: Math.round(canvasPoint.y) },
                 imageRect: { left: Math.round(imageRect.left), top: Math.round(imageRect.top), width: Math.round(imageRect.width), height: Math.round(imageRect.height) },
                 point: { x: Math.round(result.point.x), y: Math.round(result.point.y) },
@@ -3331,7 +3750,7 @@ function App() {
       if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('dbg-ann')) {
         console.log('[ann] resolveAnnotationTarget MISS', {
           canvasPoint: { x: Math.round(canvasPoint.x), y: Math.round(canvasPoint.y) },
-          visibleLanguages,
+          paneKeys,
           rects: Object.entries(pageImageRects).map(([k, r]) => ({
             key: k,
             left: Math.round(r.left), top: Math.round(r.top),
@@ -3347,75 +3766,216 @@ function App() {
       return null;
     }
 
-    // Pagination / thumbnails mode: rects are keyed by langId.
-    // Check pane rect FIRST so that an oversized page-image rect
-    // (e.g. EN image taller than its grid row in bilingual-stacked
-    // layout) cannot bleed into the adjacent language pane.
-    const langId = visibleLanguages.find((language) => {
-      if (!isWithinPane(language)) return false;
-      const imageRect = pageImageRects[language];
+    // Pagination / thumbnails mode: rects are keyed by paneKey (lang:role).
+    const matchedPaneKey = paneKeys.find((pk) => {
+      if (!isWithinPane(pk)) return false;
+      const imageRect = pageImageRects[pk];
       return imageRect
         && canvasPoint.x >= imageRect.left
         && canvasPoint.x <= imageRect.left + imageRect.width
         && canvasPoint.y >= imageRect.top
         && canvasPoint.y <= imageRect.top + imageRect.height;
     });
-    if (!langId) {
-      // console.log('[draw] resolveAnnotationTarget — no langId matched. pageImageRects:', JSON.stringify(Object.keys(pageImageRects)), 'canvasPoint:', canvasPoint, 'visibleLanguages:', visibleLanguages);
+    if (!matchedPaneKey) {
       return null;
     }
-    const imageRect = pageImageRects[langId];
+    const [langId, roleId] = matchedPaneKey.split(':');
+    const imageRect = pageImageRects[matchedPaneKey];
     return {
       langId,
+      role: roleId,
+      paneKey: matchedPaneKey,
       // Coordinates relative to the page image top-left corner
       point: {
         x: canvasPoint.x - imageRect.left,
         y: canvasPoint.y - imageRect.top
       },
       // Page image dimensions for percentage normalization
-      imageRect: { width: imageRect.width, height: imageRect.height },
+      imageRect: { left: imageRect.left, top: imageRect.top, width: imageRect.width, height: imageRect.height },
     };
   }, [getPageImageRects, getPaneRects, visibleLanguages]);
+
+  /**
+   * Word-wrap text for canvas rendering. Returns an array of lines.
+   */
+  const wrapText = useCallback((context, text, maxWidth) => {
+    if (!maxWidth || maxWidth <= 0) return [text];
+    const paragraphs = String(text || '').split(/\r?\n/);
+    const lines = [];
+    const tokenizeForWrap = (segment) => (
+      segment.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]|[^\s\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+|\s+/gu) || ['']
+    );
+    const pushWrappedSegment = (segment) => {
+      const tokens = tokenizeForWrap(segment);
+      let line = '';
+      for (const token of tokens) {
+        if (/^\s+$/.test(token)) {
+          if (line) line += token;
+          continue;
+        }
+        const testLine = line + token;
+        const metrics = context.measureText(testLine);
+        if (metrics.width > maxWidth && line.trim().length > 0) {
+          lines.push(line.trimEnd());
+          line = token;
+        } else {
+          line = testLine;
+        }
+      }
+      lines.push(line.trimEnd());
+    };
+
+    for (const paragraph of paragraphs) {
+      pushWrappedSegment(paragraph);
+    }
+    return lines.length > 0 ? lines : [''];
+  }, []);
+
+  const getTextAnnotationBox = useCallback((context, annotation, imageRect) => {
+    if (!context || !annotation || !imageRect) return null;
+    const denorm = (annotation.coordsNormalized && imageRect)
+      ? denormalizeAnnotationCoords(annotation, imageRect)
+      : annotation;
+    const fontSize = Number.isFinite(Number(denorm.fontSize)) && Number(denorm.fontSize) > 0
+      ? Number(denorm.fontSize)
+      : Math.max(1, Math.round(18 * (imageRect.width / 800)));
+    const lineHeight = fontSize * 1.4;
+    const text = String(denorm.text || '');
+    context.save();
+    context.font = `${fontSize}px Inter, system-ui, sans-serif`;
+    const measuredWidth = Math.max(24, Math.ceil(Math.max(...text.split(/\r?\n/).map((line) => context.measureText(line).width), 0)));
+    const requestedWidth = denorm.width && denorm.width > 0 ? denorm.width : measuredWidth + TEXT_BOX_PADDING * 2;
+    const boxW = Math.max(MIN_TEXT_WIDTH, requestedWidth);
+    const contentWidth = Math.max(1, boxW - TEXT_BOX_PADDING * 2);
+    const lines = wrapText(context, text, contentWidth);
+    context.restore();
+    const naturalHeight = Math.max(MIN_TEXT_HEIGHT, lines.length * lineHeight + TEXT_BOX_PADDING * 2);
+    const boxH = naturalHeight;
+    const pageBoxLeft = denorm.x || 0;
+    const pageBoxTop = (denorm.y || 0) - TEXT_BOX_PADDING - fontSize;
+    return {
+      denorm,
+      fontSize,
+      lineHeight,
+      text,
+      lines,
+      boxW,
+      boxH,
+      pageBoxLeft,
+      pageBoxTop,
+      boxLeft: imageRect.left + pageBoxLeft,
+      boxTop: imageRect.top + pageBoxTop,
+      textX: imageRect.left + pageBoxLeft + TEXT_BOX_PADDING,
+      textY: imageRect.top + pageBoxTop + TEXT_BOX_PADDING + fontSize,
+    };
+  }, [denormalizeAnnotationCoords, wrapText]);
+
+  const drawTextAnnotation = useCallback((context, annotation, imageRect) => {
+    const box = getTextAnnotationBox(context, annotation, imageRect);
+    if (!box) return;
+    context.save();
+    context.beginPath();
+    context.rect(box.boxLeft, box.boxTop, box.boxW, box.boxH);
+    context.clip();
+    context.fillStyle = box.denorm.color;
+    context.font = `${box.fontSize}px Inter, system-ui, sans-serif`;
+    for (let li = 0; li < box.lines.length; li++) {
+      const y = box.textY + li * box.lineHeight;
+      if (y > box.boxTop + box.boxH - TEXT_BOX_PADDING) break;
+      context.fillText(box.lines[li], box.textX, y);
+    }
+    context.restore();
+  }, [getTextAnnotationBox]);
 
   const redraw = useCallback((context, width, height, annotations) => {
     if (!context) return;
     context.clearRect(0, 0, width, height);
 
-    // Strictly enforce: only draw annotations whose language is currently visible.
-    const vl = visibleLanguagesRef.current;
-    const filteredAnnotations = vl.length > 0
-      ? annotations.filter(a => vl.includes(a.langId === 'tc' ? 'tc' : 'en'))
+    // Strictly enforce: only draw annotations whose pane key is currently visible.
+    const vpk = visiblePaneKeysRef.current;
+    const filteredAnnotations = vpk.length > 0
+      ? annotations.filter(a => {
+          const lid = a.langId === 'tc' ? 'tc' : 'en';
+          const rid = a.role || 'student';
+          return vpk.includes(`${lid}:${rid}`);
+        })
       : annotations;
+    const activeTextEdit = textInputStateRef.current;
+    const visuallyFilteredAnnotations = activeTextEdit?.editBox && activeTextEdit.existingCreatedAt
+      ? filteredAnnotations.filter((annotation) => annotation.createdAt !== activeTextEdit.existingCreatedAt)
+      : filteredAnnotations;
 
-    // Group annotations by language so we can apply per-pane hard clipping.
-    // This GUARANTEES that annotations for one language can never bleed into
-    // the other language's pane, regardless of page-image rect accuracy.
-    const byLang = {};
-    for (const a of filteredAnnotations) {
+    // Group annotations by paneKey (lang:role) so we can apply per-pane hard clipping.
+    const byPane = {};
+    for (const a of visuallyFilteredAnnotations) {
       const lid = a.langId === 'tc' ? 'tc' : 'en';
-      if (!byLang[lid]) byLang[lid] = [];
-      byLang[lid].push(a);
+      const rid = a.role || 'student';
+      const pk = `${lid}:${rid}`;
+      if (!byPane[pk]) byPane[pk] = [];
+      byPane[pk].push(a);
     }
     const paneRects = getPaneRects();
 
     const isThumbMode = displayModeRef.current === 'thumbnails';
     const isScrollMode = displayModeRef.current === 'scrolling';
 
+    const drawSelectedTextHandles = (rects) => {
+      const activeEdit = textInputStateRef.current;
+      if (activeEdit?.editBox && activeEdit.existingCreatedAt) return;
+      const selected = selectedAnnotationRef.current;
+      if (!selected || !selected.annotation || selected.annotation.type !== 'text') return;
+      const selAnno = selected.annotation;
+      const selLangId = selected.langId;
+      const selRole = selected.role || selAnno.role || 'student';
+      const selPaneKey = `${selLangId}:${selRole}`;
+      const selPage = selAnno.page || selectedPage;
+      const rectKey = (isThumbMode || isScrollMode) ? `${selPaneKey}-${selPage}` : selPaneKey;
+      const selImageRect = rects?.[rectKey];
+      if (!selImageRect) return;
+
+      const box = getTextAnnotationBox(context, selAnno, selImageRect);
+      if (!box) return;
+      const { boxLeft, boxTop, boxW, boxH } = box;
+
+      context.save();
+      context.setLineDash([4, 3]);
+      context.strokeStyle = '#3b82f6';
+      context.lineWidth = 1.5;
+      context.strokeRect(boxLeft - 2, boxTop - 2, boxW + 4, boxH + 4);
+      context.setLineDash([]);
+
+      const hh = boxH / 2;
+      const handles = [
+        { x: boxLeft + boxW, y: boxTop + hh },
+        { x: boxLeft, y: boxTop + hh },
+      ];
+      for (const h of handles) {
+        context.beginPath();
+        context.arc(h.x, h.y, HANDLE_RADIUS, 0, Math.PI * 2);
+        context.fillStyle = '#ffffff';
+        context.fill();
+        context.strokeStyle = '#3b82f6';
+        context.lineWidth = 2;
+        context.stroke();
+      }
+      context.restore();
+    };
+
     if (isThumbMode) {
       const thumbRects = getAllThumbnailRects();
-      for (const [langId, langAnnotations] of Object.entries(byLang)) {
-        const paneRect = paneRects[langId];
-        // Apply per-pane hard clip first — nothing for this language
-        // can draw outside its pane.
+      for (const [paneKey, paneAnnotations] of Object.entries(byPane)) {
+        const paneRect = paneRects[paneKey];
+        // Apply per-pane hard clip first — nothing for this pane
+        // can draw outside its bounds.
         if (paneRect) {
           context.save();
           context.beginPath();
           context.rect(paneRect.left, paneRect.top, paneRect.width, paneRect.height);
           context.clip();
         }
-        for (const annotation of langAnnotations) {
+        for (const annotation of paneAnnotations) {
           const page = Number(annotation.page);
-          const key = `${langId}-${page}`;
+          const key = `${paneKey}-${page}`;
           const imageRect = thumbRects[key];
           if (!imageRect) continue;
 
@@ -3449,34 +4009,30 @@ function App() {
           }
 
           if (denorm.type === 'text') {
-            context.save();
-            context.fillStyle = denorm.color;
-            const fontSize = Math.max(1, Math.round(18 * (imageRect.width / 800)));
-            context.font = `${fontSize}px Inter, system-ui, sans-serif`;
-            context.fillText(denorm.text, imageRect.left + denorm.x, imageRect.top + denorm.y);
-            context.restore();
+            drawTextAnnotation(context, annotation, imageRect);
           }
 
           context.restore();
         }
         if (paneRect) context.restore();
       }
+      drawSelectedTextHandles(thumbRects);
       return;
     }
 
     if (isScrollMode) {
       const pageRects = getPageImageRects();
-      for (const [langId, langAnnotations] of Object.entries(byLang)) {
-        const paneRect = paneRects[langId];
+      for (const [paneKey, paneAnnotations] of Object.entries(byPane)) {
+        const paneRect = paneRects[paneKey];
         if (paneRect) {
           context.save();
           context.beginPath();
           context.rect(paneRect.left, paneRect.top, paneRect.width, paneRect.height);
           context.clip();
         }
-        for (const annotation of langAnnotations) {
+        for (const annotation of paneAnnotations) {
           const page = Number(annotation.page);
-          const key = `${langId}-${page}`;
+          const key = `${paneKey}-${page}`;
           const imageRect = pageRects[key];
           if (!imageRect) continue;
 
@@ -3510,33 +4066,29 @@ function App() {
           }
 
           if (denorm.type === 'text') {
-            context.save();
-            context.fillStyle = denorm.color;
-            const fontSize = Math.max(1, Math.round(18 * (imageRect.width / 800)));
-            context.font = `${fontSize}px Inter, system-ui, sans-serif`;
-            context.fillText(denorm.text, imageRect.left + denorm.x, imageRect.top + denorm.y);
-            context.restore();
+            drawTextAnnotation(context, annotation, imageRect);
           }
 
           context.restore();
         }
         if (paneRect) context.restore();
       }
+      drawSelectedTextHandles(pageRects);
       return;
     }
 
     // Pagination mode: draw annotations on the current page image
     const pageImageRects = getPageImageRects();
-    for (const [langId, langAnnotations] of Object.entries(byLang)) {
-      const paneRect = paneRects[langId];
+    for (const [paneKey, paneAnnotations] of Object.entries(byPane)) {
+      const paneRect = paneRects[paneKey];
       if (paneRect) {
         context.save();
         context.beginPath();
         context.rect(paneRect.left, paneRect.top, paneRect.width, paneRect.height);
         context.clip();
       }
-      for (const annotation of langAnnotations) {
-        const imageRect = pageImageRects[langId];
+      for (const annotation of paneAnnotations) {
+        const imageRect = pageImageRects[paneKey];
         if (!imageRect) continue;
 
         context.save();
@@ -3569,19 +4121,17 @@ function App() {
         }
 
         if (denorm.type === 'text') {
-          context.save();
-          context.fillStyle = denorm.color;
-          const fontSize = Math.max(1, Math.round(18 * (imageRect.width / 800)));
-          context.font = `${fontSize}px Inter, system-ui, sans-serif`;
-          context.fillText(denorm.text, imageRect.left + denorm.x, imageRect.top + denorm.y);
-          context.restore();
+          drawTextAnnotation(context, annotation, imageRect);
         }
 
         context.restore();
       }
       if (paneRect) context.restore();
     }
-  }, [getPageImageRects, getPaneRects, denormalizeAnnotationCoords, getAllThumbnailRects]);
+
+    // ── Draw selection border + resize handles for selected text annotation ──
+    drawSelectedTextHandles(pageImageRects);
+  }, [getPageImageRects, getPaneRects, denormalizeAnnotationCoords, getAllThumbnailRects, wrapText, drawTextAnnotation, getTextAnnotationBox]);
 
   const pointToSegmentDistance = (point, start, end) => {
     const dx = end.x - start.x;
@@ -3595,17 +4145,20 @@ function App() {
     return Math.hypot(point.x - projX, point.y - projY);
   };
 
-  const findAnnotationAtPoint = (langId, point, pageNumOverride) => {
+  const findAnnotationAtPoint = (langId, point, pageNumOverride, role = 'student') => {
     const searchPage = pageNumOverride != null ? pageNumOverride : selectedPage;
     const pageRemarks = remarks.filter(
       (r) => r.chapter === selectedChapter
         && Number(r.page) === Number(searchPage)
+        && !clearedTimestampsRef.current.includes(r.createdAt)
         && (r.langId === 'tc' ? 'tc' : 'en') === langId
+        && (r.role || 'student') === role
     );
     // Get current page image rect for denormalizing stored percentage coords
     const pageImageRects = getPageImageRects();
     const isScrollMode = displayModeRef.current === 'scrolling';
-    const rectKey = isScrollMode ? `${langId}-${searchPage}` : langId;
+    const paneKey = `${langId}:${role}`;
+    const rectKey = isScrollMode ? `${paneKey}-${searchPage}` : paneKey;
     const imageRect = pageImageRects[rectKey] || null;
 
     const ordered = [...pageRemarks].reverse();
@@ -3616,13 +4169,10 @@ function App() {
         : annotation;
 
       if (denorm.type === 'text') {
-        const text = String(denorm.text || '');
-        const approxWidth = Math.max(24, text.length * 9);
-        const approxHeight = 24;
-        if (
-          point.x >= denorm.x - 4 && point.x <= denorm.x + approxWidth &&
-          point.y <= denorm.y + 4 && point.y >= denorm.y - approxHeight
-        ) {
+        const context = canvasRef.current?.getContext('2d');
+        const box = context && imageRect ? getTextAnnotationBox(context, annotation, imageRect) : null;
+        if (box && point.x >= box.pageBoxLeft && point.x <= box.pageBoxLeft + box.boxW
+          && point.y >= box.pageBoxTop && point.y <= box.pageBoxTop + box.boxH) {
           return annotation;
         }
       }
@@ -3640,6 +4190,224 @@ function App() {
     return null;
   };
 
+  // ── Resize handle hit-test helper ───────────────────────
+
+  const hitTestResizeHandle = (px, py, boxLeft, boxTop, boxW, boxH) => {
+    const handles = [
+      { id: 'e', x: boxLeft + boxW, y: boxTop + boxH / 2 },
+      { id: 'w', x: boxLeft, y: boxTop + boxH / 2 },
+    ];
+    for (const h of handles) {
+      const dx = px - h.x;
+      const dy = py - h.y;
+      if (Math.sqrt(dx * dx + dy * dy) <= HANDLE_HIT_RADIUS) return h.id;
+    }
+    return null;
+  };
+
+  const getResizeCursor = (handle) => {
+    switch (handle) {
+      case 'nw':
+      case 'se':
+        return 'nwse-resize';
+      case 'ne':
+      case 'sw':
+        return 'nesw-resize';
+      case 'n':
+      case 's':
+        return 'ns-resize';
+      case 'e':
+      case 'w':
+        return 'ew-resize';
+      default:
+        return 'move';
+    }
+  };
+
+  const getTextEditorContentHeight = useCallback((el) => {
+    if (!el) return MIN_TEXT_HEIGHT;
+    const previousHeight = el.style.height;
+    el.style.height = 'auto';
+    const nextHeight = Math.max(MIN_TEXT_HEIGHT, el.scrollHeight);
+    el.style.height = previousHeight;
+    return nextHeight;
+  }, []);
+
+  const syncTextEditorHeight = useCallback(() => {
+    const el = textInputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.max(MIN_TEXT_HEIGHT, el.scrollHeight)}px`;
+  }, []);
+
+  const handleTextEditorInput = useCallback(() => {
+    syncTextEditorHeight();
+    const el = textInputRef.current;
+    if (!el) return;
+    const nextHeight = Math.max(MIN_TEXT_HEIGHT, el.scrollHeight);
+    setTextInputState((prev) => prev ? { ...prev, initialHeight: nextHeight } : prev);
+  }, [syncTextEditorHeight]);
+
+  const getTextEditorBoxHeight = useCallback((el) => {
+    if (!el) return MIN_TEXT_HEIGHT + TEXT_BOX_PADDING * 2;
+    const contentHeight = getTextEditorContentHeight(el);
+    const styles = window.getComputedStyle(el);
+    const paddingY = parseFloat(styles.paddingTop || '0') + parseFloat(styles.paddingBottom || '0');
+    const borderY = parseFloat(styles.borderTopWidth || '0') + parseFloat(styles.borderBottomWidth || '0');
+    return Math.max(MIN_TEXT_HEIGHT, contentHeight + paddingY + borderY + TEXT_BOX_PADDING * 2);
+  }, [getTextEditorContentHeight]);
+
+  useLayoutEffect(() => {
+    if (textInputState) syncTextEditorHeight();
+  }, [textInputState, syncTextEditorHeight]);
+
+  const redrawAnnotationsNow = (overrideAnnotations) => {
+    const context = canvasRef.current?.getContext('2d');
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!context || !rect) return;
+    const annotationsToDraw = overrideAnnotations || ((displayModeRef.current === 'thumbnails' || displayModeRef.current === 'scrolling')
+      ? allSectionAnnotations
+      : pageAnnotations);
+    redraw(context, rect.width, rect.height, annotationsToDraw);
+  };
+
+  useLayoutEffect(() => {
+    redrawAnnotationsNow();
+  }, [textInputState]);
+
+  const updateAnnotationCursor = (nextCursor) => {
+    if (annotationCursorRef.current === nextCursor) return;
+    annotationCursorRef.current = nextCursor;
+    setAnnotationCursor(nextCursor);
+  };
+
+  const getSelectedTextBoxForTarget = (target) => {
+    const selected = selectedAnnotationRef.current;
+    if (!selected?.annotation || selected.annotation.type !== 'text' || !target) return null;
+    const selPage = selected.annotation.page || selectedPage;
+    const selLangId = selected.langId;
+    const selRole = selected.role || selected.annotation.role || 'student';
+    if (target.langId !== selLangId || Number(target.pageNum || selectedPage) !== Number(selPage)) return null;
+
+    const rects = displayModeRef.current === 'thumbnails' ? getAllThumbnailRects() : getPageImageRects();
+    const selPaneKey = `${selLangId}:${selRole}`;
+    const rectKey = (displayModeRef.current === 'scrolling' || displayModeRef.current === 'thumbnails')
+      ? `${selPaneKey}-${selPage}`
+      : selPaneKey;
+    const imageRect = rects[rectKey];
+    const context = canvasRef.current?.getContext('2d');
+    const box = context && imageRect ? getTextAnnotationBox(context, selected.annotation, imageRect) : null;
+    if (!box) return null;
+    const handle = hitTestResizeHandle(target.point.x, target.point.y, box.pageBoxLeft, box.pageBoxTop, box.boxW, box.boxH);
+    const inside = target.point.x >= box.pageBoxLeft && target.point.x <= box.pageBoxLeft + box.boxW
+      && target.point.y >= box.pageBoxTop && target.point.y <= box.pageBoxTop + box.boxH;
+    return { selected, imageRect, box, handle, inside };
+  };
+
+  const openTextEditorForAnnotation = (annotation, langId, imageRect, box) => {
+    const stage = stageRef.current;
+    const stageRect = stage ? stage.getBoundingClientRect() : null;
+    if (!stageRect || !annotation || !imageRect || !box) return;
+    const denorm = annotation.coordsNormalized ? denormalizeAnnotationCoords(annotation, imageRect) : annotation;
+    textInputCommittedRef.current = false;
+    setTextInputState({
+      canvasX: imageRect.left + box.pageBoxLeft + TEXT_BOX_PADDING,
+      canvasY: imageRect.top + box.pageBoxTop + TEXT_BOX_PADDING,
+      langId,
+      page: annotation.page || selectedPage,
+      point: { x: denorm.x || 0, y: denorm.y || 0 },
+      imageRect: { width: imageRect.width, height: imageRect.height },
+      fontSize: box.fontSize,
+      existingCreatedAt: annotation.createdAt,
+      existingLangId: annotation.langId || langId,
+      existingRemark: annotation,
+      initialText: annotation.text || '',
+      initialWidth: Math.max(1, box.boxW - TEXT_BOX_PADDING * 2),
+      initialHeight: Math.max(1, box.boxH - TEXT_BOX_PADDING * 2),
+      editBox: true,
+    });
+    setTimeout(() => textInputRef.current?.focus(), 0);
+  };
+
+  const beginTextEditDrag = (mode, event) => {
+    if (!textInputState?.editBox) return;
+    event.preventDefault();
+    event.stopPropagation();
+    textInputCommittedRef.current = true;
+    const el = textInputRef.current;
+    textEditDragRef.current = {
+      mode,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startCanvasX: textInputState.canvasX,
+      startCanvasY: textInputState.canvasY,
+      startPoint: { ...(textInputState.point || { x: 0, y: 0 }) },
+      startWidth: Math.max(1, textInputState.initialWidth || el?.offsetWidth || MIN_TEXT_WIDTH),
+      imageRect: textInputState.imageRect,
+    };
+    if (typeof event.currentTarget.setPointerCapture === 'function') {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
+    setTimeout(() => textInputRef.current?.focus(), 0);
+  };
+
+  const handleTextEditDragMove = (event) => {
+    const drag = textEditDragRef.current;
+    if (!drag) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const dx = event.clientX - drag.startClientX;
+    const dy = event.clientY - drag.startClientY;
+    setTextInputState((prev) => {
+      if (!prev?.editBox) return prev;
+      if (drag.mode === 'move') {
+        return {
+          ...prev,
+          canvasX: drag.startCanvasX + dx,
+          canvasY: drag.startCanvasY + dy,
+          point: {
+            x: drag.startPoint.x + dx,
+            y: drag.startPoint.y + dy,
+          },
+        };
+      }
+
+      if (drag.mode === 'e') {
+        return {
+          ...prev,
+          initialWidth: Math.max(MIN_TEXT_WIDTH, drag.startWidth + dx),
+        };
+      }
+
+      if (drag.mode === 'w') {
+        const nextWidth = Math.max(MIN_TEXT_WIDTH, drag.startWidth - dx);
+        const appliedDx = drag.startWidth - nextWidth;
+        return {
+          ...prev,
+          canvasX: drag.startCanvasX + appliedDx,
+          point: {
+            x: drag.startPoint.x + appliedDx,
+            y: drag.startPoint.y,
+          },
+          initialWidth: nextWidth,
+        };
+      }
+
+      return prev;
+    });
+  };
+
+  const endTextEditDrag = (event) => {
+    if (!textEditDragRef.current) return;
+    event.preventDefault();
+    event.stopPropagation();
+    textEditDragRef.current = null;
+    setTimeout(() => {
+      textInputCommittedRef.current = false;
+      textInputRef.current?.focus();
+    }, 0);
+  };
+
   const handlePointerDown = (event) => {
     if (isDebugAnnoStrokes()) console.log('[anno-stroke] ↓ pointerdown id=' + event.pointerId + ' tool=' + tool + ' drawing=' + drawingRef.current + ' activePtrs=' + activePointersRef.current.size);
     if (tool !== 'pen' && tool !== 'highlight' && tool !== 'move' && tool !== 'eraser') {
@@ -3655,7 +4423,7 @@ function App() {
         drawingRef.current = false;
         currentStrokeRef.current = null;
         const isScrollMode = displayModeRef.current === 'scrolling';
-        const rectKey = isScrollMode ? `${stroke.langId}-${stroke.page || selectedPage}` : stroke.langId;
+        const rectKey = isScrollMode ? `${stroke.langId}:${stroke.role || 'student'}-${stroke.page || selectedPage}` : `${stroke.langId}:${stroke.role || 'student'}`;
         const imageRect = stroke.imageRect || getPageImageRects()[rectKey];
         const normalizedStroke = imageRect
           ? normalizeAnnotationCoords(stroke, imageRect)
@@ -3674,8 +4442,8 @@ function App() {
       // Erase the annotation at the initial touch point
       const eraserTarget = resolveAnnotationTarget(event);
       if (eraserTarget) {
-        setActiveAnnotationLangId(eraserTarget.langId);
-        const hit = findAnnotationAtPoint(eraserTarget.langId, eraserTarget.point, eraserTarget.pageNum);
+        setActiveAnnotationLangId(eraserTarget.langId); setActiveAnnotationRole(eraserTarget.role || 'student');
+        const hit = findAnnotationAtPoint(eraserTarget.langId, eraserTarget.point, eraserTarget.pageNum, eraserTarget.role);
         if (hit?.createdAt) {
           erasedThisDragRef.current.add(hit.createdAt);
           deleteRemarkByCreatedAt(hit.createdAt, hit.langId || eraserTarget.langId, {
@@ -3690,20 +4458,79 @@ function App() {
 
     const target = resolveAnnotationTarget(event);
     if (!target) {
+      if (tool === 'move' && selectedAnnotationRef.current) {
+        selectedAnnotationRef.current = null;
+        resizeHandleRef.current = null;
+        resizeStartRef.current = null;
+        moveAnnotationRef.current = null;
+        moveStartPointRef.current = null;
+        redrawAnnotationsNow();
+      }
       if (isDebugAnnoStrokes()) console.log('[anno-stroke] ↓ SKIP — resolveAnnotationTarget returned null');
       return;
     }
     // console.log('[draw] target found — langId:', target.langId, 'point:', target.point);
-    setActiveAnnotationLangId(target.langId);
+    setActiveAnnotationLangId(target.langId); setActiveAnnotationRole(target.role || 'student');
 
     if (tool === 'move') {
-      const imageRect = target.imageRect;
-      const existing = findAnnotationAtPoint(target.langId, target.point, target.pageNum);
+      // Prevent browser default drag behaviors and clear dedup set
+      event.preventDefault();
+      processedUpIdsRef.current.delete(event.pointerId);
+
+      const selectedHit = getSelectedTextBoxForTarget(target);
+      if (selectedHit) {
+        const { selected, imageRect: selectedImageRect, box, handle, inside } = selectedHit;
+        if (handle) {
+          updateAnnotationCursor(getResizeCursor(handle));
+          resizeHandleRef.current = handle;
+          resizeStartRef.current = {
+            startX: target.point.x,
+            startY: target.point.y,
+            annotation: selected.annotation,
+            originalAnnotation: selected.annotation,
+            origWidth: box.boxW,
+            origHeight: box.boxH,
+            origBoxLeft: box.pageBoxLeft,
+            origBoxTop: box.pageBoxTop,
+            imageRect: selectedImageRect,
+          };
+          return;
+        }
+        if (inside) {
+          updateAnnotationCursor('move');
+          moveAnnotationRef.current = selected.annotation;
+          moveStartPointRef.current = target.point;
+          moveHasMovedRef.current = false;
+          return;
+        }
+      }
+
+      // Not a handle hit — check for annotation body hit to start move
+      const existing = findAnnotationAtPoint(target.langId, target.point, target.pageNum, target.role);
       if (existing) {
         moveAnnotationRef.current = existing;
         moveStartPointRef.current = target.point;
         moveHasMovedRef.current = false;
+        selectedAnnotationRef.current = { annotation: existing, langId: target.langId, role: target.role };
+        updateAnnotationCursor('move');
+        if (existing.type === 'text') {
+          const context = canvasRef.current?.getContext('2d');
+          const box = context ? getTextAnnotationBox(context, existing, {
+            left: 0,
+            top: 0,
+            width: target.imageRect.width,
+            height: target.imageRect.height,
+          }) : null;
+          if (box) {
+            openTextEditorForAnnotation(existing, target.langId, target.imageRect, box);
+          }
+        }
+      } else {
+        // Clicked empty space — deselect
+        selectedAnnotationRef.current = null;
+        updateAnnotationCursor('default');
       }
+      redrawAnnotationsNow();
       return;
     }
 
@@ -3724,6 +4551,7 @@ function App() {
       chapter: selectedChapter,
       page: target.pageNum || selectedPage,
       langId: target.langId,
+      role: target.role || 'student',
       mode: tool,
       color: textColor,
       points: [target.point],
@@ -3751,7 +4579,7 @@ function App() {
     if (eraserActiveRef.current) {
       const etarget = resolveAnnotationTarget(event);
       if (etarget) {
-        const hit = findAnnotationAtPoint(etarget.langId, etarget.point, etarget.pageNum);
+        const hit = findAnnotationAtPoint(etarget.langId, etarget.point, etarget.pageNum, etarget.role);
         if (hit?.createdAt && !erasedThisDragRef.current.has(hit.createdAt)) {
           erasedThisDragRef.current.add(hit.createdAt);
           deleteRemarkByCreatedAt(hit.createdAt, hit.langId || etarget.langId, {
@@ -3764,8 +4592,92 @@ function App() {
       return;
     }
 
+    if (tool === 'move' && !resizeHandleRef.current && !moveAnnotationRef.current && !drawingRef.current) {
+      const hoverTarget = resolveAnnotationTarget(event);
+      const selectedHit = getSelectedTextBoxForTarget(hoverTarget);
+      if (selectedHit?.handle) {
+        updateAnnotationCursor(getResizeCursor(selectedHit.handle));
+      } else if (selectedHit?.inside) {
+        updateAnnotationCursor('move');
+      } else {
+        const hoverAnnotation = hoverTarget ? findAnnotationAtPoint(hoverTarget.langId, hoverTarget.point, hoverTarget.pageNum, hoverTarget.role) : null;
+        updateAnnotationCursor(hoverAnnotation ? 'move' : 'default');
+      }
+      return;
+    }
+
+    // Handle resize drag
+    if (resizeHandleRef.current && resizeStartRef.current) {
+      const target = resolveAnnotationTarget(event);
+      if (!target) return;
+      const rs = resizeStartRef.current;
+      const dx = target.point.x - rs.startX;
+      const dy = target.point.y - rs.startY;
+      const handle = resizeHandleRef.current;
+      let newWidth = rs.origWidth;
+      let newBoxLeft = rs.origBoxLeft;
+
+      // Adjust width and origin based on horizontal resize handles; height is content-driven.
+      if (handle === 'e' || handle === 'ne' || handle === 'se') {
+        newWidth = Math.max(MIN_TEXT_WIDTH, rs.origWidth + dx);
+      }
+      if (handle === 'w' || handle === 'nw' || handle === 'sw') {
+        newWidth = Math.max(MIN_TEXT_WIDTH, rs.origWidth - dx);
+        newBoxLeft = rs.origBoxLeft + dx;
+        if (newWidth <= MIN_TEXT_WIDTH) newBoxLeft = rs.origBoxLeft + rs.origWidth - MIN_TEXT_WIDTH;
+      }
+
+      const fontSize = Math.max(1, Math.round(18 * (rs.imageRect.width / 800)));
+      const lineHeight = fontSize * 1.4;
+      const context = canvasRef.current?.getContext('2d');
+      const textHeight = context
+        ? (() => {
+          context.save();
+          context.font = `${fontSize}px Inter, system-ui, sans-serif`;
+          const wrapped = wrapText(context, String(rs.annotation.text || ''), Math.max(1, newWidth - TEXT_BOX_PADDING * 2));
+          context.restore();
+          return Math.max(MIN_TEXT_HEIGHT, wrapped.length * lineHeight + TEXT_BOX_PADDING * 2);
+        })()
+        : rs.origHeight;
+      const denorm = rs.annotation.coordsNormalized
+        ? denormalizeAnnotationCoords(rs.annotation, rs.imageRect)
+        : rs.annotation;
+      const denormMoved = {
+        ...denorm,
+        x: newBoxLeft + TEXT_BOX_PADDING,
+        y: rs.origBoxTop + TEXT_BOX_PADDING + fontSize,
+        width: newWidth,
+        height: textHeight,
+      };
+      const moved = rs.annotation.coordsNormalized
+        ? { ...rs.annotation, ...normalizeAnnotationCoords(denormMoved, rs.imageRect), createdAt: rs.annotation.createdAt }
+        : { ...rs.annotation, ...denormMoved };
+      selectedAnnotationRef.current = { annotation: moved, langId: selectedAnnotationRef.current?.langId };
+      resizeStartRef.current.annotation = moved;
+
+      setTextInputState((prev) => prev?.editBox && prev.existingCreatedAt === rs.annotation.createdAt ? {
+        ...prev,
+        canvasX: rs.imageRect.left + newBoxLeft + TEXT_BOX_PADDING,
+        canvasY: rs.imageRect.top + rs.origBoxTop + TEXT_BOX_PADDING,
+        point: { x: denormMoved.x, y: denormMoved.y },
+        initialWidth: Math.max(1, newWidth - TEXT_BOX_PADDING * 2),
+        initialHeight: Math.max(1, textHeight - TEXT_BOX_PADDING * 2),
+      } : prev);
+
+      // Redraw with updated annotation
+      const rect = canvasRef.current?.getBoundingClientRect();
+      if (context && rect) {
+        const annotationsToDraw = (displayMode === 'thumbnails' || displayMode === 'scrolling')
+          ? allSectionAnnotations : pageAnnotations;
+        const withoutMoved = annotationsToDraw.filter((a) => a.createdAt !== moved.createdAt || a.langId !== moved.langId);
+        redraw(context, rect.width, rect.height, [...withoutMoved, moved]);
+      }
+      return;
+    }
+
     // Handle move tool dragging
     if (moveAnnotationRef.current && moveStartPointRef.current) {
+      event.preventDefault();
       const target = resolveAnnotationTarget(event);
       if (!target || target.langId !== moveAnnotationRef.current.langId) return;
       const dx = target.point.x - moveStartPointRef.current.x;
@@ -3775,8 +4687,10 @@ function App() {
 
       const pageImageRects = getPageImageRects();
       const moveLangId = moveAnnotationRef.current.langId;
+      const moveRole = moveAnnotationRef.current.role || 'student';
       const movePage = moveAnnotationRef.current.page;
-      const rectKey = displayModeRef.current === 'scrolling' ? `${moveLangId}-${movePage}` : moveLangId;
+      const movePaneKey = `${moveLangId}:${moveRole}`;
+      const rectKey = displayModeRef.current === 'scrolling' ? `${movePaneKey}-${movePage}` : movePaneKey;
       const imageRect = pageImageRects[rectKey];
       if (!imageRect) return;
 
@@ -3789,8 +4703,15 @@ function App() {
           : moved;
         denorm.x = (denorm.x || 0) + dx;
         denorm.y = (denorm.y || 0) + dy;
-        const renormalized = normalizeAnnotationCoords({ ...denorm, langId: moved.langId, type: 'text', text: moved.text, color: moved.color }, imageRect);
+        const renormalized = normalizeAnnotationCoords({ ...denorm, langId: moved.langId, type: 'text', text: moved.text, color: moved.color, width: denorm.width, height: denorm.height }, imageRect);
         moveAnnotationRef.current = { ...moved, ...renormalized, createdAt: moved.createdAt };
+        selectedAnnotationRef.current = { annotation: moveAnnotationRef.current, langId: moved.langId };
+        setTextInputState((prev) => prev?.editBox && prev.existingCreatedAt === moved.createdAt ? {
+          ...prev,
+          canvasX: prev.canvasX + dx,
+          canvasY: prev.canvasY + dy,
+          point: { x: denorm.x, y: denorm.y },
+        } : prev);
       } else if (moved.type === 'stroke' && Array.isArray(moved.points)) {
         const denorm = (moved.coordsNormalized && imageRect)
           ? denormalizeAnnotationCoords(moved, imageRect)
@@ -3804,7 +4725,8 @@ function App() {
       const context = canvasRef.current?.getContext('2d');
       const rect = canvasRef.current?.getBoundingClientRect();
       if (context && rect) {
-        const withoutMoved = pageAnnotations.filter((a) => a.createdAt !== moved.createdAt || a.langId !== moved.langId);
+        const allAnno = (displayMode === 'thumbnails' || displayMode === 'scrolling') ? allSectionAnnotations : pageAnnotations;
+        const withoutMoved = allAnno.filter((a) => a.createdAt !== moved.createdAt || a.langId !== moved.langId);
         redraw(context, rect.width, rect.height, [...withoutMoved, moveAnnotationRef.current]);
       }
       return;
@@ -3813,7 +4735,7 @@ function App() {
     // Handle drawing stroke
     if (!drawingRef.current || !currentStrokeRef.current) return;
     const target = resolveAnnotationTarget(event);
-    if (!target || target.langId !== currentStrokeRef.current.langId || (target.pageNum || selectedPage) !== (currentStrokeRef.current.page || selectedPage)) {
+    if (!target || target.langId !== currentStrokeRef.current.langId || (target.role || 'student') !== (currentStrokeRef.current.role || 'student') || (target.pageNum || selectedPage) !== (currentStrokeRef.current.page || selectedPage)) {
       // Pointer is outside the page image or crossed language panes — skip this event
       // but keep the stroke alive (don't stop it). It will be saved on pointerup.
       if (!target) {
@@ -3855,6 +4777,52 @@ function App() {
       return;
     }
 
+    // Handle resize commit
+    if (resizeHandleRef.current && resizeStartRef.current) {
+      const rs = resizeStartRef.current;
+      const moved = selectedAnnotationRef.current?.annotation || rs.annotation;
+      const original = rs.originalAnnotation || rs.annotation;
+      resizeHandleRef.current = null;
+      resizeStartRef.current = null;
+      // Only save if the annotation was actually resized
+      if (moved.width !== original.width || moved.height !== original.height || moved.x !== original.x || moved.y !== original.y) {
+        // Delete old annotation and save resized version
+        if (original.createdAt) {
+          deleteRemarkByCreatedAt(original.createdAt, original.langId || moved.langId || annotationScopeLangId, {
+            pageIdOverride: original.page || moved.page,
+          });
+        }
+        const savedCreatedAt = hkNow();
+        const remarkToSave = {
+          type: moved.type,
+          chapter: selectedChapter,
+          page: moved.page || selectedPage,
+          langId: moved.langId,
+          color: moved.color,
+          text: moved.text,
+          x: moved.x,
+          y: moved.y,
+          width: moved.width,
+          height: moved.height,
+          coordsNormalized: moved.coordsNormalized,
+          createdAt: savedCreatedAt
+        };
+        saveRemark(remarkToSave);
+        selectedAnnotationRef.current = { annotation: remarkToSave, langId: remarkToSave.langId || annotationScopeLangId };
+        setTextInputState((prev) => prev?.editBox && prev.existingCreatedAt === original.createdAt ? {
+          ...prev,
+          existingCreatedAt: savedCreatedAt,
+          existingRemark: remarkToSave,
+          page: remarkToSave.page,
+        } : prev);
+      }
+      // Update selection to the saved version
+      if (!selectedAnnotationRef.current) {
+        selectedAnnotationRef.current = { annotation: moved, langId: moved.langId || annotationScopeLangId };
+      }
+      return;
+    }
+
     // Handle move tool drop
     if (moveAnnotationRef.current) {
       const moved = moveAnnotationRef.current;
@@ -3863,15 +4831,18 @@ function App() {
       // Only save if the annotation was actually moved
       if (moveHasMovedRef.current) {
         moveHasMovedRef.current = false;
-        // Delete old annotation and save moved version
+        // Delete old annotation and save moved version — use explicit pageId so scrolling mode works
         if (moved.createdAt) {
-          deleteRemarkByCreatedAt(moved.createdAt, moved.langId || annotationScopeLangId);
+          deleteRemarkByCreatedAt(moved.createdAt, moved.langId || annotationScopeLangId, {
+            pageIdOverride: moved.page,
+          });
         }
-        // Re-save with updated coordinates
+        // Re-save with updated coordinates — use moved.page not selectedPage for scrolling mode
+        const savedCreatedAt = hkNow();
         const remarkToSave = {
           type: moved.type,
           chapter: selectedChapter,
-          page: selectedPage,
+          page: moved.page || selectedPage,
           langId: moved.langId,
           color: moved.color,
           text: moved.text,
@@ -3879,10 +4850,19 @@ function App() {
           mode: moved.mode,
           x: moved.x,
           y: moved.y,
+          width: moved.width,
+          height: moved.height,
           coordsNormalized: moved.coordsNormalized,
-          createdAt: hkNow()
+          createdAt: savedCreatedAt
         };
         saveRemark(remarkToSave);
+        selectedAnnotationRef.current = { annotation: remarkToSave, langId: remarkToSave.langId || annotationScopeLangId };
+        setTextInputState((prev) => prev?.editBox && prev.existingCreatedAt === moved.createdAt ? {
+          ...prev,
+          existingCreatedAt: savedCreatedAt,
+          existingRemark: remarkToSave,
+          page: remarkToSave.page,
+        } : prev);
       }
       return;
     }
@@ -3906,7 +4886,7 @@ function App() {
     // fresh lookup only when the stroke doesn't carry its own imageRect
     // (e.g. annotations created before this fix was deployed).
     const isScrollMode = displayModeRef.current === 'scrolling';
-    const rectKey = isScrollMode ? `${stroke.langId}-${stroke.page || selectedPage}` : stroke.langId;
+    const rectKey = isScrollMode ? `${stroke.langId}:${stroke.role || 'student'}-${stroke.page || selectedPage}` : `${stroke.langId}:${stroke.role || 'student'}`;
     const imageRect = stroke.imageRect || getPageImageRects()[rectKey];
     const normalizedStroke = imageRect
       ? normalizeAnnotationCoords(stroke, imageRect)
@@ -3951,7 +4931,7 @@ function App() {
             if (isDebugAnnoStrokes()) console.log('[anno-stroke] ↓ AUTO-INIT from pointermove id=' + e.pointerId + ' (pointerdown was suppressed by iOS)');
             // Synthesize a pointerdown-like initialisation
             activePointersRef.current.add(e.pointerId);
-            setActiveAnnotationLangId(target.langId);
+            setActiveAnnotationLangId(target.langId); setActiveAnnotationRole(target.role || 'student');
             drawingRef.current = true;
             e.preventDefault();
             processedUpIdsRef.current.delete(e.pointerId); // prevent iOS pointerId recycling from dropping strokes
@@ -3960,6 +4940,7 @@ function App() {
               chapter: selectedChapterRef.current,
               page: target.pageNum || selectedPageRef.current,
               langId: target.langId,
+              role: target.role || 'student',
               mode: toolRef.current,
               color: textColorRef.current,
               points: [target.point],
@@ -4004,50 +4985,90 @@ function App() {
   }, []); // empty deps — listeners attached once, never re-attached
 
   const commitTextAnnotation = () => {
+    if (textInputCommittedRef.current) return;
+    textInputCommittedRef.current = true;
     const el = textInputRef.current;
     const state = textInputState;
-    if (!el || !state) return;
+    if (!el || !state) {
+      textInputCommittedRef.current = false;
+      return;
+    }
     const text = el.value.trim();
     if (!text) {
-      textInputCommittedRef.current = true;
+      if (state.existingCreatedAt) {
+        deleteRemarkByCreatedAt(state.existingCreatedAt, state.existingLangId || state.langId, {
+          pageIdOverride: state.page || selectedPage,
+          recordUndo: true,
+          deletedRemark: state.existingRemark,
+        });
+      }
       setTextInputState(null);
       return;
     }
     // If editing an existing annotation, delete the old one first
     if (state.existingCreatedAt) {
       deleteRemarkByCreatedAt(state.existingCreatedAt, state.existingLangId || state.langId, {
+        pageIdOverride: state.page || selectedPage,
         recordUndo: true,
         deletedRemark: state.existingRemark,
       });
     }
+    const width = state.editBox ? el.offsetWidth + TEXT_BOX_PADDING * 2 : el.offsetWidth;
+    const height = state.editBox ? getTextEditorBoxHeight(el) : el.offsetHeight;
     const remark = {
       type: 'text',
       chapter: selectedChapter,
-      page: selectedPage,
+      page: state.page || selectedPage,
       langId: state.langId,
       x: state.point.x,
       y: state.point.y,
+      width: width > 0 ? width : undefined,
+      height: height > 0 ? height : undefined,
       color: textColor,
+      fontSize: state.fontSize,
       text,
       createdAt: hkNow()
     };
     const normalizedRemark = state.imageRect
       ? normalizeAnnotationCoords(remark, state.imageRect)
       : remark;
-    textInputCommittedRef.current = true;
     saveRemark(normalizedRemark);
+    selectedAnnotationRef.current = null;
+    resizeHandleRef.current = null;
+    resizeStartRef.current = null;
+    moveAnnotationRef.current = null;
+    moveStartPointRef.current = null;
     setTextInputState(null);
+    updateAnnotationCursor('default');
+    redrawAnnotationsNow();
   };
 
   const cancelTextAnnotation = () => {
     textInputCommittedRef.current = true;
+    selectedAnnotationRef.current = null;
+    resizeHandleRef.current = null;
+    resizeStartRef.current = null;
+    moveAnnotationRef.current = null;
+    moveStartPointRef.current = null;
     setTextInputState(null);
+    updateAnnotationCursor('default');
+    redrawAnnotationsNow();
   };
 
   // Cancel active text input when switching away from text tool
   useEffect(() => {
     if (tool !== 'text' && textInputState) {
       cancelTextAnnotation();
+    }
+  }, [tool]);
+
+  // Clear annotation selection when switching away from move tool
+  useEffect(() => {
+    if (tool !== 'move') {
+      selectedAnnotationRef.current = null;
+      resizeHandleRef.current = null;
+      resizeStartRef.current = null;
+      updateAnnotationCursor('default');
     }
   }, [tool]);
 
@@ -4072,7 +5093,15 @@ function App() {
         if (!canvas) return;
         const context = canvas.getContext('2d');
         const rect = canvas.getBoundingClientRect();
-        const annotationsToDraw = (displayMode === 'thumbnails' || displayMode === 'scrolling') ? allSectionAnnotations : pageAnnotations;
+        let annotationsToDraw = (displayMode === 'thumbnails' || displayMode === 'scrolling') ? allSectionAnnotations : pageAnnotations;
+        // During a move/resize drag, include the in-flight annotation so it doesn't snap back
+        if (moveAnnotationRef.current) {
+          const moved = moveAnnotationRef.current;
+          annotationsToDraw = annotationsToDraw.filter(
+            (a) => a.createdAt !== moved.createdAt || a.langId !== moved.langId
+          );
+          annotationsToDraw = [...annotationsToDraw, moved];
+        }
         redraw(context, rect.width, rect.height, annotationsToDraw);
       });
     };
@@ -4533,6 +5562,7 @@ function App() {
           canvasX: event.clientX - stageRect.left,
           canvasY: event.clientY - stageRect.top,
           langId: target.langId,
+          role: target.role || 'student',
           point: target.point,
           imageRect: target.imageRect,
         } : null);
@@ -4545,9 +5575,9 @@ function App() {
 
     const target = resolveAnnotationTarget(event);
     if (!target) return;
-    setActiveAnnotationLangId(target.langId);
+    setActiveAnnotationLangId(target.langId); setActiveAnnotationRole(target.role || 'student');
     if (tool === 'eraser') {
-      const annotation = findAnnotationAtPoint(target.langId, target.point, target.pageNum);
+      const annotation = findAnnotationAtPoint(target.langId, target.point, target.pageNum, target.role);
       if (!annotation?.createdAt) return;
       deleteRemarkByCreatedAt(annotation.createdAt, annotation.langId || target.langId, {
         pageIdOverride: annotation.page,
@@ -4558,7 +5588,7 @@ function App() {
     }
     if (tool === 'text') {
       // Check if clicking on an existing text annotation (to re-edit it)
-      const existing = findAnnotationAtPoint(target.langId, target.point, target.pageNum);
+      const existing = findAnnotationAtPoint(target.langId, target.point, target.pageNum, target.role);
       const stage = stageRef.current;
       const stageRect = stage ? stage.getBoundingClientRect() : null;
       if (!stageRect) return;
@@ -4568,8 +5598,8 @@ function App() {
       let editPoint = target.point;
       if (existing && existing.type === 'text') {
         const existRectKey = displayModeRef.current === 'scrolling'
-          ? `${target.langId}-${existing.page || selectedPage}`
-          : target.langId;
+          ? `${target.langId}:${target.role || 'student'}-${existing.page || selectedPage}`
+          : `${target.langId}:${target.role || 'student'}`; 
         const imageRect = pageImageRects[existRectKey] || target.imageRect;
         if (imageRect && existing.coordsNormalized) {
           const denorm = denormalizeAnnotationCoords(existing, imageRect);
@@ -4583,15 +5613,55 @@ function App() {
         canvasX: event.clientX - stageRect.left,
         canvasY: event.clientY - stageRect.top,
         langId: target.langId,
+        role: target.role || 'student',
+        page: target.pageNum || selectedPage,
         point: editPoint,
         imageRect: target.imageRect,
+        fontSize: Math.max(1, Math.round(18 * (target.imageRect.width / 800))),
       };
       if (existing && existing.type === 'text') {
+        const existRectKeyBox = displayModeRef.current === 'scrolling'
+          ? `${target.langId}:${target.role || 'student'}-${existing.page || selectedPage}`
+          : `${target.langId}:${target.role || 'student'}`; 
+        const imageRectBox = pageImageRects[existRectKeyBox] || target.imageRect;
+        const context = canvasRef.current?.getContext('2d');
+        const existingBox = context && imageRectBox ? getTextAnnotationBox(context, existing, imageRectBox) : null;
         // Re-edit: pre-fill with existing text and store reference to delete old on save
+        newState.editBox = true;
         newState.existingCreatedAt = existing.createdAt;
         newState.existingLangId = existing.langId || target.langId;
         newState.existingRemark = existing;
         newState.initialText = existing.text || '';
+        if (existingBox) {
+          newState.canvasX = imageRectBox.left + existingBox.pageBoxLeft + TEXT_BOX_PADDING;
+          newState.canvasY = imageRectBox.top + existingBox.pageBoxTop + TEXT_BOX_PADDING;
+          newState.fontSize = existingBox.fontSize;
+        }
+        // Track selection so move/resize handles work correctly
+        selectedAnnotationRef.current = { annotation: existing, langId: target.langId, role: target.role };
+        // Pass initial width so textarea opens at the saved size
+        if (existing.width != null) {
+          const existRectKey2 = displayModeRef.current === 'scrolling'
+            ? `${target.langId}:${target.role || 'student'}-${existing.page || selectedPage}`
+            : `${target.langId}:${target.role || 'student'}`; 
+          const imageRect2 = pageImageRects[existRectKey2] || target.imageRect;
+          if (imageRect2 && existing.coordsNormalized) {
+            newState.initialWidth = (existing.width / 100) * imageRect2.width;
+          } else {
+            newState.initialWidth = existing.width;
+          }
+        }
+        if (existing.height != null) {
+          const existRectKey3 = displayModeRef.current === 'scrolling'
+            ? `${target.langId}:${target.role || 'student'}-${existing.page || selectedPage}`
+            : `${target.langId}:${target.role || 'student'}`; 
+          const imageRect3 = pageImageRects[existRectKey3] || target.imageRect;
+          if (imageRect3 && existing.coordsNormalized) {
+            newState.initialHeight = (existing.height / 100) * imageRect3.height;
+          } else {
+            newState.initialHeight = existing.height;
+          }
+        }
       }
       setTextInputState(newState);
     }
@@ -4833,20 +5903,20 @@ function App() {
     };
   }, [isNarrowScreen]);
 
-  const isBilingualView = selectedLanguage === 'bilingual' && visibleLanguages.length > 1;
+  const isBilingualView = visiblePanes.length > 1;
   // When the screen is portrait OR in the medium tablet-landscape range
   // (817px–1040px), use the stacked layout with bilingual-mid-header bar
   // between the two language panes instead of the floating pill badge.
   const useBilingualMidHeaderLayout = isBilingualView && (isPortrait || isMediumBilingualWidth);
   const maxPagesInGroup = useMemo(() => {
-    const counts = visibleLanguages
-      .map((language) => Number(pageCounts[language] || 0))
+    const counts = visiblePanes
+      .map((pane) => Number(pageCounts[pane.sourceKey] || 0))
       .filter((value) => value > 0);
     return counts.length ? Math.max(...counts) : 0;
-  }, [visibleLanguages, pageCounts]);
+  }, [visiblePanes, pageCounts]);
   const displayZoomPercent = useMemo(() => {
-    const scales = visibleLanguages
-      .map((language) => renderScaleByLanguage[language])
+    const scales = visiblePanes
+      .map((pane) => renderScaleByLanguage[pane.sourceKey])
       .filter((value) => Number.isFinite(value) && value > 0);
 
     if (scales.length > 0) {
@@ -4854,13 +5924,13 @@ function App() {
     }
     // No render scale reported yet — unknown
     return null;
-  }, [visibleLanguages, renderScaleByLanguage]);
+  }, [visiblePanes, renderScaleByLanguage]);
   const maxNavigablePage = useMemo(() => {
-    const counts = visibleLanguages
-      .map((language) => Number(pageCounts[language] || 0))
+    const counts = visiblePanes
+      .map((pane) => Number(pageCounts[pane.sourceKey] || 0))
       .filter((value) => value > 0);
     return counts.length ? Math.max(...counts) : Number.POSITIVE_INFINITY;
-  }, [visibleLanguages, pageCounts]);
+  }, [visiblePanes, pageCounts]);
 
   useEffect(() => {
     maxNavigablePageRef.current = maxNavigablePage;
@@ -4946,7 +6016,7 @@ function App() {
 
   useEffect(() => {
     setRenderScaleByLanguage({});
-  }, [selectedChapter, selectedFile, selectedLanguage, displayMode]);
+  }, [selectedChapter, selectedFile, selectedLanguage, selectedRoleMode, displayMode]);
 
   const fetchCachedAiContent = useCallback(async () => {
     const data = await fetchJson(
@@ -6289,6 +7359,40 @@ function App() {
           </div>
         </label>
 
+        {selectedLanguage !== 'bilingual' && (
+        <label>
+          <span className="sidebar-label-icon">
+            <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+              <path d="M12 3a4 4 0 110 8 4 4 0 010-8zm-6 15c0-2.76 3.58-5 8-5s8 2.24 8 5v1H6v-1zm-2 1v-1c0-1.9.98-3.58 2.55-4.85C4.39 13.72 3 15.25 3 17v2h1zm16.45-5.85C22.02 14.42 23 16.1 23 18v1h-1v-2c0-1.75-1.39-3.28-3.55-3.85z" />
+            </svg>
+            {_('role')}
+          </span>
+          <div className="toggle-group toggle-group-triple compact-text">
+            <button
+              className={`toggle-btn ${selectedRoleMode === 'student' ? 'active' : ''}`}
+              onClick={() => setSelectedRoleMode('student')}
+              aria-pressed={selectedRoleMode === 'student'}
+            >
+              {_('student')}
+            </button>
+            <button
+              className={`toggle-btn ${selectedRoleMode === 'teacher' ? 'active' : ''}`}
+              onClick={() => setSelectedRoleMode('teacher')}
+              aria-pressed={selectedRoleMode === 'teacher'}
+            >
+              {_('teacher')}
+            </button>
+            <button
+              className={`toggle-btn ${selectedRoleMode === 'dual' ? 'active' : ''}`}
+              onClick={() => setSelectedRoleMode('dual')}
+              aria-pressed={selectedRoleMode === 'dual'}
+            >
+              {_('dual')}
+            </button>
+          </div>
+        </label>
+        )}
+
         {sidebarCollapsed && (
           <div className="sidebar-icon-stack" aria-label="Collapsed sidebar controls">
             <a className="sidebar-account-btn" href={logoutUrl} data-tooltip={userId} aria-label={userId} onClick={logLogout}>
@@ -6381,6 +7485,15 @@ function App() {
               data-tooltip={_('switchLanguage')}
               aria-label={_('switchLanguage')}
             ><span className="sidebar-icon-btn-text">{selectedLanguage === 'en' ? 'EN' : selectedLanguage === 'tc' ? '中' : '雙'}</span></button>
+            {selectedLanguage !== 'bilingual' && (
+              <button
+                className={`sidebar-icon-btn${pressedAutocompleteBtn === 'role' ? ' pressed' : ''}`}
+                ref={(el) => { collapsedBtnRefs.current.role = el; }}
+                onClick={() => openSidebarAutocomplete('role')}
+                data-tooltip={_('toggleRole')}
+                aria-label={_('toggleRole')}
+              ><span className="sidebar-icon-btn-text">{selectedRoleMode === 'student' ? 'Stu' : selectedRoleMode === 'teacher' ? 'Tch' : 'Duo'}</span></button>
+            )}
             <button
               className={`sidebar-icon-btn ${panelVisible ? 'active' : ''}`}
               onClick={() => setPanelVisible((current) => !current)}
@@ -6449,7 +7562,7 @@ function App() {
             />,
             document.body
           )}
-          {(pageLoading || (visibleLanguages.length === 0 && selectedChapter)) ? (
+          {(pageLoading || (visiblePanes.length === 0 && selectedChapter)) ? (
             <div className="page-loading">
               <div className="page-loading-spinner" />
               <p>{_('loadingPage') || 'Loading page…'}</p>
@@ -6483,27 +7596,28 @@ function App() {
               </header>
             )}
 
-            {/* ── Bilingual portrait / medium-width: header bar between EN (top) and TC (bottom) ── */}
+            {/* ── Bilingual/Dual portrait / medium-width: header bar between top pane and bottom pane ── */}
             {useBilingualMidHeaderLayout ? (
               <>
-                {visibleLanguages.filter(l => l === 'en').map((language) => {
-                  const src = pageSources[language];
+                {visiblePanes.slice(0, 1).map((pane) => {
+                  const language = pane.language;
+                  const src = pageSources[pane.sourceKey];
                   const isImages = Array.isArray(src);
                   return (
-                    <PdfPane key={language} paneLanguage={language}
-                      source={isImages ? `img:${selectedBook}:${selectedChapter}:${selectedFile}:${language}` : (src || '')}
+                    <PdfPane key={pane.sourceKey} paneLanguage={pane.language} paneRole={pane.role}
+                      source={isImages ? `img:${selectedBook}:${selectedChapter}:${selectedFile}:${pane.sourceKey}` : (src || '')}
                       images={isImages ? src : null}
                       title={`${selectedChapter} · ${selectedFile} · ${selectedPage}`}
                       section={null} hideHeader={true}
                       mode={displayMode} currentPage={selectedPage}
                       onPageChange={setSelectedPage}
-                      onPageCountChange={(count) => setPageCounts((current) => ({ ...current, [language]: count }))}
+                      onPageCountChange={(count) => setPageCounts((current) => ({ ...current, [pane.sourceKey]: count }))}
                       thumbnailsOpen={showThumbnails}
                       onThumbnailClick={(page) => { setSelectedPage(page); setDisplayMode('pagination'); }}
                       syncGroup={displayMode === 'scrolling' ? `${selectedChapter}-${selectedFile}-bilingual` : ''}
-                      syncId={language} zoom={zoomLevel} thumbCols={thumbCols}
+                      syncId={pane.sourceKey} zoom={zoomLevel} thumbCols={thumbCols}
                       fitMode={fitMode} fitRefreshToken={fitRefreshToken}
-                      onRenderScaleChange={(scale) => { setRenderScaleByLanguage((current) => { if (current[language] === scale) return current; return { ...current, [language]: scale }; }); }}
+                      onRenderScaleChange={(scale) => { setRenderScaleByLanguage((current) => { if (current[pane.sourceKey] === scale) return current; return { ...current, [pane.sourceKey]: scale }; }); }}
                       onScrollCanvasesReady={() => setRedrawTick((t) => t + 1)}
                       language={selectedLanguage}
                       maxPagesInGroup={maxPagesInGroup}
@@ -6533,24 +7647,25 @@ function App() {
                     </svg>
                   </button>
                 </header>
-                {visibleLanguages.filter(l => l === 'tc').map((language) => {
-                  const src = pageSources[language];
+                {visiblePanes.slice(1).map((pane) => {
+                  const language = pane.language;
+                  const src = pageSources[pane.sourceKey];
                   const isImages = Array.isArray(src);
                   return (
-                    <PdfPane key={language} paneLanguage={language}
-                      source={isImages ? `img:${selectedBook}:${selectedChapter}:${selectedFile}:${language}` : (src || '')}
+                    <PdfPane key={pane.sourceKey} paneLanguage={pane.language} paneRole={pane.role}
+                      source={isImages ? `img:${selectedBook}:${selectedChapter}:${selectedFile}:${pane.sourceKey}` : (src || '')}
                       images={isImages ? src : null}
                       title={`${selectedChapter} · ${selectedFile} · ${selectedPage}`}
                       section={null} hideHeader={true}
                       mode={displayMode} currentPage={selectedPage}
                       onPageChange={setSelectedPage}
-                      onPageCountChange={(count) => setPageCounts((current) => ({ ...current, [language]: count }))}
+                      onPageCountChange={(count) => setPageCounts((current) => ({ ...current, [pane.sourceKey]: count }))}
                       thumbnailsOpen={showThumbnails}
                       onThumbnailClick={(page) => { setSelectedPage(page); setDisplayMode('pagination'); }}
                       syncGroup={displayMode === 'scrolling' ? `${selectedChapter}-${selectedFile}-bilingual` : ''}
-                      syncId={language} zoom={zoomLevel} thumbCols={thumbCols}
+                      syncId={pane.sourceKey} zoom={zoomLevel} thumbCols={thumbCols}
                       fitMode={fitMode} fitRefreshToken={fitRefreshToken}
-                      onRenderScaleChange={(scale) => { setRenderScaleByLanguage((current) => { if (current[language] === scale) return current; return { ...current, [language]: scale }; }); }}
+                      onRenderScaleChange={(scale) => { setRenderScaleByLanguage((current) => { if (current[pane.sourceKey] === scale) return current; return { ...current, [pane.sourceKey]: scale }; }); }}
                       onScrollCanvasesReady={() => setRedrawTick((t) => t + 1)}
                       language={selectedLanguage}
                       maxPagesInGroup={maxPagesInGroup}
@@ -6560,14 +7675,16 @@ function App() {
               </>
             ) : (
               /* ── Non-bilingual or bilingual landscape: render all panes normally ── */
-              visibleLanguages.map((language, idx) => {
-            const src = pageSources[language];
+              visiblePanes.map((pane) => {
+            const language = pane.language;
+            const src = pageSources[pane.sourceKey];
             const isImages = Array.isArray(src);
             return (
               <PdfPane
-                key={language}
-                paneLanguage={language}
-                source={isImages ? `img:${selectedBook}:${selectedChapter}:${selectedFile}:${language}` : (src || '')}
+                key={pane.sourceKey}
+                paneLanguage={pane.language}
+                paneRole={pane.role}
+                source={isImages ? `img:${selectedBook}:${selectedChapter}:${selectedFile}:${pane.sourceKey}` : (src || '')}
                 images={isImages ? src : null}
                 title={`${selectedChapter} · ${selectedFile} · ${selectedPage}`}
                 section={null}
@@ -6575,24 +7692,24 @@ function App() {
                 mode={displayMode}
                 currentPage={selectedPage}
                 onPageChange={setSelectedPage}
-                onPageCountChange={(count) => setPageCounts((current) => ({ ...current, [language]: count }))}
+                onPageCountChange={(count) => setPageCounts((current) => ({ ...current, [pane.sourceKey]: count }))}
                 thumbnailsOpen={showThumbnails}
                 onThumbnailClick={(page) => {
                   setSelectedPage(page);
                   setDisplayMode('pagination');
                 }}
                 syncGroup={isBilingualView && displayMode === 'scrolling' ? `${selectedChapter}-${selectedFile}-bilingual` : ''}
-                syncId={language}
+                syncId={pane.sourceKey}
                 zoom={zoomLevel}
                 thumbCols={thumbCols}
                 fitMode={fitMode}
                 fitRefreshToken={fitRefreshToken}
                 onRenderScaleChange={(scale) => {
                   setRenderScaleByLanguage((current) => {
-                    if (current[language] === scale) {
+                    if (current[pane.sourceKey] === scale) {
                       return current;
                     }
-                    return { ...current, [language]: scale };
+                    return { ...current, [pane.sourceKey]: scale };
                   });
                 }}
                 onScrollCanvasesReady={() => setRedrawTick((t) => t + 1)}
@@ -6603,37 +7720,196 @@ function App() {
           })
           )}
           {textInputState && (
-            <textarea
-              ref={textInputRef}
-              className="text-annotation-textarea"
-              style={{
-                left: textInputState.canvasX,
-                top: textInputState.canvasY,
-                color: textColor,
-                borderColor: textColor,
-              }}
-              placeholder={_('textPlaceholder')}
-              defaultValue={textInputState.initialText || ''}
-              rows={2}
-              autoFocus
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
+            <>
+              {textInputState.editBox && (
+                <>
+                  <span
+                    className="text-annotation-width-handle west"
+                    style={{
+                      left: textInputState.canvasX - 15,
+                      top: textInputState.canvasY + Math.max(1, (textInputRef.current?.offsetHeight || textInputState.initialHeight || MIN_TEXT_HEIGHT) / 2) - 8,
+                    }}
+                    role="button"
+                    aria-label="Resize text width from left"
+                    title="Resize width"
+                    onPointerDown={(e) => beginTextEditDrag('w', e)}
+                    onPointerMove={handleTextEditDragMove}
+                    onPointerUp={endTextEditDrag}
+                    onPointerCancel={endTextEditDrag}
+                  />
+                  <span
+                    className="text-annotation-width-handle east"
+                    style={{
+                      left: textInputState.canvasX + Math.max(1, textInputState.initialWidth || textInputRef.current?.offsetWidth || MIN_TEXT_WIDTH) - 1,
+                      top: textInputState.canvasY + Math.max(1, (textInputRef.current?.offsetHeight || textInputState.initialHeight || MIN_TEXT_HEIGHT) / 2) - 8,
+                    }}
+                    role="button"
+                    aria-label="Resize text width from right"
+                    title="Resize width"
+                    onPointerDown={(e) => beginTextEditDrag('e', e)}
+                    onPointerMove={handleTextEditDragMove}
+                    onPointerUp={endTextEditDrag}
+                    onPointerCancel={endTextEditDrag}
+                  />
+                </>
+              )}
+              <div
+                className="text-annotation-toolbar"
+                style={{
+                  left: textInputState.canvasX,
+                  top: Math.max(0, textInputState.canvasY - 60),
+                }}
+                onPointerDown={(e) => {
                   e.preventDefault();
+                  e.stopPropagation();
+                }}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
+              >
+                {textInputState.editBox && (
+                  <div className="text-annotation-toolbar-group text-annotation-toolbar-actions">
+                    <button
+                      type="button"
+                      className="text-annotation-move-toolbar-btn"
+                      aria-label="Move text annotation"
+                      title="Move"
+                      onPointerDown={(e) => beginTextEditDrag('move', e)}
+                      onPointerMove={handleTextEditDragMove}
+                      onPointerUp={endTextEditDrag}
+                      onPointerCancel={endTextEditDrag}
+                    >
+                      <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                        <path d="M13 2l3.5 3.5L14.9 7 13 5.1V11h5.9L17 9.1l1.5-1.6L22 11l-3.5 3.5L17 12.9l1.9-1.9H13v5.9l1.9-1.9 1.6 1.5L13 20l-3.5-3.5 1.6-1.5 1.9 1.9V11H7.1L9 12.9l-1.5 1.6L4 11l3.5-3.5L9 9.1 7.1 11H13V5.1L11.1 7 9.5 5.5 13 2z" />
+                      </svg>
+                    </button>
+                  </div>
+                )}
+                <div className="text-annotation-toolbar-group">
+                  <button
+                    type="button"
+                    className="text-annotation-toolbar-btn"
+                    aria-label={_('decreaseFontSize')}
+                    title={_('decreaseFontSize')}
+                    onClick={() => {
+                      setTextInputState((prev) => prev ? { ...prev, fontSize: Math.max(10, Number(prev.fontSize || 16) - 1) } : prev);
+                    }}
+                  >
+                    -
+                  </button>
+                  <span className="text-annotation-toolbar-value">{Math.round(Number(textInputState.fontSize || 16))}</span>
+                  <button
+                    type="button"
+                    className="text-annotation-toolbar-btn"
+                    aria-label={_('increaseFontSize')}
+                    title={_('increaseFontSize')}
+                    onClick={() => {
+                      setTextInputState((prev) => prev ? { ...prev, fontSize: Math.min(72, Number(prev.fontSize || 16) + 1) } : prev);
+                    }}
+                  >
+                    +
+                  </button>
+                </div>
+                <div className="text-annotation-toolbar-group text-annotation-toolbar-colors">
+                  <button
+                    type="button"
+                    className="text-annotation-color-pill"
+                    aria-label={_('color')}
+                    title={_('color')}
+                    onClick={(e) => {
+                      colorBtnRef.current = e.currentTarget;
+                      setColorPickerOpen(true);
+                    }}
+                  >
+                    <span className="text-annotation-color-dot active" style={{ background: textColor }} />
+                  </button>
+                </div>
+                {textInputState.editBox && textInputState.existingCreatedAt && (
+                  <div className="text-annotation-toolbar-group text-annotation-toolbar-actions text-annotation-toolbar-actions-right">
+                    <button
+                      type="button"
+                      className="text-annotation-confirm-btn text-annotation-toolbar-icon-btn"
+                      aria-label="Confirm text annotation"
+                      title="Done"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        commitTextAnnotation();
+                      }}
+                    >
+                      <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                        <path d="M9.2 16.6 4.9 12.3 3.5 13.7l5.7 5.7L21 7.6 19.6 6.2 9.2 16.6z" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      className="text-annotation-delete-btn text-annotation-toolbar-icon-btn"
+                      aria-label="Delete text annotation"
+                      title="Delete"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        textInputCommittedRef.current = true;
+                        deleteRemarkByCreatedAt(textInputState.existingCreatedAt, textInputState.existingLangId || textInputState.langId, {
+                          pageIdOverride: textInputState.page || selectedPage,
+                          recordUndo: true,
+                          deletedRemark: textInputState.existingRemark,
+                        });
+                        selectedAnnotationRef.current = null;
+                        resizeHandleRef.current = null;
+                        resizeStartRef.current = null;
+                        moveAnnotationRef.current = null;
+                        moveStartPointRef.current = null;
+                        setTextInputState(null);
+                        updateAnnotationCursor('default');
+                        redrawAnnotationsNow();
+                      }}
+                    >
+                      <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                        <path d="M9 3h6l1 2h4v2H4V5h4l1-2zm1 6h2v9h-2V9zm4 0h2v9h-2V9zM7 9h2v10h6V9h2v12H7V9z" />
+                      </svg>
+                    </button>
+                  </div>
+                )}
+              </div>
+              <textarea
+                ref={textInputRef}
+                className={`text-annotation-textarea ${textInputState.editBox ? 'editing-selected-block' : ''}`}
+                style={{
+                  left: textInputState.canvasX,
+                  top: textInputState.canvasY,
+                  color: textColor,
+                  borderColor: textColor,
+                  fontSize: textInputState.fontSize ? `${textInputState.fontSize}px` : undefined,
+                  ...(textInputState.initialWidth ? { width: textInputState.initialWidth } : {}),
+                }}
+                placeholder={_('textPlaceholder')}
+                defaultValue={textInputState.initialText || ''}
+                rows={2}
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    commitTextAnnotation();
+                  }
+                  if (e.key === 'Escape') {
+                    e.preventDefault();
+                    cancelTextAnnotation();
+                  }
+                }}
+                onInput={handleTextEditorInput}
+                onBlur={() => {
+                  if (textInputState.editBox && (resizeHandleRef.current || moveAnnotationRef.current || textEditDragRef.current)) {
+                    setTimeout(() => textInputRef.current?.focus(), 0);
+                    return;
+                  }
+                  handleTextEditorInput();
+                  if (textInputCommittedRef.current) return;
                   commitTextAnnotation();
-                }
-                if (e.key === 'Escape') {
-                  e.preventDefault();
-                  cancelTextAnnotation();
-                }
-              }}
-              onBlur={() => {
-                if (textInputCommittedRef.current) {
-                  textInputCommittedRef.current = false;
-                  return;
-                }
-                commitTextAnnotation();
-              }}
-            />
+                }}
+              />
+            </>
           )}
           </>
           )}
@@ -6643,7 +7919,7 @@ function App() {
             style={{
               pointerEvents: tool === 'hand' ? 'none' : 'auto',
               touchAction: tool === 'hand' ? 'auto' : 'none',
-              cursor: tool === 'move' ? 'move' : tool === 'eraser' ? 'pointer' : tool === 'text' ? 'text' : tool === 'pen' || tool === 'highlight' ? 'crosshair' : 'default'
+              cursor: tool === 'move' ? annotationCursor : tool === 'eraser' ? 'pointer' : tool === 'text' ? 'text' : tool === 'pen' || tool === 'highlight' ? 'crosshair' : 'default'
             }}
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
@@ -6776,7 +8052,7 @@ function App() {
                       type="range"
                       className="tool-menu-zoom-range"
                       min="0.1"
-                      max="2"
+                      max="5"
                       step="0.05"
                       value={zoomLevel}
                       onChange={(e) => {
@@ -6800,7 +8076,8 @@ function App() {
                     className={`tool-menu-item ${fitMode === 'width' ? 'active' : ''}`}
                     onClick={() => {
                       if (isDebugZooming()) console.log('[zoom-app] fitWidth selected');
-                      setFitMode('width'); setZoomLevel(1); setFitRefreshToken((t) => t + 1); setZoomMenuOpen(false);
+                      const keepPage = selectedPage;
+                      setFitMode('width'); setZoomLevel(1); setFitRefreshToken((t) => t + 1); setSelectedPage(keepPage); setZoomMenuOpen(false);
                     }}
                   >
                     <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon">
@@ -6812,7 +8089,8 @@ function App() {
                     className={`tool-menu-item ${fitMode === 'height' ? 'active' : ''}`}
                     onClick={() => {
                       if (isDebugZooming()) console.log('[zoom-app] fitHeight selected');
-                      setFitMode('height'); setZoomLevel(1); setFitRefreshToken((t) => t + 1); setZoomMenuOpen(false);
+                      const keepPage = selectedPage;
+                      setFitMode('height'); setZoomLevel(1); setFitRefreshToken((t) => t + 1); setSelectedPage(keepPage); setZoomMenuOpen(false);
                     }}
                   >
                     <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon">
@@ -7500,6 +8778,26 @@ function App() {
                 placeholder={_('language')}
                 emptyText=""
                 toggleAriaLabel={_('switchLanguage')}
+                hideFilter
+                alwaysOpen
+              />
+            </div>
+          )}
+          {collapsedDropdownId === 'role' && (
+            <div data-collapsed-autocomplete="role">
+              <AutocompleteDropdown
+                items={[
+                  { id: 'student', primary: 'Student', searchText: 'student' },
+                  { id: 'teacher', primary: 'Teacher', searchText: 'teacher' },
+                  { id: 'dual', primary: 'Dual', searchText: 'dual' },
+                ]}
+                value={selectedRoleMode}
+                onSelect={(id) => { setSelectedRoleMode(id); setCollapsedDropdownId(null); }}
+                onOpenChange={(open) => { if (!open) setCollapsedDropdownId(null); }}
+                selectedDisplay={selectedRoleMode === 'student' ? 'Student' : selectedRoleMode === 'teacher' ? 'Teacher' : 'Dual'}
+                placeholder={_('toggleRole') || 'Role'}
+                emptyText=""
+                toggleAriaLabel={_('toggleRole') || 'Role'}
                 hideFilter
                 alwaysOpen
               />

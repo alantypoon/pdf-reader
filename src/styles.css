@@ -429,7 +429,7 @@ button, input, select {
 
 .sidebar {
   position: relative;
-  width: 320px;
+  width: 360px;
   height: calc(100dvh - var(--bottom-toolbar-offset, 0px));
   padding: 24px 24px calc(24px + var(--bottom-toolbar-offset, 0px));
   background: rgba(255, 255, 255, 0.9);
@@ -924,6 +924,16 @@ button, input, select {
   background: white;
 }
 
+.toggle-group-triple .toggle-btn {
+  min-width: 0;
+}
+
+.toggle-group.compact-text .toggle-btn {
+  font-size: 0.76rem;
+  padding-left: 4px;
+  padding-right: 4px;
+}
+
 .toggle-btn {
   flex: 1;
   display: inline-flex;
@@ -1370,7 +1380,7 @@ button, input, select {
 .text-annotation-textarea {
   position: absolute;
   z-index: 10;
-  min-width: 160px;
+  min-width: 40px;
   max-width: 380px;
   padding: 8px 12px;
   border: 2px solid;
@@ -1381,14 +1391,242 @@ button, input, select {
   font-size: 16px;
   line-height: 1.5;
   color: inherit;
-  resize: both;
+  resize: horizontal;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: normal;
+  word-break: normal;
+  box-sizing: border-box;
   outline: none;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15), 0 1px 4px rgba(0, 0, 0, 0.08);
   transition: box-shadow 150ms ease;
 }
 
+.text-annotation-textarea.editing-selected-block {
+  min-width: 1px;
+  max-width: none;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: none;
+  resize: horizontal;
+  overflow: hidden;
+}
+
 .text-annotation-textarea:focus {
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.22), 0 1px 6px rgba(0, 0, 0, 0.12);
+}
+
+.text-annotation-textarea.editing-selected-block:focus {
+  box-shadow: none;
+}
+
+.text-annotation-toolbar {
+  position: absolute;
+  z-index: 14;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: fit-content;
+  max-width: min(560px, calc(100vw - 24px));
+  padding: 8px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 12px 12px 0 0;
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(241, 245, 249, 0.96));
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.18);
+  backdrop-filter: blur(10px);
+  box-sizing: border-box;
+}
+
+.text-annotation-toolbar-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.text-annotation-toolbar-actions {
+  flex: 0 0 auto;
+}
+
+.text-annotation-toolbar-actions-right {
+  margin-left: auto;
+}
+
+.text-annotation-toolbar-colors {
+  flex-wrap: wrap;
+}
+
+.text-annotation-toolbar-btn {
+  min-width: 36px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #0f172a;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.text-annotation-toolbar-btn:hover {
+  background: #f8fafc;
+  border-color: #94a3b8;
+}
+
+.text-annotation-toolbar-value {
+  min-width: 2.5rem;
+  text-align: center;
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.text-annotation-color-dot {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  padding: 0;
+  border: 2px solid rgba(255, 255, 255, 0.96);
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.18);
+  cursor: pointer;
+}
+
+.text-annotation-color-dot.active {
+  box-shadow: 0 0 0 2px #2563eb, 0 0 0 4px rgba(37, 99, 235, 0.2);
+}
+
+.text-annotation-color-custom {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #f8fafc, #e2e8f0);
+  color: #334155;
+}
+
+.text-annotation-color-custom svg {
+  width: 14px;
+  height: 14px;
+}
+
+.text-annotation-color-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #fff;
+  color: #0f172a;
+  cursor: pointer;
+}
+
+.text-annotation-color-pill:hover {
+  background: #f8fafc;
+  border-color: #94a3b8;
+}
+
+.text-annotation-toolbar-icon-btn,
+.text-annotation-move-toolbar-btn {
+  position: static;
+  z-index: auto;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  box-shadow: none;
+  background: #fff;
+  cursor: pointer;
+}
+
+.text-annotation-move-toolbar-btn {
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  color: #2563eb;
+  cursor: move;
+}
+
+.text-annotation-move-toolbar-btn:hover {
+  background: #dbeafe;
+}
+
+.text-annotation-move-toolbar-btn svg {
+  width: 17px;
+  height: 17px;
+  fill: currentColor;
+}
+
+.text-annotation-confirm-btn,
+.text-annotation-delete-btn {
+  position: static;
+  z-index: auto;
+  width: 36px;
+  height: 36px;
+  border-width: 1px;
+  box-shadow: none;
+}
+
+.text-annotation-confirm-btn {
+  border-color: #bbf7d0;
+  color: #16a34a;
+}
+
+.text-annotation-confirm-btn:hover {
+  background: #dcfce7;
+  border-color: #86efac;
+}
+
+.text-annotation-delete-btn {
+  border-color: #fecaca;
+  color: #dc2626;
+}
+
+.text-annotation-delete-btn:hover {
+  background: #fee2e2;
+  border-color: #fca5a5;
+}
+
+.text-annotation-confirm-btn svg,
+.text-annotation-delete-btn svg {
+  width: 17px;
+  height: 17px;
+  fill: currentColor;
+}
+
+.text-annotation-width-handle {
+  position: absolute;
+  z-index: 13;
+  touch-action: none;
+  user-select: none;
+}
+
+.text-annotation-width-handle {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #2563eb;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 3px 10px rgba(15, 23, 42, 0.22);
+  cursor: ew-resize;
+}
+
+.text-annotation-width-handle::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 3px;
+  width: 4px;
+  height: 6px;
+  border-left: 1px solid #2563eb;
+  border-right: 1px solid #2563eb;
 }
 
 .text-annotation-textarea::placeholder {
@@ -2113,6 +2351,7 @@ button, input, select {
 .app-shell[data-fit-mode="none"] .book-stage.scrolling .pdf-scroll-pages {
   overflow: auto !important;
   touch-action: pan-x pan-y !important;
+  overscroll-behavior: contain !important;
 }
 /* Allow horizontal panning on all children when zooming freely */
 .app-shell[data-fit-mode="none"] .book-stage.scrolling .pdf-scroll-pages > * {
@@ -3812,6 +4051,33 @@ button, input, select {
   overflow-y: auto;
   padding: 24px 24px 124px 24px;
   background-color: #f8fafc;
+}
+
+/* Allow text selection inside the AI study material drawer */
+.ai-drawer-body,
+.ai-drawer-body * {
+  -webkit-user-select: text;
+  -moz-user-select: text;
+  -ms-user-select: text;
+  user-select: text;
+}
+
+/* Keep interactive elements unselectable so clicks work cleanly */
+.ai-drawer-body .flashcard,
+.ai-drawer-body .flashcard *,
+.ai-drawer-body .mcq-option,
+.ai-drawer-body .mcq-option *,
+.ai-drawer-body .ai-generate-btn,
+.ai-drawer-body .ai-retry-btn,
+.ai-drawer-body .ai-font-btn,
+.ai-drawer-body .ai-regenerate-btn,
+.ai-drawer-body .ai-reset-btn,
+.ai-drawer-body .ai-close-btn,
+.ai-drawer-body button {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
 }
 
 .ai-lookup-key {

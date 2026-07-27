@@ -11,3 +11,8 @@ logs/server.log
 logs/server.pid
 **/*.pyc
 public/assets/*
+_ref
+_prompts.txt
+
+_tmp_tpage/*
+_tmp_answer_audit_4a01.png

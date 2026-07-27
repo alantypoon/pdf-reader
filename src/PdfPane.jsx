@@ -68,6 +68,51 @@ function withTimestamp(url) {
  * @returns {{ top: number, left?: number }} scrollTo options
  */
 function centerAnchoredScroll(container, oldScrollTop, oldScrollHeight, axis = 'vertical', oldScrollLeft = 0, oldScrollWidth = 0, oldClientHeight = 0, oldClientWidth = 0) {
+  const activePinchAnchor = typeof window !== 'undefined' ? window.__pdfReaderPinchZoomAnchor : null;
+  if (activePinchAnchor?.target === container && Date.now() - activePinchAnchor.createdAt < 1000) {
+    // Use the image-fraction approach: find where the pinch point's fraction
+    // lands in the now-resized image, then scroll so that point stays at the
+    // same screen position (offsetX/Y from the container edge).
+    const pageEl = container.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
+    const containerRect = container.getBoundingClientRect();
+    const pageRect = pageEl ? pageEl.getBoundingClientRect() : null;
+    if (pageRect && pageRect.width > 0 && pageRect.height > 0 && activePinchAnchor.fracX != null) {
+      const newPointInImgX = activePinchAnchor.fracX * pageRect.width;
+      const newPointInImgY = activePinchAnchor.fracY * pageRect.height;
+      const currentScreenX = pageRect.left + newPointInImgX;
+      const currentScreenY = pageRect.top + newPointInImgY;
+      const desiredScreenX = containerRect.left + activePinchAnchor.offsetX;
+      const desiredScreenY = containerRect.top + activePinchAnchor.offsetY;
+      const dx = currentScreenX - desiredScreenX;
+      const dy = currentScreenY - desiredScreenY;
+      const newTop = container.scrollTop + dy;
+      const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+      const result = { top: Math.max(0, Math.min(newTop, maxTop)), behavior: 'instant' };
+      if (axis === 'both') {
+        const newLeft = container.scrollLeft + dx;
+        const maxLeft = Math.max(0, container.scrollWidth - container.clientWidth);
+        result.left = Math.max(0, Math.min(newLeft, maxLeft));
+      }
+      return result;
+    }
+    // Fallback: ratio-based
+    const refOldHeight = activePinchAnchor.scrollHeight;
+    const refOldWidth = activePinchAnchor.scrollWidth;
+    const contentY = activePinchAnchor.scrollTop + activePinchAnchor.offsetY;
+    const yRatio = refOldHeight > 0 ? contentY / refOldHeight : 0;
+    const newTop = yRatio * container.scrollHeight - activePinchAnchor.offsetY;
+    const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    const result = { top: Math.max(0, Math.min(newTop, maxTop)), behavior: 'instant' };
+    if (axis === 'both') {
+      const contentX = activePinchAnchor.scrollLeft + activePinchAnchor.offsetX;
+      const xRatio = refOldWidth > 0 ? contentX / refOldWidth : 0;
+      const newLeft = xRatio * container.scrollWidth - activePinchAnchor.offsetX;
+      const maxScrollLeft = Math.max(0, container.scrollWidth - container.clientWidth);
+      result.left = Math.max(0, Math.min(newLeft, maxScrollLeft));
+    }
+    return result;
+  }
+
   // Use OLD client dimensions for the viewport-center calculation so that
   // scrollbar appearance/disappearance doesn't skew the result.
   const refClientHeight = oldClientHeight > 0 ? oldClientHeight : container.clientHeight;
@@ -463,6 +508,7 @@ function PdfPane({
   onScrollCanvasesReady,
   language = 'en',
   paneLanguage = 'en',
+  paneRole = 'student',
   maxPagesInGroup = 0,
   hideHeader = false
 }) {
@@ -516,6 +562,9 @@ function PdfPane({
   // NEW subject, but the DOM still has the OLD subject's pages.  We must
   // save the old position under the OLD key, not the new one.
   const activeDomSourceRef = useRef(source || '');
+  // Track the last maxPagesInGroup so we can detect when blank pages are
+  // added/removed due to page-count mismatch in bilingual mode.
+  const lastMaxPagesRef = useRef(maxPagesInGroup);
   // Keep refs in sync so the pagehide handler (which runs in an effect with
   // empty deps) can still access the latest values.
   useEffect(() => { syncGroupRef.current = syncGroup; }, [syncGroup]);
@@ -528,6 +577,34 @@ function PdfPane({
   // changing after CSS width is set).  The key (zoom+fitMode) prevents the second
   // run from overwriting the correct old-dimensions capture.
   const zoomAnchorRef = useRef({ key: '', zoom: 0, scrollTop: 0, scrollLeft: 0, scrollHeight: 0, scrollWidth: 0, clientHeight: 0, clientWidth: 0 });
+
+  // ── Save scroll position on unmount ───────────────────────
+  // useLayoutEffect cleanup runs BEFORE React removes DOM children,
+  // so scrollHeight/scrollTop are still available.  Regular useEffect
+  // cleanup runs AFTER DOM removal, losing the position.
+  // This ensures scroll position survives when React unmounts a Pane
+  // (e.g. toggling bilingual → EN-only unmounts the TC pane, or
+  // switching role/display-mode that changes visiblePanes).
+  useLayoutEffect(() => {
+    return () => {
+      const mount = scrollRef.current;
+      if (!mount || mount.scrollHeight <= 0) return;
+      if (isInitialLoadRef.current) return;
+      // Save under the key of whatever source last built the DOM
+      const domSource = activeDomSourceRef.current || source;
+      const cacheKey = getScrollCacheKey(domSource);
+      const pos = getScrollPos(mount);
+      const { page, pageEl } = findContainingPage(mount, pos.scrollTop);
+      const relativeTop = pageEl ? Math.max(0, pos.scrollTop - pageEl.offsetTop) : pos.scrollTop;
+      const displayHeight = getPageHeight(pageEl);
+      const fraction = displayHeight > 0 ? Math.min(1, Math.max(0, relativeTop / displayHeight)) : 0;
+      saveScrollPos(cacheKey, { top: fraction, left: pos.scrollLeft, page, pageHeight: Math.round(displayHeight) });
+      flushScrollStorage();
+      if (isDebugScrollingPersistence()) {
+        console.log(`[scroll-save] ${cacheKey}  UNMOUNT  page=${page}  fraction=${fraction.toFixed(4)}  ph=${Math.round(displayHeight)}`);
+      }
+    };
+  }, [source, mode]);
 
   // Keep the refs in sync so the scrolling effect always sees the latest page
   useEffect(() => {
@@ -776,6 +853,8 @@ function PdfPane({
       const stored = loadScrollPos(source);
       const holderPos = getScrollPos(holder);
       const useStored = stored && holderPos.scrollTop === 0 && holderPos.scrollLeft === 0;
+      const pageAnchor = findContainingPage(holder, holderPos.scrollTop);
+      const anchorPage = pageAnchor.page || currentPageRef.current || currentPage;
       if (isDebugScrollingPersistence()) console.log(`[scroll-load] ${source}  pagination  stored=${!!stored}  useStored=${useStored}  top=${stored?.top}`);
       if (useStored) scrollRestoredRef.current = true;
       const oldScrollTop = useStored ? stored.top : holderPos.scrollTop;
@@ -869,6 +948,15 @@ function PdfPane({
       }
       if ((postHeightChanged || postWidthChanged) && !_scrollRestoreInProgress) {
         myScrollTo(holder, centerAnchoredScroll(holder, oldScrollTop, oldScrollHeight, 'both', oldScrollLeft, oldScrollWidth, oldClientHeight, oldClientWidth));
+      }
+      if ((fitMode === 'width' || fitMode === 'height') && !_scrollRestoreInProgress) {
+        const targetPageEl = holder.querySelector(`[data-page="${anchorPage}"]`);
+        if (targetPageEl) {
+          mySetScrollTop(holder, targetPageEl.offsetTop);
+          if (typeof onPageChange === 'function' && currentPageRef.current !== anchorPage) {
+            onPageChange(anchorPage);
+          }
+        }
       }
       setRenderedPage(currentPage);
       // Don't fire onPageChange for blank pages — the page number is intentionally
@@ -1117,7 +1205,15 @@ function PdfPane({
     let disposed = false;
     let pageRefreshTimer = null;
     const gen = modeGenRef.current;
-    mount.style.justifyItems = 'center';
+    if (fitMode === 'none' && zoom < 1) {
+      mount.style.display = 'flex';
+      mount.style.flexDirection = 'column';
+      mount.style.alignItems = 'center';
+    } else {
+      mount.style.display = '';
+      mount.style.flexDirection = '';
+      mount.style.alignItems = '';
+    }
     mount.style.overflowX = fitMode === 'none' ? 'auto' : 'hidden';
 
     // Measure the base (unzoomed) width. In bilingual mode, compute from
@@ -1129,17 +1225,26 @@ function PdfPane({
       const stage = mount.closest('.book-stage');
       baseWidth = getBilingualColumnWidth(stage);
     } else {
+      // Clear any zoom width left over from the previous render BEFORE
+      // measuring — otherwise getBoundingClientRect() returns the already
+      // -zoomed width, and the scale computed below compounds on top of
+      // it every time this effect re-runs (e.g. on every pinch-zoom frame),
+      // making zoom feel far more aggressive than the actual finger motion.
+      if (contentRef.current) {
+        contentRef.current.style.width = '';
+      }
       const baseRect = contentRef.current ? contentRef.current.getBoundingClientRect() : mount.getBoundingClientRect();
       baseWidth = Math.max(180, baseRect.width);
     }
 
     if (contentRef.current) {
-      contentRef.current.style.overflow = fitMode === 'none' ? 'visible' : 'hidden';
-      // Drive zoom by changing .pdf-content width so it's visible in CSS
-      contentRef.current.style.width = fitMode === 'none' ? `${100 * zoom}%` : '';
+      contentRef.current.style.overflow = '';
+      contentRef.current.style.width = '';
+      contentRef.current.style.margin = '';
     }
-    // Constrain .pdf-scroll-pages to the base (viewport) width so its content overflows → scrollbar
+    // Mount is always full viewport width — content overflows when zoomed in.
     mount.style.width = `${baseWidth}px`;
+    mount.style.margin = '';
 
     // In bilingual mode, inject the CSS height rule BEFORE canvases enter
     // the DOM so they render at the correct size from the start.
@@ -1258,10 +1363,13 @@ function PdfPane({
       // ── Save current scroll position BEFORE clearing the DOM ──
       // Ensures the last-viewed position is preserved in localStorage when
       // the user switches subject/book/language without a recent scroll.
-      // Only fires when the source has CHANGED (activeDomSourceRef differs
-      // from current source) — on initial load they are equal, so we skip
-      // to avoid overwriting the real saved position with (0,0) defaults.
-      if (mount.scrollHeight > 0 && activeDomSourceRef.current && activeDomSourceRef.current !== (source || '')) {
+      // Fires when the source has CHANGED (activeDomSourceRef differs
+      // from current source), OR maxPagesInGroup changed — because the
+      // DOM will be rebuilt even if the source string is identical
+      // (e.g. toggling bilingual→single-language, or role change).
+      // On initial load they are equal, so we skip to avoid overwriting
+      // the real saved position with (0,0) defaults.
+      if (mount.scrollHeight > 0 && activeDomSourceRef.current && (activeDomSourceRef.current !== (source || '') || lastMaxPagesRef.current !== maxPagesInGroup)) {
         const prevDomKey = getScrollCacheKey(activeDomSourceRef.current || source);
         const prePos = getScrollPos(mount);
         const { page: prePage, pageEl: prePageEl } = findContainingPage(mount, prePos.scrollTop);
@@ -1271,7 +1379,7 @@ function PdfPane({
         saveScrollPos(prevDomKey, { top: preFrac, left: prePos.scrollLeft, page: prePage, pageHeight: Math.round(preDispH) });
         flushScrollStorage(); // persist immediately — next render may clear the DOM
         if (isDebugScrollingPersistence()) {
-          console.log(`[scroll-save] ${prevDomKey}  PRE-REBUILD  page=${prePage}  fraction=${preFrac.toFixed(4)}  ph=${Math.round(preDispH)}  oldSource=${activeDomSourceRef.current}  newSource=${source}`);
+          console.log(`[scroll-save] ${prevDomKey}  PRE-REBUILD  page=${prePage}  fraction=${preFrac.toFixed(4)}  ph=${Math.round(preDispH)}  oldSource=${activeDomSourceRef.current}  newSource=${source}  maxPgsChanged=${lastMaxPagesRef.current !== maxPagesInGroup}`);
         }
       }
 
@@ -1285,6 +1393,7 @@ function PdfPane({
       // Track which source built this DOM so the pre-rebuild save uses the
       // correct key on the next effect run (e.g. after a subject/book switch).
       activeDomSourceRef.current = source || '';
+      lastMaxPagesRef.current = maxPagesInGroup;
 
       // Bilingual: after DOM settles, position every page at
       // pageY = (pageIndex) × max(all EN+TC heights) via absolute positioning.
@@ -1874,10 +1983,16 @@ function PdfPane({
     // ── Save current scroll position BEFORE clearing the DOM ──
     // Ensures the last-viewed position is preserved in localStorage even
     // if the user switches subject/book/language without a recent scroll.
-    // Only fires when the source has CHANGED (activeDomSourceRef differs
-    // from current source) — on initial load they are equal, so we skip
-    // to avoid overwriting the real saved position with (0,0) defaults.
-    if (mount.scrollHeight > 0 && activeDomSourceRef.current && activeDomSourceRef.current !== (source || '')) {
+    // Fires when the source has CHANGED (activeDomSourceRef differs
+    // from current source), OR when images/maxPagesInGroup changed —
+    // because the DOM will be rebuilt even if the source string is identical
+    // (e.g. toggling bilingual→single-language, or role change within same
+    // language).  On initial load they are equal, so we skip to avoid
+    // overwriting the real saved position with (0,0) defaults.
+    const imagesChanged = lastImagesRef.current !== images;
+    const maxPagesChanged = lastMaxPagesRef.current !== maxPagesInGroup;
+    const sourceChanged = activeDomSourceRef.current !== (source || '');
+    if (mount.scrollHeight > 0 && activeDomSourceRef.current && (sourceChanged || imagesChanged || maxPagesChanged)) {
       const preRebuildPos = getScrollPos(mount);
       const { page: prePage, pageEl: prePageEl } = findContainingPage(mount, preRebuildPos.scrollTop);
       const preRelTop = prePageEl ? Math.max(0, preRebuildPos.scrollTop - prePageEl.offsetTop) : preRebuildPos.scrollTop;
@@ -1887,14 +2002,24 @@ function PdfPane({
       saveScrollPos(prevDomKey, { top: preFrac, left: preRebuildPos.scrollLeft, page: prePage, pageHeight: Math.round(preDispH) });
       flushScrollStorage(); // persist immediately — next render may clear the DOM
       if (isDebugScrollingPersistence()) {
-        console.log(`[scroll-save] ${prevDomKey}  PRE-REBUILD  page=${prePage}  fraction=${preFrac.toFixed(4)}  ph=${Math.round(preDispH)}  oldSource=${activeDomSourceRef.current}  newSource=${source}`);
+        console.log(`[scroll-save] ${prevDomKey}  PRE-REBUILD  page=${prePage}  fraction=${preFrac.toFixed(4)}  ph=${Math.round(preDispH)}  oldSource=${activeDomSourceRef.current}  newSource=${source}  imgsChanged=${imagesChanged}  maxPgsChanged=${maxPagesChanged}`);
       }
     }
 
     mount.innerHTML = '';
-    mount.style.justifyItems = 'center';
+    // Center pages when zoomed out (flex column + align-items center)
+    if (fitMode === 'none' && zoom < 1) {
+      mount.style.display = 'flex';
+      mount.style.flexDirection = 'column';
+      mount.style.alignItems = 'center';
+    } else {
+      mount.style.display = '';
+      mount.style.flexDirection = '';
+      mount.style.alignItems = '';
+    }
 
     const isBilingual = maxPagesInGroup > 0;
+    lastMaxPagesRef.current = maxPagesInGroup;
 
     // Measure the base (unzoomed) width. In bilingual mode, compute from
     // the SHARED parent (.book-stage) so both panes get the EXACT same
@@ -1910,10 +2035,15 @@ function PdfPane({
 
     // Apply zoom at the .pdf-content level so CSS width reflects the zoom percentage
     if (contentRef.current) {
-      contentRef.current.style.width = fitMode === 'none' ? `${100 * zoom}%` : '';
+      // When zoomed out, don't shrink .pdf-content — keep it full width so
+      contentRef.current.style.width = '';
+      contentRef.current.style.overflow = '';
+      contentRef.current.style.margin = '';
     }
-    // Constrain .pdf-scroll-pages to the base (viewport) width so its content overflows → scrollbar
+    // Mount is always full viewport width. Images inside overflow it when
+    // zoomed in (scrollbar appears), or are narrower and centered when zoomed out.
     mount.style.width = `${baseWidth}px`;
+    mount.style.margin = '';
     // Override CSS height:100% with an explicit pixel height matching the
     // available viewport.  height:100% on overflow:auto can cause WebKit
     // to add the container's box height to scrollHeight, creating blank
@@ -2020,15 +2150,19 @@ function PdfPane({
     const fragment = document.createDocumentFragment();
 
     // ── Progressive DOM insertion ──────────────────────────
-    // Only insert images within ±3 of the current page into the
+    // Only insert images within the preload window of the current page into the
     // initial DOM.  For all other pages, insert lightweight placeholder
     // <div> elements with the same explicit height so scrollHeight is
     // correct from the start.  The lazy loader replaces placeholders
     // with real <img> elements as the user scrolls near them.
     //
     // This keeps the initial render fast when switching subjects —
-    // only ~7 pages hit the DOM synchronously instead of 50+.
-    const INITIAL_WINDOW = 3;
+    // only nearby pages hit the DOM synchronously instead of 50+.
+    // Estimate how many pages are visible at this zoom to size the window.
+    const initMountH = Math.max(180, mount.getBoundingClientRect().height || 500);
+    const initEstPageH = baseWidth * zoom * Math.SQRT2;
+    const initVisibleCount = Math.max(1, Math.ceil(initMountH / Math.max(50, initEstPageH)));
+    const INITIAL_WINDOW = Math.max(3, initVisibleCount + 2);
     for (let i = 0; i < imgElements.length; i++) {
       const dist = Math.abs(i + 1 - currentPage);
       if (dist <= INITIAL_WINDOW || isBilingual) {
@@ -2108,10 +2242,13 @@ function PdfPane({
       });
     }
 
-    // Viewport-aware lazy loader — max 2 concurrent, preload 3 pages around current page.
-    // Before the FIRST image loads, cap to 1 concurrent — the selected page must
-    // paint as fast as possible before we waste bandwidth on surrounding pages.
-    const PRELOAD_WINDOW = 3;
+    // Viewport-aware lazy loader — preload pages around current page.
+    // When zoomed out, more pages are visible so widen the preload window.
+    // Estimate visible pages: viewport height / page height (at current zoom).
+    const lazyMountH = Math.max(180, mount.getBoundingClientRect().height || 500);
+    const estPageH = baseWidth * zoom * Math.SQRT2; // estimated page height at current zoom
+    const visiblePageCount = Math.max(1, Math.ceil(lazyMountH / Math.max(50, estPageH)));
+    const PRELOAD_WINDOW = Math.max(3, visiblePageCount + 2);
     let loading = 0;
     let _firstImageLoaded = false;
     const loadedSet = new Set(); // indices of pages loaded or currently loading
@@ -2123,7 +2260,8 @@ function PdfPane({
       if (loadedSet.has(idx)) return false; // already loaded/loading
       // Before the first image finishes, only load one at a time so the
       // selected page gets all the bandwidth and paints immediately.
-      if (loading >= (_firstImageLoaded ? 2 : 1)) return false;
+      const maxConcurrent = _firstImageLoaded ? Math.min(4, PRELOAD_WINDOW) : 1;
+      if (loading >= maxConcurrent) return false;
       const img = imgElements[idx];
       const url = img.dataset.src;
       if (!url || img.src) return false;
@@ -2734,9 +2872,6 @@ function PdfPane({
     }
 
     mount.style.overflowX = fitMode === 'none' ? 'auto' : 'hidden';
-    if (contentRef.current) {
-      contentRef.current.style.overflow = fitMode === 'none' ? 'visible' : 'hidden';
-    }
 
     // Measure the true base width by temporarily clearing any zoom width,
     // then re-apply the zoom width. All synchronous — no visible flash.
@@ -2747,11 +2882,16 @@ function PdfPane({
     const baseWidth = Math.max(180, rawRect.width);
 
     if (contentRef.current) {
-      // Drive zoom by changing .pdf-content width so it's visible in CSS
-      contentRef.current.style.width = fitMode === 'none' ? `${100 * zoom}%` : '';
+      contentRef.current.style.width = '';
+      contentRef.current.style.overflow = '';
     }
-    // Constrain .pdf-scroll-pages to the base width so content overflows → scrollbar
+    // Mount is always full viewport width — images overflow when zoomed in.
     mount.style.width = `${baseWidth}px`;
+    mount.style.margin = '';
+    // Clear flex centering BEFORE resizing images — flex would prevent overflow
+    mount.style.display = '';
+    mount.style.flexDirection = '';
+    mount.style.alignItems = '';
 
     // In bilingual mode, recalculate max page height on every resize.
     // The injected CSS rule and absolute positioning must reflect the new
@@ -2798,6 +2938,19 @@ function PdfPane({
           img.style.maxWidth = 'none';
         });
       }
+    }
+
+    // When zoomed out (content fits), center pages and reset scroll.
+    // When zoomed in (content overflows), remove centering so scroll works.
+    if (mount.scrollWidth <= mount.clientWidth + 1) {
+      mount.scrollLeft = 0;
+      mount.style.display = 'flex';
+      mount.style.flexDirection = 'column';
+      mount.style.alignItems = 'center';
+    } else {
+      mount.style.display = '';
+      mount.style.flexDirection = '';
+      mount.style.alignItems = '';
     }
 
     // Report the render scale for the zoom percentage display.
@@ -2849,21 +3002,35 @@ function PdfPane({
     const oldSH = old.scrollHeight;
     const oldSW = old.scrollWidth;
 
+    // ── Pinch-to-zoom anchor: when a 2-finger pinch gesture is driving this
+    // zoom change, anchor on the finger midpoint (set by App.jsx's touch
+    // handler) instead of the viewport center — matches native pinch-zoom
+    // behaviour and the anchoring already used for PDF-canvas/pagination.
+    const activePinchAnchor = typeof window !== 'undefined' ? window.__pdfReaderPinchZoomAnchor : null;
+    const pinchAnchorActive = activePinchAnchor?.target === mount && Date.now() - activePinchAnchor.createdAt < 1000;
+    const anchorOffsetY = pinchAnchorActive ? activePinchAnchor.offsetY : oldCH / 2;
+    const anchorOffsetX = pinchAnchorActive ? activePinchAnchor.offsetX : oldCW / 2;
+    if (isDebugZooming() && pinchAnchorActive) {
+      console.log('[zoom-img-scrolling] using pinch-midpoint anchor', {
+        anchorOffsetX: anchorOffsetX.toFixed(1), anchorOffsetY: anchorOffsetY.toFixed(1),
+      });
+    }
+
     // ═══ PHASE 1 (synchronous): apply estimated scroll immediately ═══
     // Only needed when zoom actually changed — for contentWidth-only re-runs
     // the browser naturally preserves scrollTop at the correct content position.
     if (zoomChanged) {
       // Vertical: content is top-aligned, simple zoom-factor scaling
-      const estNewTop = (old.scrollTop + oldCH / 2) * zoomRatio - oldCH / 2;
+      const estNewTop = (old.scrollTop + anchorOffsetY) * zoomRatio - anchorOffsetY;
 
       // Horizontal: account for CSS centering offset in old state
       const oldContentFits = oldSW <= oldCW + 1;
       const oldHOffset = oldContentFits ? (oldCW - oldSW) / 2 : 0;
-      const contentCenterX = old.scrollLeft + oldCW / 2 - oldHOffset;
+      const contentCenterX = old.scrollLeft + anchorOffsetX - oldHOffset;
       // Estimate new centering: if content was already overflowing, it stays overflowed
       const estNewContentFits = oldContentFits && (zoomRatio <= 1.01);
       const estNewHOffset = estNewContentFits ? (oldCW - oldSW * zoomRatio) / 2 : 0;
-      const estNewLeft = contentCenterX * zoomRatio + estNewHOffset - oldCW / 2;
+      const estNewLeft = contentCenterX * zoomRatio + estNewHOffset - anchorOffsetX;
 
       // Clamp and apply synchronously (before browser paints)
       const estMaxTop = Math.max(0, oldSH * zoomRatio - oldCH);
@@ -2893,9 +3060,11 @@ function PdfPane({
 
     // ═══ PHASE 2 (async): fine-tune using actual layout dimensions ═══
     // Compute horizontal centering from the "old" state (same as Phase 1).
+    // Reuses the same anchorOffsetX/Y (pinch-midpoint or viewport-center)
+    // established above so both phases anchor on the same point.
     const phase2OldContentFits = oldSW <= oldCW + 1;
     const phase2OldHOffset = phase2OldContentFits ? (oldCW - oldSW) / 2 : 0;
-    const phase2ContentCenterX = old.scrollLeft + oldCW / 2 - phase2OldHOffset;
+    const phase2ContentCenterX = old.scrollLeft + anchorOffsetX - phase2OldHOffset;
 
     const timer = setTimeout(() => {
       if (!mount) return;
@@ -2904,16 +3073,16 @@ function PdfPane({
       const newSH = mount.scrollHeight;
       const newSW = mount.scrollWidth;
 
-      // Vertical: viewport-center anchored scaling
-      const vpCenterY = old.scrollTop + oldCH / 2;
+      // Vertical: anchor-point (pinch midpoint or viewport-center) scaling
+      const vpCenterY = old.scrollTop + anchorOffsetY;
       const scaleY = oldSH > 0 ? newSH / oldSH : 1;
-      const newTop = vpCenterY * scaleY - newCH / 2;
+      const newTop = vpCenterY * scaleY - anchorOffsetY;
 
       // Horizontal (with actual new centering offset)
       const newContentFits = newSW <= newCW + 1;
       const newHOffset = newContentFits ? (newCW - newSW) / 2 : 0;
       const scaleX = oldSW > 0 ? newSW / oldSW : 1;
-      const newLeft = phase2ContentCenterX * scaleX + newHOffset - newCW / 2;
+      const newLeft = phase2ContentCenterX * scaleX + newHOffset - anchorOffsetX;
 
       const maxTop = Math.max(0, newSH - newCH);
       const maxLeft = Math.max(0, newSW - newCW);
@@ -2972,6 +3141,7 @@ function PdfPane({
     <section
       className="page-frame page-card pdf-pane"
       data-annotation-language={paneLanguage}
+      data-annotation-role={paneRole}
     >
       {showLoadingOverlay && isImageMode && (
         <div className="pdf-loading-overlay">

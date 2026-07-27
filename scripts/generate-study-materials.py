@@ -50,13 +50,42 @@ _CONFIG_KEYS = {'DATA_PATH', 'MONGODB_URI',
 if ENV_FILE.exists():
     with open(ENV_FILE, encoding='utf-8') as fh:
         for line in fh:
-            line = line.strip()
-            if line and not line.startswith('#') and '=' in line:
-                key, _, value = line.partition('=')
-                key = key.strip()
-                value = value.strip().strip('"').strip("'")
-                if key in _CONFIG_KEYS and value:
-                    os.environ[key] = value
+            line = line.rstrip('\n\r')
+            stripped = line.strip()
+            if not stripped or stripped.startswith('#'):
+                continue
+            if '=' not in stripped:
+                continue
+            key, _, remainder = stripped.partition('=')
+            key = key.strip()
+            if key not in _CONFIG_KEYS:
+                continue
+
+            # Handle multi-line quoted values (e.g. VLLM_APIKEY spanning lines)
+            val = remainder.strip()
+            if len(val) >= 2 and ((val.startswith('"') and val.endswith('"')) or
+                                  (val.startswith("'") and val.endswith("'"))):
+                val = val[1:-1]
+            elif val.startswith('"') or val.startswith("'"):
+                quote_char = val[0]
+                inner = val[1:]
+                closing_found = False
+                while not closing_found:
+                    idx = inner.find(quote_char)
+                    if idx >= 0:
+                        inner = inner[:idx]
+                        closing_found = True
+                        break
+                    next_line = fh.readline()
+                    if not next_line:
+                        break
+                    inner += '\n' + next_line.rstrip('\n\r')
+                val = inner.strip()
+            else:
+                val = val.strip().strip('"').strip("'")
+
+            if val:
+                os.environ[key] = val
 
 MONGO_URI = os.environ.get('MONGODB_URI', 'mongodb://localhost:27017/pdf-reader')
 
@@ -1385,15 +1414,77 @@ def _generate_with_retry(generate_fn, label, step_name):
 
 # ── Discovery helpers ──────────────────────────────────────
 
+def _natural_id_sort_key(value):
+    text = str(value).strip()
+    match = re.match(r'^(\d+(?:\.\d+)?)([a-z]*)$', text, re.IGNORECASE)
+    if match:
+        return (0, float(match.group(1)), match.group(2).lower(), text)
+    return (1, 0, '', text)
+
+
+def _looks_like_book_dir(book_dir):
+    """Return True for book directories backed by contents.json, PDFs, or split pages."""
+    if (book_dir / 'contents.json').exists():
+        return True
+
+    for lang in ('en', 'tc'):
+        for audience_dir in ('contents', 'contents.tn'):
+            content_dir = book_dir / lang / audience_dir
+            if not content_dir.is_dir():
+                continue
+            if any(p.suffix.lower() == '.pdf' for p in content_dir.iterdir() if p.is_file()):
+                return True
+            pages_dir = content_dir / 'pages'
+            if pages_dir.is_dir() and any(
+                p.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp')
+                for p in pages_dir.iterdir()
+                if p.is_file()
+            ):
+                return True
+
+    return False
+
+
+def _infer_sections_from_page_assets(subject, book):
+    """Infer section IDs from PDF names or generated page images when contents.json is absent."""
+    book_dir = DATA_DIR / subject / book
+    sections = set()
+
+    for lang in ('en', 'tc'):
+        contents_dir = book_dir / lang / 'contents'
+        if not contents_dir.is_dir():
+            continue
+
+        for pdf in contents_dir.iterdir():
+            if pdf.is_file() and pdf.suffix.lower() == '.pdf':
+                sec = pdf.stem.split('-', 1)[0]
+                if sec:
+                    sections.add(sec)
+
+        pages_dir = contents_dir / 'pages'
+        if pages_dir.is_dir():
+            for image in pages_dir.iterdir():
+                if not image.is_file() or image.suffix.lower() not in ('.png', '.jpg', '.jpeg', '.webp'):
+                    continue
+                sec = image.stem.split('-', 1)[0]
+                if sec:
+                    sections.add(sec)
+
+    return [
+        {'section': sec, 'en_name': sec, 'tc_name': sec}
+        for sec in sorted(sections, key=_natural_id_sort_key)
+    ]
+
 def discover_subjects():
     """Return sorted list of subject directories (those containing book dirs)."""
     subjects = []
     for entry in sorted(DATA_DIR.iterdir()):
         if not entry.is_dir() or entry.name.startswith('.') or entry.name.startswith('_'):
             continue
-        # Must have at least one child directory with a contents.json
+        # Include subjects with metadata-backed books and PDF/page-backed books
+        # such as math-oup, which may not have contents.json files.
         for child in entry.iterdir():
-            if child.is_dir() and (child / 'contents.json').exists():
+            if child.is_dir() and _looks_like_book_dir(child):
                 subjects.append(entry.name)
                 break
     return subjects
@@ -1403,16 +1494,19 @@ def discover_books(subject):
     """Return sorted list of book IDs under a subject."""
     subject_dir = DATA_DIR / subject
     books = []
-    for entry in sorted(subject_dir.iterdir()):
+    for entry in sorted(subject_dir.iterdir(), key=lambda p: _natural_id_sort_key(p.name)):
         if entry.is_dir() and not entry.name.startswith('.'):
-            if (entry / 'contents.json').exists():
+            if _looks_like_book_dir(entry):
                 books.append(entry.name)
     return books
 
 
 def discover_sections(subject, book):
-    """Return list of {section, en_name, tc_name} from contents.json."""
+    """Return list of {section, en_name, tc_name} from contents.json or page assets."""
     contents_file = DATA_DIR / subject / book / 'contents.json'
+    if not contents_file.is_file():
+        return _infer_sections_from_page_assets(subject, book)
+
     with open(contents_file, encoding='utf-8') as fh:
         data = json.load(fh)
 

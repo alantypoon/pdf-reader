@@ -253,3 +253,98 @@ After any previous or next page buttons (on left sidebar page number select, the
 check how many undo stacks are on the modal tool dialog as well
 
 
+
+///
+
+in text editing block, make sure:
+
+it can resize and move freely
+it won't duplicate itself visually
+the editing box will be closed once tick or delete is clicked.
+
+////
+
+carefully implement ontouch event on touchscreen device such as ipad and iphone, so that pinch in to zoom in and pinch out to zoom out and adjust the zoom level accordingly.
+
+
+////
+
+generate a script at /var/www/html/pdf-reader/scripts/copy-biology-oup-tn.py that copies the files in /var/www/html/pdf-reader/_ref/biology-oup-tn to: 
+
+/var/www/html/pdf-reader/data/biology-oup/<bookId>/en/contents.tn/<sectionId>.pdf
+from ./<en/tc>/NSSBIO3E_SB<bookId>_Ch<sectionId>_e.pdf
+
+/var/www/html/pdf-reader/data/biology-oup/<bookId>/tc/contents.tn/<sectionId>.pdf
+from ./<en/tc>/NSSBIO3E_SB<bookId>_Ch<sectionId>_c.pdf
+
+extract the code for watermark removal from /var/www/html/pdf-reader/scripts/remove_watermark.py
+and use it beforing writing to the target file
+
+where e=en=english, c=tc=chinese
+sectionId will take 2 digits, when there is only digit, add a leading zero there.
+
+do not overwrite when the target files already exist
+
+generate the folders contents.tn when they do not exist 
+
+
+////
+
+generate a script at /var/www/html/pdf-reader/scripts/copy-math-oup.py that copies the files in /var/www/html/pdf-reader/_ref/math-oup-tn to: 
+
+/var/www/html/pdf-reader/data/math-oup/<bookId>/en/contents/<sectionId>.pdf
+from ./<en/tc>/OSM_TBPDF_<bookId><sectionId>_e.pdf
+/var/www/html/pdf-reader/data/math-oup/<bookId>/en/contents.tn/<sectionId>.pdf
+from ./<en/tc>/OSM_TBPDF__TN_<bookId><sectionId>_e.pdf
+
+/var/www/html/pdf-reader/data/math-oup/<bookId>/tc/contents/<sectionId>.pdf
+from ./<en/tc>/OSM_TBPDF_<bookId><sectionId>_c.pdf
+/var/www/html/pdf-reader/data/math-oup/<bookId>/tc/contents.tn/<sectionId>.pdf
+from ./<en/tc>/OSM_TBPDF__TN_<bookId><sectionId>_c.pdf
+
+extract the code for watermark removal from /var/www/html/pdf-reader/scripts/remove_watermark.py
+and use it beforing writing to the target file
+
+where e=en=english, c=tc=chinese
+
+sectionId will take 2 digits, when there is only digit, add a leading zero there.
+
+do not overwrite when the target files already exist
+
+generate the folders contents.tn when they do not exist 
+
+///
+
+in text edit dialog, after color is changed, do not exit the dialog, change the color of the text by the selected color.
+
+///
+
+
+the toggle only show when bilingual is not selected.
+
+when student is selected, show the page in contents folder
+
+when teacher is selected, show the page in contents.tn folder
+
+when dual is selected, show both pade side by side just like that in biingual language settings. the two pages will be scrolled and zoomed together.
+
+use a label of role for the student/teacher/dual toggle
+
+choose the page of contents or contents.tn under the selected language
+
+////
+
+
+when query string timestamp=1, load all the images with a preset timestamp like this ?t=20260727112900
+
+////
+
+it must keep the page number and scrolling position the same when reloading the webpage, toggling between different display modes, languages and roles. investigate deeply and fix all the in-depth issues about this problems. 
+do not show irrelevant page at the begining, only show the previously selected page.
+i have asked you to correct these many times.
+
+
+////
+
+
+the pinch effect should also be down on every device with a touch screen, e.g. macbook pro's trackboard, not just on ipad.

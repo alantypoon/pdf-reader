@@ -68,6 +68,11 @@ function normalizeAnnotationLangId(value) {
   return String(value || '').trim().toLowerCase() === 'tc' ? 'tc' : 'en';
 }
 
+function normalizeAnnotationRole(value) {
+  const v = String(value || '').trim().toLowerCase();
+  return ['teacher', 'tn', 'contents.tn'].includes(v) ? 'teacher' : 'student';
+}
+
 async function listAnnotationRemarks(query) {
   const docs = await annotationsCollection.find(query).toArray();
   return docs
@@ -189,9 +194,12 @@ async function connectMongo() {
     try {
       await annotationsCollection.dropIndex('annotations_identity_unique');
     } catch {}
+    try {
+      await annotationsCollection.dropIndex('annotations_identity_lang_unique');
+    } catch {}
     await annotationsCollection.createIndex(
-      { userId: 1, subjectId: 1, bookId: 1, sectionId: 1, pageId: 1, langId: 1 },
-      { unique: true, name: 'annotations_identity_lang_unique' }
+      { userId: 1, subjectId: 1, bookId: 1, sectionId: 1, pageId: 1, langId: 1, role: 1 },
+      { unique: true, name: 'annotations_identity_lang_role_unique' }
     );
     await annotationsCollection.createIndex(
       { userId: 1, subjectId: 1, bookId: 1, sectionId: 1, pageId: 1 },
@@ -444,6 +452,39 @@ function getBookNamesFromContents(contents = {}) {
   return { nameEn, nameZh };
 }
 
+function toFileId(raw) {
+  if (raw == null) return '';
+  const num = Number(raw);
+  return Number.isNaN(num) ? String(raw) : num;
+}
+
+async function buildContentsFromPdfFiles(dataRoot, chapterDir) {
+  const sectionIds = new Set();
+
+  for (const lang of ['en', 'tc']) {
+    for (const audienceDirName of ['contents', 'contents.tn']) {
+      const contentsDir = path.join(dataRoot, chapterDir, lang, audienceDirName);
+      try {
+        const files = await fs.readdir(contentsDir);
+        files
+          .filter((file) => file.toLowerCase().endsWith('.pdf'))
+          .forEach((file) => {
+            const id = file.replace(/\.pdf$/i, '').split('-')[0];
+            if (id) sectionIds.add(id);
+          });
+      } catch { /* dir doesn't exist */ }
+    }
+  }
+
+  return [...sectionIds]
+    .sort(compareNaturalIds)
+    .map((id) => ({
+      page: toFileId(id),
+      en: { name: id },
+      tc: { name: id },
+    }));
+}
+
 function compareNaturalIds(left, right) {
   const a = String(left || '').trim().toLowerCase();
   const b = String(right || '').trim().toLowerCase();
@@ -597,7 +638,10 @@ app.get('/api/catalog', asyncRoute(async (request, response) => {
         const contentsPath = path.join(dataRoot, chapterDir, 'contents.json');
         console.log('[catalog] reading:', contentsPath);
         const contents = await readJSON(contentsPath, { contents: [] });
-        const sections = (contents.contents || []).length;
+        const chapterContents = Array.isArray(contents.contents) && contents.contents.length > 0
+          ? contents.contents
+          : await buildContentsFromPdfFiles(dataRoot, chapterDir);
+        const sections = chapterContents.length;
         console.log(`[catalog]   ${chapterDir}: ${sections} sections`);
         const { nameEn, nameZh } = getBookNamesFromContents(contents);
         const availableLanguages = await detectLanguages(chapterDir);
@@ -607,7 +651,7 @@ app.get('/api/catalog', asyncRoute(async (request, response) => {
           name: formatBookLabel(chapterDir, nameEn || nameZh),
           nameEn,
           nameZh,
-          contents: contents.contents || [],
+          contents: chapterContents,
           availableLanguages,
         };
       })
@@ -625,21 +669,33 @@ app.get('/api/page', asyncRoute(async (request, response) => {
   const requestedBook = request.query.book || DEFAULT_BOOK;
   const dataRoot = getDataRoot(requestedBook);
   const { chapter, language, page } = request.query;
-  console.log(`[page] request: book=${requestedBook} chapter=${chapter} language=${language} page=${page}`);
+  const requestedRole = String(request.query.role ?? request.query.audience ?? 'student').trim().toLowerCase();
+  const roleDirName = ['teacher', 'contents.tn', 'tn'].includes(requestedRole) ? 'contents.tn' : 'contents';
+  const pageId = String(page || '').trim();
+  const numericPage = /^\d+$/.test(pageId) ? Number(pageId) : NaN;
+  const pageCandidates = [...new Set([
+    pageId,
+    Number.isFinite(numericPage) ? String(numericPage) : '',
+    Number.isFinite(numericPage) ? String(numericPage).padStart(2, '0') : '',
+    Number.isFinite(numericPage) ? String(numericPage).padStart(3, '0') : '',
+  ].filter(Boolean))];
+  console.log(`[page] request: book=${requestedBook} chapter=${chapter} language=${language} page=${page} role=${requestedRole} dir=${roleDirName}`);
   const langDir = path.join(dataRoot, String(chapter), String(language));
-  const pagesDir = path.join(langDir, 'contents', 'pages');
+  const pagesDir = path.join(langDir, roleDirName, 'pages');
   console.log(`[page] langDir=${langDir} pagesDir=${pagesDir}`);
 
   // ── Try split page images first ───────────────────────────
   try {
     const files = await fs.readdir(pagesDir);
-    const prefix = `${String(page)}-`;
-    console.log(`[page] ${files.length} files in pages/, looking for prefix "${prefix}"`);
+    const prefixes = pageCandidates.map((candidate) => `${candidate}-`);
+    console.log(`[page] ${files.length} files in pages/, looking for prefixes ${prefixes.map((p) => `"${p}"`).join(', ')}`);
     const matched = files
-      .filter((f) => f.startsWith(prefix) && /\.(png|jpg|jpeg|webp)$/i.test(f))
+      .filter((f) => prefixes.some((prefix) => f.startsWith(prefix)) && /\.(png|jpg|jpeg|webp)$/i.test(f))
       .sort((a, b) => {
-        const an = parseInt(a.slice(prefix.length).split('.')[0], 10) || 0;
-        const bn = parseInt(b.slice(prefix.length).split('.')[0], 10) || 0;
+        const aPrefix = prefixes.find((prefix) => a.startsWith(prefix)) || '';
+        const bPrefix = prefixes.find((prefix) => b.startsWith(prefix)) || '';
+        const an = parseInt(a.slice(aPrefix.length).split('.')[0], 10) || 0;
+        const bn = parseInt(b.slice(bPrefix.length).split('.')[0], 10) || 0;
         return an - bn;
       });
 
@@ -647,38 +703,39 @@ app.get('/api/page', asyncRoute(async (request, response) => {
       // Read image dimensions so the client can reserve correct space
       // before images load — scroll restoration works instantly.
       const images = await Promise.all(matched.map(async (f) => {
-        const url = `/pdf-reader/data/${requestedBook}/${chapter}/${language}/contents/pages/${f}`;
+        const adjustedUrl = `/pdf-reader/data/${requestedBook}/${chapter}/${language}/${roleDirName}/pages/${f}`;
         try {
           const meta = await sharp(path.join(pagesDir, f)).metadata();
-          return { url, w: meta.width, h: meta.height };
+          return { url: adjustedUrl, w: meta.width, h: meta.height };
         } catch {
-          return { url };  // fallback if sharp can't read dimensions
+          return { url: adjustedUrl };  // fallback if sharp can't read dimensions
         }
       }));
       console.log(`[page] → returning ${images.length} images (first: ${images[0]?.url})`);
       response.json({ images });
       return;
     }
-    console.log(`[page] no images matched prefix "${prefix}"`);
+    console.log(`[page] no images matched prefixes ${prefixes.map((p) => `"${p}"`).join(', ')}`);
   } catch (err) {
     console.log(`[page] pages/ dir error: ${err.message}`);
   }
 
   // ── Fallback: single PDF ──────────────────────────────────
   // Try exact match first, then prefix match (e.g. "1.1" matches "1.1-sba-157.pdf")
-  const contentsDir = path.join(langDir, 'contents');
+  const contentsDir = path.join(langDir, roleDirName);
   let pdfUrl = '';
   try {
     const dirFiles = await fs.readdir(contentsDir);
-    const exactMatch = `${String(page)}.pdf`;
+    const exactMatches = pageCandidates.map((candidate) => `${candidate}.pdf`);
+    const exactMatch = exactMatches.find((candidate) => dirFiles.includes(candidate));
     if (dirFiles.includes(exactMatch)) {
-      pdfUrl = `/pdf-reader/data/${requestedBook}/${chapter}/${language}/contents/${exactMatch}`;
+      pdfUrl = `/pdf-reader/data/${requestedBook}/${chapter}/${language}/${roleDirName}/${exactMatch}`;
     } else {
       const prefixMatch = dirFiles.find(
-        (f) => f.startsWith(`${String(page)}-`) && f.endsWith('.pdf')
+        (f) => pageCandidates.some((candidate) => f.startsWith(`${candidate}-`)) && f.endsWith('.pdf')
       );
       if (prefixMatch) {
-        pdfUrl = `/pdf-reader/data/${requestedBook}/${chapter}/${language}/contents/${prefixMatch}`;
+        pdfUrl = `/pdf-reader/data/${requestedBook}/${chapter}/${language}/${roleDirName}/${prefixMatch}`;
       }
     }
   } catch { /* ignore */ }
@@ -707,13 +764,14 @@ app.get('/api/remarks', requireValidUserId(true), asyncRoute(async (request, res
   if (request.query.sectionId != null) query.sectionId = Number(request.query.sectionId);
   if (request.query.pageId != null) query.pageId = Number(request.query.pageId);
   if (request.query.langId != null) query.langId = normalizeAnnotationLangId(request.query.langId);
+  if (request.query.role != null) query.role = normalizeAnnotationRole(request.query.role);
   response.json({ remarks: await listAnnotationRemarks(query) });
 }));
 
 app.post('/api/remarks', requireValidUserId(true), asyncRoute(async (request, response) => {
   try {
     const userId = request.validatedUserId;
-    const { subjectId, bookId, sectionId, pageId, langId, ...remark } = request.body || {};
+    const { subjectId, bookId, sectionId, pageId, langId, role, ...remark } = request.body || {};
     if (!annotationsCollection) {
       console.error('[remarks] POST blocked — MongoDB not connected');
       response.status(500).json({ error: 'MongoDB not connected', remarks: [] });
@@ -726,16 +784,17 @@ app.post('/api/remarks', requireValidUserId(true), asyncRoute(async (request, re
       sectionId: Number(sectionId),
       pageId: Number(pageId),
       langId: normalizeAnnotationLangId(langId),
+      role: normalizeAnnotationRole(role),
     };
     const points = Array.isArray(remark.points) ? remark.points.length : 0;
-    console.log(`[remarks] POST stroke — user=${userId.slice(0,6)} subject=${identity.subjectId} book=${identity.bookId} §${identity.sectionId} p${identity.pageId} lang=${identity.langId} mode=${remark.mode} points=${points} createdAt=${remark.createdAt}`);
+    console.log(`[remarks] POST stroke — user=${userId.slice(0,6)} subject=${identity.subjectId} book=${identity.bookId} §${identity.sectionId} p${identity.pageId} lang=${identity.langId} role=${identity.role} mode=${remark.mode} points=${points} createdAt=${remark.createdAt}`);
 
     // Use $push for atomic append — avoids race condition where concurrent
     // POSTs overwrite each other (read-then-write with findOne + updateOne).
     const result = await annotationsCollection.updateOne(
       identity,
       {
-        $push: { remarks: { ...remark, langId: identity.langId } },
+        $push: { remarks: { ...remark, langId: identity.langId, role: identity.role } },
         $set: { updatedAt: hkNow() },
         $setOnInsert: { ...identity, createdAt: hkNow() },
       },
@@ -765,8 +824,9 @@ app.delete('/api/remarks', requireValidUserId(true), asyncRoute(async (request, 
       return;
     }
     const userId = request.validatedUserId;
-    const { subjectId, bookId, sectionId, pageId, createdAt, langId } = request.query;
+    const { subjectId, bookId, sectionId, pageId, createdAt, langId, role } = request.query;
     const resolvedLangId = langId != null ? normalizeAnnotationLangId(langId) : null;
+    const resolvedRole = role != null ? normalizeAnnotationRole(role) : null;
 
     // Build the identity query, only including fields that are present.
     // sectionId: Number(undefined) → NaN which matches nothing in MongoDB.
@@ -786,12 +846,14 @@ app.delete('/api/remarks', requireValidUserId(true), asyncRoute(async (request, 
       // Delete a single remark by createdAt
       const pageIdentity = { ...identity };
       if (resolvedPageId != null) pageIdentity.pageId = resolvedPageId;
+      if (resolvedRole != null) pageIdentity.role = resolvedRole;
       const pageQueries = resolvedLangId != null
         ? [{ ...pageIdentity, langId: resolvedLangId }]
-        : await annotationsCollection.find(pageIdentity, { projection: { langId: 1 } }).toArray();
+        : await annotationsCollection.find(pageIdentity, { projection: { langId: 1, role: 1 } }).toArray();
       let deletedCount = 0;
       for (const query of pageQueries) {
         const scopedIdentity = resolvedLangId != null ? query : { ...pageIdentity, langId: query.langId };
+        if (resolvedRole != null && !scopedIdentity.role) scopedIdentity.role = resolvedRole;
         const current = await annotationsCollection.findOne(scopedIdentity);
         const remarks = (current?.remarks || []).filter((remark) => String(remark.createdAt || '') !== String(createdAt));
         if ((current?.remarks || []).length === remarks.length) continue;
@@ -815,6 +877,9 @@ app.delete('/api/remarks', requireValidUserId(true), asyncRoute(async (request, 
       if (resolvedLangId != null) {
         pageIdentity.langId = resolvedLangId;
       }
+      if (resolvedRole != null) {
+        pageIdentity.role = resolvedRole;
+      }
       console.log(`[remarks] DELETE page — query:`, JSON.stringify(pageIdentity));
       const result = await annotationsCollection.deleteMany(pageIdentity);
       console.log(`[remarks] DELETE page — deleted ${result.deletedCount} doc(s), acknowledged=${result.acknowledged}`);
@@ -826,6 +891,7 @@ app.delete('/api/remarks', requireValidUserId(true), asyncRoute(async (request, 
     }
 
     // Delete all remarks for the given scope (section or entire book)
+    if (resolvedRole != null) identity.role = resolvedRole;
     console.log(`[remarks] DELETE scope — query:`, JSON.stringify(identity));
     const result = await annotationsCollection.deleteMany(identity);
     console.log(`[remarks] DELETE scope — deleted ${result.deletedCount} doc(s), acknowledged=${result.acknowledged}`);
@@ -863,28 +929,30 @@ app.post('/api/remarks/actions', requireValidUserId(true), asyncRoute(async (req
 
     console.log(`[remarks/actions] POST — user=${userId.slice(0,6)} subject=${identity.subjectId} book=${identity.bookId} §${identity.sectionId} actions=${actions.length}`);
 
-    // Group actions by (pageId, langId) for efficient MongoDB operations.
+    // Group actions by (pageId, langId, role) for efficient MongoDB operations.
     // addRemark actions are batched with $push { $each }.
     // deleteRemark actions remove one remark by createdAt from each document.
 
-    const addGroups = new Map();  // key "pageId|langId" → [remarks]
-    const deleteActions = [];     // { pageId, langId, createdAt }
+    const addGroups = new Map();  // key "pageId|langId|role" → [remarks]
+    const deleteActions = [];     // { pageId, langId, role, createdAt }
 
     for (const action of actions) {
       if (action.type === 'addRemark') {
         const p = action.payload || {};
         const pageId = Number(p.pageId || p.page);
         const langId = normalizeAnnotationLangId(p.langId);
-        const key = `${pageId}|${langId}`;
+        const role = normalizeAnnotationRole(p.role);
+        const key = `${pageId}|${langId}|${role}`;
         if (!addGroups.has(key)) {
-          addGroups.set(key, { pageId, langId, remarks: [] });
+          addGroups.set(key, { pageId, langId, role, remarks: [] });
         }
-        addGroups.get(key).remarks.push({ ...p, langId });
+        addGroups.get(key).remarks.push({ ...p, langId, role });
       } else if (action.type === 'deleteRemark') {
         const p = action.payload || {};
         deleteActions.push({
           pageId: Number(p.pageId),
           langId: normalizeAnnotationLangId(p.langId),
+          role: normalizeAnnotationRole(p.role),
           createdAt: String(p.createdAt),
         });
       }
@@ -897,6 +965,7 @@ app.post('/api/remarks/actions', requireValidUserId(true), asyncRoute(async (req
           ...identity,
           pageId: group.pageId,
           langId: group.langId,
+          role: group.role,
         },
         {
           $push: { remarks: { $each: group.remarks } },
@@ -905,6 +974,7 @@ app.post('/api/remarks/actions', requireValidUserId(true), asyncRoute(async (req
             ...identity,
             pageId: group.pageId,
             langId: group.langId,
+            role: group.role,
             createdAt: hkNow(),
           },
         },
@@ -921,6 +991,7 @@ app.post('/api/remarks/actions', requireValidUserId(true), asyncRoute(async (req
         ...identity,
         pageId: del.pageId,
         langId: del.langId,
+        role: del.role,
       };
       await annotationsCollection.updateOne(
         docIdentity,

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/var/www/html/pdf-reader/.venv/bin/python3
 """
 all-in-one.py
 
@@ -39,11 +39,11 @@ Output:
             https://isolution.oupchina.com.hk/isolution-web/.iSolution/ebook_user_content/...
 
 
-    4. Extracts the English section list from en/contents.png and fills
-       contents[].en.name in contents.json.
+     4. Extracts each English section name from the first page image of that
+         section and fills contents[].en.name in contents.json.
 
-            data/biology-oup/1a/en/contents.png
-            data/biology-oup/1b/en/contents.png
+                data/biology-oup/1a/en/contents/pages/1-1.png
+                data/math-oup/4a/en/contents/pages/01-1.png
 
         The script uses the AI Gateway ETT flow, following the same
         request pattern as /var/www/html/aigateway/scripts/test-ett.py.
@@ -90,6 +90,7 @@ from urllib.request import Request, urlopen
 from urllib.request import urlretrieve
 
 import fitz  # PyMuPDF
+import requests
 
 
 BIOLOGY_ELECTIVE_BOOK_NAMES = {
@@ -201,9 +202,9 @@ def _process_scope(scope_dir, scope_label, args, base_dir):
         # ── Step 4: Extract section names ──────────────────────────
         if not args.skip_section_names:
             print("\n" + "=" * 60)
-            print("  Step 4 — Extracting English section names from contents.png")
+            print("  Step 4 — Extracting English section names from first section pages")
             print("=" * 60)
-            fill_section_names_from_contents_png(book_dir, base_dir)
+            fill_section_names_from_first_pages(book_dir, base_dir)
         else:
             print("[skip] Step 4 — Extract section names")
 
@@ -251,8 +252,88 @@ def _process_scope(scope_dir, scope_label, args, base_dir):
 #  Step 1 — PDF splitting
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _split_one_pdf_dir(pdf_dir, pages_dir, args):
+    """Split all PDFs in *pdf_dir* into individual images under *pages_dir*."""
+    if not os.path.isdir(pdf_dir):
+        return
+
+    os.makedirs(pages_dir, exist_ok=True)
+
+    # Collect ALL PDFs. Derive section name from filename stem:
+    #   "1.pdf" → "1"
+    #   "1.1-sba-157.pdf" → "1.1"
+    #   "appendix.pdf" → "appendix"
+    #   "cover.pdf" → "cover"  (fallback: whole stem)
+    pdf_entries = []
+    for f in sorted(os.listdir(pdf_dir)):
+        if not f.endswith(".pdf"):
+            continue
+        stem = f[:-4]
+        # If stem contains "-", use the part before the first "-" as section
+        if "-" in stem:
+            section = stem.split("-")[0]
+        else:
+            section = stem
+        pdf_entries.append((section, f))
+
+    if not pdf_entries:
+        return
+
+    # Sort by section (try numeric first, then string)
+    def _sort_key(entry):
+        sec = entry[0]
+        try:
+            return (0, float(sec), "")
+        except ValueError:
+            return (1, 0, sec)
+
+    pdf_entries.sort(key=_sort_key)
+
+    rel = os.path.relpath(pdf_dir, os.path.join(os.path.dirname(pdf_dir), ".."))
+    print(f"\n{'='*60}")
+    print(f"  {rel}/")
+    print(f"{'='*60}")
+
+    for section_num, pdf_name in pdf_entries:
+        pdf_path = os.path.join(pdf_dir, pdf_name)
+
+        doc = fitz.open(pdf_path)
+        num_pages = doc.page_count
+        print(f"  {pdf_name} → {num_pages} pages")
+
+        for page_idx in range(num_pages):
+            page_num = page_idx + 1
+            out_name = f"{section_num}-{page_num}.{args.format}"
+            out_path = os.path.join(pages_dir, out_name)
+
+            # Skip if already exists (resume support)
+            if os.path.exists(out_path):
+                continue
+
+            page = doc[page_idx]
+            # Render at specified DPI
+            mat = fitz.Matrix(args.dpi / 72, args.dpi / 72)
+            pix = page.get_pixmap(matrix=mat)
+
+            if args.format == "jpg":
+                pix.pil_save(out_path, optimize=True, quality=85)
+            else:
+                pix.save(out_path)
+
+        doc.close()
+
+    # Summary
+    existing = sorted(os.listdir(pages_dir))
+    img_count = len([f for f in existing if f.endswith(f".{args.format}")])
+    print(f"  → {img_count} images in {pages_dir}/")
+
+
 def split_pdfs(data_dir, args):
-    """Split multi-page PDFs into individual PNG (or JPG) images."""
+    """Split multi-page PDFs into individual PNG (or JPG) images.
+
+    Processes both {lang}/contents/ (main textbook) and
+    {lang}/contents.tn/ (teacher's notes) directories.
+    """
     langs_available = [lang for lang in ("en", "tc")
                        if os.path.isdir(os.path.join(data_dir, lang))]
     if not langs_available:
@@ -262,82 +343,11 @@ def split_pdfs(data_dir, args):
     for language in langs_available:
         lang_dir = os.path.join(data_dir, language)
 
-        # PDFs live under {lang}/contents/
-        contents_dir = os.path.join(lang_dir, "contents")
-        if not os.path.isdir(contents_dir):
-            print(f"  [skip] {contents_dir} — not found")
-            continue
-
-        pages_dir = os.path.join(contents_dir, "pages")
-        os.makedirs(pages_dir, exist_ok=True)
-
-        # Collect ALL PDFs. Derive section name from filename stem:
-        #   "1.pdf" → "1"
-        #   "1.1-sba-157.pdf" → "1.1"
-        #   "appendix.pdf" → "appendix"
-        #   "cover.pdf" → "cover"  (fallback: whole stem)
-        pdf_entries = []
-        for f in os.listdir(contents_dir):
-            if not f.endswith(".pdf"):
-                continue
-            stem = f[:-4]
-            # If stem contains "-", use the part before the first "-" as section
-            if "-" in stem:
-                section = stem.split("-")[0]
-            else:
-                section = stem
-            pdf_entries.append((section, f))
-
-        if not pdf_entries:
-            print(f"  [skip] {contents_dir} — no PDFs found")
-            continue
-
-        # Sort by section (try numeric first, then string)
-        def _sort_key(entry):
-            sec = entry[0]
-            try:
-                return (0, float(sec), "")
-            except ValueError:
-                return (1, 0, sec)
-
-        pdf_entries.sort(key=_sort_key)
-
-        print(f"\n{'='*60}")
-        print(f"  {contents_dir}/")
-        print(f"{'='*60}")
-
-        for section_num, pdf_name in pdf_entries:
-            pdf_path = os.path.join(contents_dir, pdf_name)
-
-            doc = fitz.open(pdf_path)
-            num_pages = doc.page_count
-            print(f"  {pdf_name} → {num_pages} pages")
-
-            for page_idx in range(num_pages):
-                page_num = page_idx + 1
-                out_name = f"{section_num}-{page_num}.{args.format}"
-                out_path = os.path.join(pages_dir, out_name)
-
-                # Skip if already exists (resume support)
-                if os.path.exists(out_path):
-                    continue
-
-                page = doc[page_idx]
-                # Render at specified DPI
-                mat = fitz.Matrix(args.dpi / 72, args.dpi / 72)
-                pix = page.get_pixmap(matrix=mat)
-
-                if args.format == "jpg":
-                    pix.pil_save(out_path, optimize=True, quality=85)
-                else:
-                    pix.save(out_path)
-
-            doc.close()
-
-        # Summary
-        existing = sorted(os.listdir(pages_dir))
-        img_count = len([f for f in existing if f.endswith(f".{args.format}")])
-        print(f"  → {img_count} images in {pages_dir}/")
+        # Process both "contents" and "contents.tn" if they exist
+        for subdir_name in ("contents", "contents.tn"):
+            pdf_dir = os.path.join(lang_dir, subdir_name)
+            pages_dir = os.path.join(pdf_dir, "pages")
+            _split_one_pdf_dir(pdf_dir, pages_dir, args)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -615,21 +625,62 @@ def fix_urls(data_dir):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  Step 4 — Extract section names from contents.png
+#  Step 4 — Extract section names from first section page images
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def load_env_file(env_path):
+    """Parse .env file supporting single-line key=value and multi-line quoted values.
+
+    Multi-line quoted values like::
+
+        VLLM_APIKEY="
+        key1
+        key2
+        "
+
+    are collected into one value (the first non-empty line, or all lines joined).
+    """
     values = {}
     if not os.path.isfile(env_path):
         return values
 
     with open(env_path, "r", encoding="utf-8") as f:
         for line in f:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
+            line = line.rstrip("\n\r")
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
                 continue
-            key, _, value = line.partition("=")
-            values[key.strip()] = value.strip().strip('"').strip("'")
+            if "=" not in stripped:
+                continue
+            key, _, remainder = stripped.partition("=")
+            key = key.strip()
+
+            # Single-line value: trim surrounding quotes and spaces
+            val = remainder.strip()
+            if len(val) >= 2 and ((val.startswith('"') and val.endswith('"')) or
+                                  (val.startswith("'") and val.endswith("'"))):
+                val = val[1:-1]
+            elif val.startswith('"') or val.startswith("'"):
+                # Multi-line quoted value — read until the matching closing quote
+                quote_char = val[0]
+                inner = val[1:]  # after opening quote
+                closing_found = False
+                while not closing_found:
+                    idx = inner.find(quote_char)
+                    if idx >= 0:
+                        inner = inner[:idx]
+                        closing_found = True
+                        break
+                    # Read next line
+                    next_line = f.readline()
+                    if not next_line:
+                        break
+                    inner += "\n" + next_line.rstrip("\n\r")
+                val = inner.strip()
+            else:
+                val = val.strip().strip('"').strip("'")
+
+            values[key] = val
     return values
 
 
@@ -639,62 +690,39 @@ def get_ai_gateway_config(base_dir):
         "url": os.environ.get("VLLM_API_URL") or env_values.get("VLLM_API_URL") or "https://aigateway.aied.hku.hk/api/generate",
         "model": os.environ.get("VLLM_MODEL") or env_values.get("VLLM_MODEL") or "OpenGVLab/InternVL3_5-38B",
         "api_key": os.environ.get("VLLM_APIKEY") or env_values.get("VLLM_APIKEY") or "",
+        "provider": os.environ.get("VLLM_PROVIDER") or env_values.get("VLLM_PROVIDER") or "ett-vllm",
     }
 
 
-def send_ett_request(url, api_key, model, file_path, prompt):
-    boundary = "----PdfReaderContentsEtt"
-
-    def field(name, value):
-        return (
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="{name}"\r\n'
-            f"\r\n"
-            f"{value}\r\n"
-        ).encode("utf-8")
-
+def send_ett_request(url, api_key, model, file_path, prompt, provider="ett-vllm"):
+    """Send a single image + prompt to the AI gateway using requests (same as
+    the proven test-aigateway-long-request-prompt.py pattern)."""
     mime_type, _ = mimetypes.guess_type(str(file_path))
     if mime_type is None:
         mime_type = "application/octet-stream"
 
-    with open(file_path, "rb") as fh:
-        file_bytes = fh.read()
-
-    parts = [
-        field("provider", "ett"),
-        field("model", model),
-        field("apiKey", api_key),
-        field("stream", "false"),
-        field("prompt", prompt),
-        (
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="files"; filename="{Path(file_path).name}"\r\n'
-            f"Content-Type: {mime_type}\r\n"
-            f"\r\n"
-        ).encode("utf-8"),
-        file_bytes,
-        b"\r\n",
-        f"--{boundary}--\r\n".encode("utf-8"),
-    ]
-
-    body = b"".join(parts)
-    req = Request(
-        url,
-        data=body,
-        headers={
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-            "Accept": "application/json",
-        },
-        method="POST",
-    )
-
     try:
-        with urlopen(req, timeout=120) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except HTTPError as err:
-        return {"error": True, "status": err.code, "body": err.read().decode("utf-8", errors="replace")}
-    except URLError as err:
-        return {"error": True, "reason": str(err.reason)}
+        resp = requests.post(
+            url,
+            files={
+                "provider": (None, provider),
+                "apiKey": (None, api_key),
+                "model": (None, model),
+                "prompt": (None, prompt),
+                "files": (Path(file_path).name, open(file_path, "rb"), mime_type),
+            },
+            headers={"Accept": "application/json"},
+            timeout=120,
+        )
+        if resp.status_code != 200:
+            return {"error": True, "status": resp.status_code, "body": resp.text[:500]}
+        return resp.json()
+    except requests.Timeout:
+        return {"error": True, "reason": "timeout after 120s"}
+    except requests.ConnectionError as err:
+        return {"error": True, "reason": str(err)}
+    except requests.RequestException as err:
+        return {"error": True, "reason": str(err)}
 
 
 def extract_text_from_ett_result(result):
@@ -754,13 +782,88 @@ def parse_contents_entries(text):
     return entries
 
 
-def fill_section_names_from_contents_png(data_dir, base_dir):
-    contents_path = os.path.join(data_dir, "contents.json")
-    image_path = os.path.join(data_dir, "en", "contents.png")
+def _normalize_section_id(value):
+    text = str(value).strip()
+    try:
+        num = float(text)
+        if num.is_integer():
+            return str(int(num))
+        return str(num)
+    except ValueError:
+        return text.lower()
 
-    if not os.path.exists(image_path):
-        print(f"  [skip] {image_path} — not found")
-        return
+
+def _section_sort_key(value):
+    text = str(value).strip()
+    try:
+        return (0, float(text), "")
+    except ValueError:
+        return (1, 0, text)
+
+
+def _find_first_section_page_image(data_dir, section):
+    """Find the first English page image for *section*.
+
+    Accepts exact section IDs (``1-1.png``), zero-padded IDs
+    (``01-1.png``), and generated image formats supported by the reader.
+    """
+    pages_dir = os.path.join(data_dir, "en", "contents", "pages")
+    if not os.path.isdir(pages_dir):
+        return None
+
+    section_text = str(section).strip()
+    normalized_section = _normalize_section_id(section_text)
+    image_pattern = re.compile(r"^(.+)-(\d+)\.(png|jpg|jpeg|webp)$", re.IGNORECASE)
+    candidates = []
+
+    for fname in os.listdir(pages_dir):
+        match = image_pattern.match(fname)
+        if not match:
+            continue
+        file_section, page_num = match.group(1), int(match.group(2))
+        if page_num != 1:
+            continue
+        if file_section == section_text or _normalize_section_id(file_section) == normalized_section:
+            candidates.append(os.path.join(pages_dir, fname))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda path: (len(Path(path).stem.split("-", 1)[0]), Path(path).name))
+    return candidates[0]
+
+
+def _clean_extracted_section_title(raw_text, section):
+    """Normalize an ETT response to one plain English section title."""
+    if not raw_text:
+        return ""
+
+    lines = [" ".join(line.strip().split()) for line in raw_text.splitlines()]
+    lines = [line for line in lines if line]
+    if not lines:
+        return ""
+
+    title = lines[0]
+    title = re.sub(r"^```(?:text)?\s*", "", title, flags=re.IGNORECASE).strip()
+    title = re.sub(r"\s*```$", "", title).strip()
+    title = re.sub(r"^[\"'“”‘’«»]+|[\"'“”‘’«»]+$", "", title).strip()
+    title = re.sub(r"^(?:section|chapter|unit)\s+", "", title, flags=re.IGNORECASE).strip()
+    title = re.sub(r"^(?:title|section\s+title|section\s+name)\s*[:：]\s*", "", title, flags=re.IGNORECASE).strip()
+
+    section_text = str(section).strip()
+    escaped_section = re.escape(section_text)
+    title = re.sub(rf"^{escaped_section}\s*[-–—.:：]?\s*", "", title).strip()
+    normalized_section = _normalize_section_id(section_text)
+    if normalized_section != section_text:
+        title = re.sub(rf"^{re.escape(normalized_section)}\s*[-–—.:：]?\s*", "", title).strip()
+
+    if title.upper() in {"UNKNOWN", "N/A", "NA", "NONE"}:
+        return ""
+    return title
+
+
+def fill_section_names_from_first_pages(data_dir, base_dir):
+    contents_path = os.path.join(data_dir, "contents.json")
 
     if os.path.exists(contents_path):
         with open(contents_path, "r", encoding="utf-8") as f:
@@ -772,39 +875,43 @@ def fill_section_names_from_contents_png(data_dir, base_dir):
             return
 
     config = get_ai_gateway_config(base_dir)
-    prompt = (
-        "Extract the numbered section list from this biology contents image. "
-        "Return plain text lines only in the form 'section_number section_title'. "
-        "Ignore the book title line. Preserve the exact section titles."
-    )
-
-    extracted_text = ""
-    if config["api_key"]:
-        result = send_ett_request(config["url"], config["api_key"], config["model"], image_path, prompt)
-        extracted_text = extract_text_from_ett_result(result)
-        if extracted_text:
-            print("  ETT extracted section names from contents.png")
-        else:
-            print("  [skip] ETT returned no usable text for contents.png")
-            return
-    else:
+    if not config["api_key"]:
         print("  [skip] VLLM_APIKEY not configured; cannot extract section names")
         return
 
-    entries = parse_contents_entries(extracted_text)
-    if not entries:
-        print(f"  [skip] No section names parsed from {image_path}")
-        return
-
+    print(f"  Gateway: {config['url']}")
+    print(f"  Provider: {config['provider']}  |  Model: {config['model']}")
+    print(f"  API key: {config['api_key'][:8]}...{config['api_key'][-4:]} ({len(config['api_key'])} chars)")
     updates = 0
     missing = []
+    failed = []
+    extracted = {}
     for item in contents.get("contents", []):
         section = str(item.get("section", "")).strip()
         if not section:
             continue
-        title = entries.get(section)
-        if title is None:
+
+        image_path = _find_first_section_page_image(data_dir, section)
+        if not image_path:
             missing.append(section)
+            continue
+
+        prompt = (
+            "This image is the first page of one textbook section. "
+            "Extract the English section title/name for this section only. "
+            "Return ONLY the section title as plain text. "
+            "Do not include the section number, book title, page number, labels, explanations, or Markdown. "
+            "If no English section title is visible, return UNKNOWN."
+        )
+        result = send_ett_request(config["url"], config["api_key"], config["model"], image_path, prompt, provider=config["provider"])
+        raw_text = extract_text_from_ett_result(result)
+        # Surface gateway errors instead of silently treating them as empty titles
+        if isinstance(result, dict) and result.get("error"):
+            error_detail = result.get("body", "") or result.get("reason", "") or json.dumps(result)
+            print(f"    ⚠  Section {section}: gateway error — {str(error_detail)[:200]}")
+        title = _clean_extracted_section_title(raw_text, section)
+        if not title:
+            failed.append(section)
             continue
 
         item.setdefault("en", {})
@@ -812,16 +919,20 @@ def fill_section_names_from_contents_png(data_dir, base_dir):
         if old_value != title:
             item["en"]["name"] = title
             updates += 1
+        extracted[section] = title
+        print(f"  Section {section}: {Path(image_path).name} → {title}")
 
     with open(contents_path, "w", encoding="utf-8") as f:
         json.dump(contents, f, ensure_ascii=False, indent=4)
 
     print(f"\n  Updated English section names in {contents_path}")
-    for section in sorted(entries.keys(), key=lambda s: (0, float(s), "") if re.fullmatch(r'\d+(?:\.\d+)?', s) else (1, 0, s)):
-        print(f"    Section {section}: {entries[section]}")
+    for section in sorted(extracted.keys(), key=_section_sort_key):
+        print(f"    Section {section}: {extracted[section]}")
     print(f"    Changed: {updates}")
     if missing:
-        print(f"    Unmatched sections: {', '.join(missing)}")
+        print(f"    Missing first-page images: {', '.join(missing)}")
+    if failed:
+        print(f"    No title extracted: {', '.join(failed)}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -909,64 +1020,40 @@ def _collect_first_page_images(pages_dir, count):
     return [path for _, _, path in candidates[:count]]
 
 
-def _send_ett_with_images(url, api_key, model, image_paths, prompt):
+def _send_ett_with_images(url, api_key, model, image_paths, prompt, provider="ett-vllm"):
     """Send one or more page images to ETT/vLLM and return the parsed JSON
-    response, or {'error': True, ...} on failure."""
-    boundary = "----PdfReaderCaptureTitle"
+    response, or {'error': True, ...} on failure.
 
-    def field(name, value):
-        return (
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="{name}"\r\n'
-            f"\r\n"
-            f"{value}\r\n"
-        ).encode("utf-8")
-
-    parts = [
-        field("provider", "ett"),
-        field("model", model),
-        field("apiKey", api_key),
-        field("stream", "false"),
-        field("prompt", prompt),
+    Uses requests (same proven pattern as test-aigateway-long-request-prompt.py).
+    """
+    files: list = [
+        ("provider", (None, provider)),
+        ("apiKey", (None, api_key)),
+        ("model", (None, model)),
+        ("prompt", (None, prompt)),
     ]
-
     for img_path in image_paths:
         mime_type, _ = mimetypes.guess_type(str(img_path))
         if mime_type is None:
             mime_type = "application/octet-stream"
-        with open(img_path, "rb") as fh:
-            file_bytes = fh.read()
-        parts.append(
-            (
-                f"--{boundary}\r\n"
-                f'Content-Disposition: form-data; name="files"; filename="{Path(img_path).name}"\r\n'
-                f"Content-Type: {mime_type}\r\n"
-                f"\r\n"
-            ).encode("utf-8")
-        )
-        parts.append(file_bytes)
-        parts.append(b"\r\n")
-
-    parts.append(f"--{boundary}--\r\n".encode("utf-8"))
-
-    body = b"".join(parts)
-    req = Request(
-        url,
-        data=body,
-        headers={
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-            "Accept": "application/json",
-        },
-        method="POST",
-    )
+        files.append(("files", (Path(img_path).name, open(img_path, "rb"), mime_type)))
 
     try:
-        with urlopen(req, timeout=180) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except HTTPError as err:
-        return {"error": True, "status": err.code, "body": err.read().decode("utf-8", errors="replace")}
-    except URLError as err:
-        return {"error": True, "reason": str(err.reason)}
+        resp = requests.post(
+            url,
+            files=files,
+            headers={"Accept": "application/json"},
+            timeout=180,
+        )
+        if resp.status_code != 200:
+            return {"error": True, "status": resp.status_code, "body": resp.text[:500]}
+        return resp.json()
+    except requests.Timeout:
+        return {"error": True, "reason": "timeout after 180s"}
+    except requests.ConnectionError as err:
+        return {"error": True, "reason": str(err)}
+    except requests.RequestException as err:
+        return {"error": True, "reason": str(err)}
 
 
 def capture_book_title(data_dir, page_count, base_dir):
@@ -1008,7 +1095,9 @@ def capture_book_title(data_dir, page_count, base_dir):
         print("  [skip] VLLM_APIKEY not configured")
         return
 
-    result = _send_ett_with_images(config["url"], config["api_key"], config["model"], images, prompt)
+    print(f"  Gateway: {config['url']}")
+    print(f"  Provider: {config['provider']}  |  Model: {config['model']}")
+    result = _send_ett_with_images(config["url"], config["api_key"], config["model"], images, prompt, provider=config["provider"])
     raw_text = extract_text_from_ett_result(result)
 
     if not raw_text or raw_text.upper() == "UNKNOWN":
@@ -1452,7 +1541,7 @@ def main():
     parser.add_argument(
         "--skip-section-names",
         action="store_true",
-        help="Skip step 4 (extract section names from contents.png)",
+        help="Skip step 4 (extract section names from first section page images)",
     )
     parser.add_argument(
         "--skip-book-names",
