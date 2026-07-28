@@ -1125,7 +1125,6 @@ def apply_custom_answer_reveals(pdf_path: str, book_id: str, lang: str, section_
             marker = "Exercise 1A page 12 Foxit-style answers:"
             if marker not in existing_text:
                 answer_color = (1.0, 0.0, 0.42)
-                box_fill = (1.0, 0.965, 0.985)
                 unicode_font = "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"
 
                 def put(text, x, y, size=6.1):
@@ -1139,36 +1138,61 @@ def apply_custom_answer_reveals(pdf_path: str, book_id: str, lang: str, section_
                         overlay=True,
                     )
 
-                def put_box(rect, text, size=5.9):
-                    page.insert_textbox(
-                        rect,
-                        text,
-                        fontsize=size,
+                page.insert_text(fitz.Point(420, 80), marker, fontsize=0.1, fontname="aru12", fontfile=unicode_font, color=(1, 1, 1), overlay=True)
+
+                # Q4-7: place each fraction's decimal-conversion answer right
+                # after its own item on the shared row (Foxit shows these
+                # in-place next to the question, not in a separate side
+                # panel), using the same numbered-item end detection used
+                # elsewhere on this page so spacing stays correct even if the
+                # fraction widths differ.
+                q4_7_items = find_numbered_item_ends(
+                    page, {"4.", "5.", "6.", "7."}, y_min=125, y_max=150
+                )
+                q4_7_answers = {
+                    "4.": "0.7 (terminating)",
+                    "5.": "0.325 (terminating)",
+                    "6.": "0.8̇ (recurring)",
+                    "7.": "1.09̇ (recurring)",
+                }
+                for label, answer in q4_7_answers.items():
+                    if label not in q4_7_items:
+                        continue
+                    box, end_x = q4_7_items[label]
+                    page.insert_text(
+                        fitz.Point(end_x + 8, box.y1 + 4.5),
+                        answer,
+                        fontsize=5.0,
                         fontname="aru12",
                         fontfile=unicode_font,
                         color=answer_color,
-                        align=fitz.TEXT_ALIGN_LEFT,
                         overlay=True,
                     )
 
-                page.insert_text(fitz.Point(420, 80), marker, fontsize=0.1, fontname="aru12", fontfile=unicode_font, color=(1, 1, 1), overlay=True)
-
-                # Foxit-style answer box on the right for Q4-7 and Q12-15.
-                ans_rect = fitz.Rect(432, 118, 574, 308)
-                page.draw_rect(ans_rect, color=answer_color, fill=box_fill, width=0.55, overlay=True)
-                put("✱ Ans", 446, 132, 8.2)
-                put_box(
-                    fitz.Rect(447, 141, 568, 303),
-                    "4. (a) 0.7\n   (b) terminating decimal\n"
-                    "5. (a) 0.325\n   (b) terminating decimal\n"
-                    "6. (a) 0.8̇\n   (b) recurring decimal\n"
-                    "7. (a) 1.09̇\n   (b) recurring decimal\n"
-                    "12. real part = 3,\n    imaginary part = 7\n"
-                    "13. real part = −3√3,\n    imaginary part = 5\n"
-                    "14. real part = 0,\n    imaginary part = −4\n"
-                    "15. real part = −1 + √10,\n    imaginary part = 0",
-                    5.45,
+                # Q12-15: likewise place each complex number's real/imaginary
+                # part answer right after its own item on the shared row.
+                q12_15_items = find_numbered_item_ends(
+                    page, {"12.", "13.", "14.", "15."}, y_min=240, y_max=290
                 )
+                q12_15_answers = {
+                    "12.": "real=3, imag=7",
+                    "13.": "real=−3√3, imag=5",
+                    "14.": "real=0, imag=−4",
+                    "15.": "real=−1+√10, imag=0",
+                }
+                for label, answer in q12_15_answers.items():
+                    if label not in q12_15_items:
+                        continue
+                    box, end_x = q12_15_items[label]
+                    page.insert_text(
+                        fitz.Point(end_x + 8, box.y1 - 1.6),
+                        answer,
+                        fontsize=5.4,
+                        fontname="aru12",
+                        fontfile=unicode_font,
+                        color=answer_color,
+                        overlay=True,
+                    )
 
                 # Q8-11 inline fraction answers: anchor each answer to the
                 # actual end of its own numbered item ("8.", "9.", "10.",

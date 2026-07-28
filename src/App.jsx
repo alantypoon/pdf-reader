@@ -774,17 +774,22 @@ function App() {
     return () => clearTimeout(timer);
   }, [isFullscreen, sidebarCollapsed, sidebarHidden, panelVisible, refreshFitForCurrentMode]);
 
-  // Clear the initial-mount guard after PdfPane has had time to mount and
-  // restore the saved scroll position.  Must NOT be cleared in loadPages
-  // (which completes before PdfPane mounts) — clearing too early lets the
-  // scrollTo(0,0) effects fire during scroll restoration, resetting the
-  // position to 0 before the saved position can be applied.
+  // Clear the initial-mount guard after the first loadPages completes AND
+  // PdfPane has had time to mount and restore the saved scroll position.
+  // A fixed timeout (1200ms) after pageLoading first becomes false gives
+  // PdfPane enough time to render + restore scroll from localStorage.
+  // The old 500ms timer was too short for slower networks/devices.
+  const initialMountClearedRef = useRef(false);
   useEffect(() => {
+    if (initialMountClearedRef.current) return;
+    if (pageLoading) return; // still loading — wait
+    // pageLoading just became false (first content loaded)
+    initialMountClearedRef.current = true;
     const timer = setTimeout(() => {
       initialMountRef.current = false;
-    }, 500);
+    }, 1200);
     return () => clearTimeout(timer);
-  }, []);
+  }, [pageLoading]);
 
   const preferredAiDrawerLanguage = useMemo(() => {
   }, [selectedLanguage]);
@@ -1750,6 +1755,7 @@ function App() {
     selectedPage,
     displayMode,
     selectedLanguage,
+    selectedRoleMode,
     sidebarCollapsed,
     sidebarHidden,
     tool,
@@ -2040,11 +2046,57 @@ function App() {
       if (e.ctrlKey) {
         e.preventDefault();
         const delta = -e.deltaY * 0.01;
-        setFitMode('none');
-        setZoomLevel((current) => {
-          const next = current + delta;
-          return Math.min(5, Math.max(0.1, Number(next.toFixed(2))));
-        });
+        const currentZoom = zoomLevelRef.current || 1;
+        const nextZoom = Math.min(5, Math.max(0.1, Number((currentZoom + delta).toFixed(2))));
+        if (nextZoom === currentZoom) return;
+
+        // Anchor-based zoom: keep the cursor position stable on screen
+        const scrollTarget = getScrollTargetForGesture(e);
+        if (scrollTarget) {
+          const containerRect = scrollTarget.getBoundingClientRect();
+          const pageEl = scrollTarget.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
+          const pageRect = pageEl ? pageEl.getBoundingClientRect() : containerRect;
+          const offsetX = e.clientX - containerRect.left;
+          const offsetY = e.clientY - containerRect.top;
+          const pointInImgX = e.clientX - pageRect.left;
+          const pointInImgY = e.clientY - pageRect.top;
+          const fracX = pageRect.width > 0 ? pointInImgX / pageRect.width : 0.5;
+          const fracY = pageRect.height > 0 ? pointInImgY / pageRect.height : 0.5;
+
+          setFitMode('none');
+          setZoomLevel(nextZoom);
+
+          // After React re-renders at the new zoom, adjust scroll to keep pinch center stable
+          requestAnimationFrame(() => {
+            const newPageEl = scrollTarget.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
+            const newContainerRect = scrollTarget.getBoundingClientRect();
+            const newPageRect = newPageEl ? newPageEl.getBoundingClientRect() : null;
+            if (newPageRect && newPageRect.width > 0 && newPageRect.height > 0) {
+              const newPointInImgX = fracX * newPageRect.width;
+              const newPointInImgY = fracY * newPageRect.height;
+              const currentScreenX = newPageRect.left + newPointInImgX;
+              const currentScreenY = newPageRect.top + newPointInImgY;
+              const desiredScreenX = newContainerRect.left + offsetX;
+              const desiredScreenY = newContainerRect.top + offsetY;
+              const dx = currentScreenX - desiredScreenX;
+              const dy = currentScreenY - desiredScreenY;
+              if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+                const newLeft = scrollTarget.scrollLeft + dx;
+                const newTop = scrollTarget.scrollTop + dy;
+                const maxLeft = Math.max(0, scrollTarget.scrollWidth - scrollTarget.clientWidth);
+                const maxTop = Math.max(0, scrollTarget.scrollHeight - scrollTarget.clientHeight);
+                myScrollTo(scrollTarget, {
+                  left: Math.max(0, Math.min(newLeft, maxLeft)),
+                  top: Math.max(0, Math.min(newTop, maxTop)),
+                  behavior: 'instant',
+                });
+              }
+            }
+          });
+        } else {
+          setFitMode('none');
+          setZoomLevel(nextZoom);
+        }
         return;
       }
       if (Date.now() - lastTouchScrollAtRef.current < 250) return;
@@ -2813,12 +2865,16 @@ function App() {
     }
   }, [displayMode]);
 
-  // Scroll page containers to top when page changes in pagination mode.
-  // Skip during initial mount — PdfPane handles scroll restoration from
-  // localStorage, and a competing scrollTo(0,0) causes visible jitter.
+  // Scroll page containers to top when PAGE changes in pagination mode.
+  // Skip during initial mount and when only displayMode changed (mode switch
+  // should preserve scroll — PdfPane handles its own restore).
+  const prevSelectedPageForScrollRef = useRef(selectedPage);
   useEffect(() => {
     if (displayMode !== 'pagination') return;
     if (initialMountRef.current) return;
+    // Only reset scroll if selectedPage actually changed (not displayMode)
+    if (prevSelectedPageForScrollRef.current === selectedPage) return;
+    prevSelectedPageForScrollRef.current = selectedPage;
     const stage = stageRef.current;
     if (!stage) return;
     requestAnimationFrame(() => {
@@ -2828,12 +2884,31 @@ function App() {
       });
     });
   }, [selectedPage, displayMode]);
+  // Keep the ref in sync when displayMode changes without page change
+  useEffect(() => {
+    prevSelectedPageForScrollRef.current = selectedPage;
+  }, [displayMode]);
 
   // Scroll content to top when book or section changes (all display modes).
-  // Skip during initial mount — PdfPane handles scroll restoration from
-  // localStorage, and a competing scrollTo(0,0) causes visible jitter.
+  // Skip during initial mount and during subject restore — PdfPane handles
+  // scroll restoration from localStorage in those cases.
+  const prevChapterForScrollRef = useRef(selectedChapter);
+  const prevFileForScrollRef = useRef(selectedFile);
   useEffect(() => {
-    if (initialMountRef.current) return;
+    if (initialMountRef.current) {
+      prevChapterForScrollRef.current = selectedChapter;
+      prevFileForScrollRef.current = selectedFile;
+      return;
+    }
+    if (restoringUserSelectsRef.current) {
+      prevChapterForScrollRef.current = selectedChapter;
+      prevFileForScrollRef.current = selectedFile;
+      return;
+    }
+    // Only scroll to top if chapter or file actually changed
+    if (prevChapterForScrollRef.current === selectedChapter && prevFileForScrollRef.current === selectedFile) return;
+    prevChapterForScrollRef.current = selectedChapter;
+    prevFileForScrollRef.current = selectedFile;
     const stage = stageRef.current;
     if (!stage) return;
     requestAnimationFrame(() => {
@@ -5968,6 +6043,7 @@ function App() {
 
   useEffect(() => {
     if (!Number.isFinite(maxNavigablePage)) return;
+    if (initialMountRef.current) return;
     setSelectedPage((current) => {
       const clamped = Math.max(1, Math.min(maxNavigablePage, current));
       if (clamped !== current) {

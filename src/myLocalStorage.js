@@ -20,15 +20,15 @@ const STORAGE_KEY = 'pdfReaderScrollStorage';
 
 /** Keys to silently strip on load — they will never enter the in-memory cache. */
 const STRIP_KEYS = new Set([
-  'scroll',
-  'scroll-default-en',
-  'scroll-default-tc',
-  'scroll-1a-2-bilingual-en',
-  'scroll-1a-2-bilingual-tc',
-  'scroll-1',
-  'scroll-1a',
-  'scroll-1b',
-  'scroll-1c',
+  // 'scroll',
+  // 'scroll-default-en',
+  // 'scroll-default-tc',
+  // 'scroll-1a-2-bilingual-en',
+  // 'scroll-1a-2-bilingual-tc',
+  // 'scroll-1',
+  // 'scroll-1a',
+  // 'scroll-1b',
+  // 'scroll-1c',
   // 'scroll-chemistry-aristo-1a'
 ]);
 

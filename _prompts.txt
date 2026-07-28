@@ -337,14 +337,77 @@ choose the page of contents or contents.tn under the selected language
 
 when query string timestamp=1, load all the images with a preset timestamp like this ?t=20260727112900
 
-////
-
-it must keep the page number and scrolling position the same when reloading the webpage, toggling between different display modes, languages and roles. investigate deeply and fix all the in-depth issues about this problems. 
-do not show irrelevant page at the begining, only show the previously selected page.
-i have asked you to correct these many times.
 
 
 ////
 
 
 the pinch effect should also be down on every device with a touch screen, e.g. macbook pro's trackboard, not just on ipad.
+
+
+////
+
+it must keep the page number and scrolling position the same when reloading the webpage, toggling between different display modes, languages and roles. investigate deeply and fix all the in-depth issues about this problems. 
+do not show irrelevant page at the begining, only show the previously selected page.
+
+firstly, from the database collection, we read the primary dataset:
+
+{
+    "_id" : ObjectId("6a481cfbde6a2373a8f778d4"),
+    "userId" : "alan",
+    "createdAt" : "2026-07-03T20:35:07.315Z",
+    "lastSubjectId" : "biology-oup",
+    "selections" : {
+        "biology-oup" : {
+            "bookId" : "1a",
+            "sectionId" : NumberInt(1),
+            "pageId" : NumberInt(1),
+            "physicsChapterId" : ""
+        },
+        "chemistry-winter" : {
+            "bookId" : "4",
+            "sectionId" : NumberInt(4),
+            "pageId" : NumberInt(1),
+            "physicsChapterId" : ""
+        },
+        "physics-oup" : {
+            "bookId" : "2",
+            "sectionId" : NumberInt(1),
+            "pageId" : NumberInt(1),
+            "physicsChapterId" : ""
+        },
+        "chemistry-aristo" : {
+            "bookId" : "1a",
+            "sectionId" : NumberInt(1),
+            "pageId" : NumberInt(1),
+            "physicsChapterId" : ""
+        },
+        "math-oup" : {
+            "bookId" : "4a",
+            "sectionId" : NumberInt(1),
+            "pageId" : NumberInt(5),
+            "physicsChapterId" : ""
+        }
+    },
+    "updatedAt" : "2026-07-28T08:53:26.558+08:00"
+}
+
+and get what the user read for bookId, sectionId and pageId
+
+in pdfReaderScrollStorage {
+    top: 
+    left: 
+    page: 
+    scrollHeight: 
+    scrollWidth: 
+    pageHeight: 
+    pageWidth: 
+  };
+
+combine remote database selections and localstorage and pdfReaderScrollStorage so that 
+the page and scroll position will be absolutely persisted for the following events:
+1. webpage reloading
+2. change of display mode 
+3. change of language
+4. change of role
+

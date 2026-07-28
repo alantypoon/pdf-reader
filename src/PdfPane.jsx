@@ -1369,7 +1369,14 @@ function PdfPane({
       // (e.g. toggling bilingual→single-language, or role change).
       // On initial load they are equal, so we skip to avoid overwriting
       // the real saved position with (0,0) defaults.
-      if (mount.scrollHeight > 0 && activeDomSourceRef.current && (activeDomSourceRef.current !== (source || '') || lastMaxPagesRef.current !== maxPagesInGroup)) {
+      // CRITICAL: also skip entirely while isInitialLoadRef is true — the
+      // restore logic hasn't run yet, so mount.scrollTop is still 0 and
+      // this would overwrite the real saved position (e.g. p=5) with
+      // (page=1, fraction=0) BEFORE scheduleScrollToCurrent gets a chance
+      // to apply it.  images/maxPagesInGroup can legitimately change
+      // several times during the very first render (bilingual height
+      // recalculation), so this guard is essential.
+      if (!isInitialLoadRef.current && mount.scrollHeight > 0 && activeDomSourceRef.current && (activeDomSourceRef.current !== (source || '') || lastMaxPagesRef.current !== maxPagesInGroup)) {
         const prevDomKey = getScrollCacheKey(activeDomSourceRef.current || source);
         const prePos = getScrollPos(mount);
         const { page: prePage, pageEl: prePageEl } = findContainingPage(mount, prePos.scrollTop);
@@ -1989,10 +1996,17 @@ function PdfPane({
     // (e.g. toggling bilingual→single-language, or role change within same
     // language).  On initial load they are equal, so we skip to avoid
     // overwriting the real saved position with (0,0) defaults.
+    // CRITICAL: also skip entirely while isInitialLoadRef is true — the
+    // restore logic hasn't run yet, so mount.scrollTop is still 0 and this
+    // would overwrite the real saved position (e.g. p=5) with (page=1,
+    // fraction=0) BEFORE scheduleScrollToCurrent gets a chance to apply it.
+    // images/maxPagesInGroup can legitimately change several times during
+    // the very first render (bilingual height recalculation), so this
+    // guard is essential.
     const imagesChanged = lastImagesRef.current !== images;
     const maxPagesChanged = lastMaxPagesRef.current !== maxPagesInGroup;
     const sourceChanged = activeDomSourceRef.current !== (source || '');
-    if (mount.scrollHeight > 0 && activeDomSourceRef.current && (sourceChanged || imagesChanged || maxPagesChanged)) {
+    if (!isInitialLoadRef.current && mount.scrollHeight > 0 && activeDomSourceRef.current && (sourceChanged || imagesChanged || maxPagesChanged)) {
       const preRebuildPos = getScrollPos(mount);
       const { page: prePage, pageEl: prePageEl } = findContainingPage(mount, preRebuildPos.scrollTop);
       const preRelTop = prePageEl ? Math.max(0, preRebuildPos.scrollTop - prePageEl.offsetTop) : preRebuildPos.scrollTop;
@@ -2407,18 +2421,22 @@ function PdfPane({
 
         const target = mount.querySelector(`[data-page="${savedPage}"]`);
         // ── Compute offsetTop for the target page ─────────
-        // Prefer the stored page height formula over the DOM element's
-        // offsetTop.  During early load (especially in bilingual mode),
-        // preceding pages may not have their final CSS heights applied
-        // yet, so target.offsetTop can be significantly wrong.  The stored
-        // page height from the previous session represents the settled
-        // layout where ALL pages had their correct heights.
+        // Prefer the DOM element's actual offsetTop when the target exists —
+        // it already accounts for margins/borders between pages (e.g. the
+        // 20px vertical margin + 1px border on .page-img), which the
+        // storedPageHeight formula below does NOT include, causing a
+        // growing drift (~40px per page) that lands the restored scroll
+        // inside the wrong page.  Only fall back to the formula when the
+        // target isn't in the DOM yet (e.g. a placeholder page beyond the
+        // initial render window in non-bilingual mode).
         let offsetTop;
         let domOffsetTop = 0;
         if (target) {
           domOffsetTop = target.offsetTop;
         }
-        if (storedPageHeight > 0) {
+        if (target && domOffsetTop > 0) {
+          offsetTop = domOffsetTop;
+        } else if (storedPageHeight > 0) {
           // storedPageHeight is the CSS display height (includes zoom).
           // Do NOT multiply by zoomLevel again — that would double-count.
           offsetTop = (savedPage - 1) * storedPageHeight;
