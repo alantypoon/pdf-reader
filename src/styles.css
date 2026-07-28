@@ -1687,6 +1687,7 @@ button, input, select {
   border-radius: 8px;
   border: 1px solid gray !important;
   margin: 20px 0px !important;  
+  /* min-height: -webkit-fill-available; */
 }
 .bilingual-scroll-spacer{
   display:none;

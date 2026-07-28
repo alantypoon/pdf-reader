@@ -410,4 +410,3 @@ the page and scroll position will be absolutely persisted for the following even
 2. change of display mode 
 3. change of language
 4. change of role
-

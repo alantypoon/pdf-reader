@@ -333,15 +333,17 @@ function getBilingualColumnWidth(stage) {
  * in the bilingual layout to the shared maxHeight with !important.
  * This runs once when the max is established — no per-element inline needed.
  */
-function updateBilingualPageHeightCSS(maxH) {
-  let styleEl = document.getElementById('bilingual-page-height-css');
+function updateBilingualPageHeightCSS(maxH, paneLanguage) {
+  const styleId = `bilingual-page-height-css-${paneLanguage}`;
+  let styleEl = document.getElementById(styleId);
   if (!styleEl) {
     styleEl = document.createElement('style');
-    styleEl.id = 'bilingual-page-height-css';
+    styleEl.id = styleId;
     document.head.appendChild(styleEl);
   }
   styleEl.textContent =
-    `.book-stage.bilingual-layout .pdf-scroll-pages .page-img {\n` +
+    `.book-stage.bilingual-layout .pdf-scroll-pages[data-bilingual-pane="${paneLanguage}"] .page-img,\n` +
+    `.book-stage.bilingual-layout .pdf-scroll-pages[data-bilingual-pane="${paneLanguage}"] .pdf-blank-page {\n` +
     `  height: ${maxH}px !important;\n` +
     `  max-height: ${maxH}px !important;\n` +
     `  min-height: ${maxH}px !important;\n` +
@@ -349,8 +351,9 @@ function updateBilingualPageHeightCSS(maxH) {
 
 }
 
-function repositionBilingualPages(mount, syncGroup) {
-  const maxH = _bilingualMaxHeights.get(syncGroup) || 0;
+function repositionBilingualPages(mount, syncGroup, paneLanguage) {
+  const paneKey = syncGroup + '::' + paneLanguage;
+  const maxH = _bilingualMaxHeights.get(paneKey) || 0;
   if (!maxH) { return; }
 
   // Find all page elements
@@ -363,15 +366,15 @@ function repositionBilingualPages(mount, syncGroup) {
   // block layout), so just check that a spacer exists.
   const existingSpacer = mount.querySelector('.bilingual-scroll-spacer');
   const spacerExists = !!existingSpacer;
-  // Also check whether CSS rule is already correct (injected via style element)
-  const styleEl = document.getElementById('bilingual-page-height-css');
+  // Also check whether per-pane CSS rule is already correct (injected via style element)
+  const styleEl = document.getElementById(`bilingual-page-height-css-${paneLanguage}`);
   const cssSame = styleEl && styleEl.textContent.includes(`height: ${maxH}px`);
   if (spacerExists && cssSame) {
     return;
   }
 
-  // Dynamically inject/update the CSS rule locking all .page-img heights.
-  updateBilingualPageHeightCSS(maxH);
+  // Dynamically inject/update the per-pane CSS rule locking all .page-img heights.
+  updateBilingualPageHeightCSS(maxH, paneLanguage);
 
   const oldScrollHeight = Math.max(1, mount.scrollHeight);
   const oldScrollTop = getScrollPos(mount).scrollTop;
@@ -398,7 +401,7 @@ function repositionBilingualPages(mount, syncGroup) {
     // display:flex from CSS (.pdf-blank-page) instead of overriding to block.
     if (child.dataset.blank === 'true') {
       child.style.display = 'flex';
-      child.style.setProperty('height', `${maxH}px`, 'important');
+      // height is handled by the bilingual-page-height-css dynamic rule
     } else {
       child.style.display = 'block';
     }
@@ -442,14 +445,16 @@ function repositionBilingualPages(mount, syncGroup) {
   }
 }
 
-function updateBilingualMaxHeight(syncGroup, localMax) {
-  const current = _bilingualMaxHeights.get(syncGroup) || 0;
+function updateBilingualMaxHeight(syncGroup, localMax, paneLanguage) {
+  const paneKey = syncGroup + '::' + paneLanguage;
+  const current = _bilingualMaxHeights.get(paneKey) || 0;
   const next = Math.max(current, Math.round(localMax));
-  _bilingualMaxHeights.set(syncGroup, next);
+  _bilingualMaxHeights.set(paneKey, next);
   return next;
 }
 
-function normalizeBilingualHeights(mount, syncGroup, reset = false) {
+function normalizeBilingualHeights(mount, syncGroup, reset = false, paneLanguage = 'en') {
+  const paneKey = syncGroup + '::' + paneLanguage;
   const children = mount.querySelectorAll('[data-page]');
   if (!children.length) return;
 
@@ -460,25 +465,25 @@ function normalizeBilingualHeights(mount, syncGroup, reset = false) {
     if (h > localMax) localMax = h;
   });
 
-  // Update shared max (both panes contribute to the same Map entry).
+  // Update per-pane max (each language pane has its own independent max).
   // When reset is true, discard previous max so the value can shrink
   // (e.g. after fit-refresh or window resize to smaller dimensions).
   // Only reset if we measured a height that's close to the existing
-  // shared max — a tiny measurement means the CSS rule hasn't taken
+  // max — a tiny measurement means the CSS rule hasn't taken
   // effect yet and we must keep the pre-computed value.
   if (reset && localMax > 0) {
-    const existing = _bilingualMaxHeights.get(syncGroup) || 0;
+    const existing = _bilingualMaxHeights.get(paneKey) || 0;
     if (existing === 0 || localMax >= existing * 0.5) {
-      _bilingualMaxHeights.delete(syncGroup);
+      _bilingualMaxHeights.delete(paneKey);
     }
   }
-  const prevMax = _bilingualMaxHeights.get(syncGroup) || 0;
-  const newMax = updateBilingualMaxHeight(syncGroup, localMax);
+  const prevMax = _bilingualMaxHeights.get(paneKey) || 0;
+  const newMax = updateBilingualMaxHeight(syncGroup, localMax, paneLanguage);
 
   // Reposition if max changed
   if (newMax !== prevMax || prevMax === 0) {
-    repositionBilingualPages(mount, syncGroup);
-    // If the shared max grew because of us, notify the OTHER pane to reposition
+    repositionBilingualPages(mount, syncGroup, paneLanguage);
+    // If the max grew, notify the OTHER pane to reposition (its own height is independent)
     if (newMax !== prevMax) {
       window.dispatchEvent(new CustomEvent(BILINGUAL_REPOSITION_EVENT, {
         detail: { syncGroup }
@@ -1349,7 +1354,7 @@ function PdfPane({
           const blankPage = document.createElement('div');
           blankPage.className = 'pdf-blank-page';
           blankPage.style.width = `${blankWidth}px`;
-          blankPage.style.setProperty('height', `${pageH}px`, 'important');
+          blankPage.style.height = `${pageH}px`;
           blankPage.textContent = String(p);
           // Keep display:flex from CSS for vertical+horizontal centering of page number
           blankPage.dataset.page = String(p);
@@ -1407,7 +1412,7 @@ function PdfPane({
       if (isBilingual) {
         requestAnimationFrame(() => {
           if (disposed || modeGenRef.current !== gen) return;
-          normalizeBilingualHeights(mount, syncGroup, true);
+          normalizeBilingualHeights(mount, syncGroup, true, paneLanguageRef.current || 'en');
         });
       }
 
@@ -1890,9 +1895,10 @@ function PdfPane({
     const onReposition = (event) => {
       const { syncGroup: group } = event.detail || {};
       if (group !== syncGroup) return;
-      const maxH = _bilingualMaxHeights.get(syncGroup) || 0;
+      const paneKey = syncGroup + '::' + (paneLanguage || 'en');
+      const maxH = _bilingualMaxHeights.get(paneKey) || 0;
       if (maxH && mount) {
-        repositionBilingualPages(mount, syncGroup);
+        repositionBilingualPages(mount, syncGroup, paneLanguage);
       }
     };
 
@@ -2087,14 +2093,15 @@ function PdfPane({
         maxH = Math.round(baseWidth * zoom * Math.SQRT2);
         console.log(`[bilingual-maxH] no dimensions available — using estimate: ${maxH}`);
       }
-      // Always update the shared max — our computed value from actual
-      // dimensions is more accurate than any previously estimated value.
-      // Use the SHARED max for the CSS rule so both panes get the same height.
-      const prev = _bilingualMaxHeights.get(syncGroup) || 0;
-      _bilingualMaxHeights.set(syncGroup, Math.max(prev, maxH));
-      const sharedMax = _bilingualMaxHeights.get(syncGroup);
-      console.log(`[bilingual-maxH] maxH=${maxH}  prev=${prev}  sharedMax=${sharedMax}  displayW=${displayW}  baseWidth=${baseWidth}  zoom=${zoom}`);
-      updateBilingualPageHeightCSS(sharedMax);
+      // Set per-pane max — each language pane has its own independent height.
+      // Use paneLanguageRef so stale closures in this effect are harmless.
+      const lang = paneLanguageRef.current || paneLanguage || 'en';
+      const paneKey2 = syncGroup + '::' + lang;
+      const prev2 = _bilingualMaxHeights.get(paneKey2) || 0;
+      _bilingualMaxHeights.set(paneKey2, Math.max(prev2, maxH));
+      const localMaxH = _bilingualMaxHeights.get(paneKey2);
+      console.log(`[bilingual-maxH] maxH=${maxH}  prev=${prev2}  localMaxH=${localMaxH}  displayW=${displayW}  baseWidth=${baseWidth}  zoom=${zoom}  lang=${lang}`);
+      updateBilingualPageHeightCSS(localMaxH, lang);
     }
 
     // Create all img elements first (without src) so DOM order is fixed.
@@ -2210,10 +2217,13 @@ function PdfPane({
     activeDomSourceRef.current = source || '';  // track which source built this DOM
 
     // Pad shorter image set with individual blank <div> pages.  Each shows
-    // its page number centred.  Height from uniformImgHeight, later locked
-    // by repositionBilingualPages to the final global max.
+    // its page number centred.  Height must match THIS pane's own max
+    // (keyed by syncGroup + paneLanguage) — falling back to
+    // uniformImgHeight's rough estimate only when no max exists yet.
     if (maxPagesInGroup > 0 && images.length > 0 && images.length < maxPagesInGroup) {
-      const pageH = uniformImgHeight || (() => {
+      const lang2 = paneLanguageRef.current || paneLanguage || 'en';
+      const paneKey3 = syncGroup + '::' + lang2;
+      const pageH = _bilingualMaxHeights.get(paneKey3) || uniformImgHeight || (() => {
         if (fitMode === 'height') return Math.round(mountH * zoom);
         return Math.round(baseWidth * zoom * Math.SQRT2);
       })();
@@ -2235,19 +2245,20 @@ function PdfPane({
     // centre without a visible flash on narrow stacked layouts), AND
     // keep a 150ms debounced safety net for late-arriving layout changes.
     if (isBilingual) {
-      normalizeBilingualHeights(mount, syncGroup, false);
+      const lang3 = paneLanguageRef.current || paneLanguage || 'en';
+      normalizeBilingualHeights(mount, syncGroup, false, lang3);
       let normalizeTimer = null;
       const scheduleNormalize = () => {
         if (normalizeTimer) clearTimeout(normalizeTimer);
         normalizeTimer = setTimeout(() => {
           if (disposed) return;
-          normalizeBilingualHeights(mount, syncGroup, false);
+          normalizeBilingualHeights(mount, syncGroup, false, paneLanguageRef.current || paneLanguage || 'en');
         }, 150);
       };
       const onImageLoad = () => {
         // Immediate call — centres pages as soon as the image paints.
-        // Use reset=false so we don't discard the shared max, just refine.
-        normalizeBilingualHeights(mount, syncGroup, false);
+        // Use reset=false so we don't discard the per-pane max, just refine.
+        normalizeBilingualHeights(mount, syncGroup, false, paneLanguageRef.current || paneLanguage || 'en');
         // Safety net: re-measure after any follow-up layout.
         scheduleNormalize();
       };
@@ -2937,7 +2948,7 @@ function PdfPane({
       });
       // Re-measure and reposition — image dimensions changed.
       // reset=true allows the shared max to shrink if needed.
-      normalizeBilingualHeights(mount, syncGroup, true);
+      normalizeBilingualHeights(mount, syncGroup, true, paneLanguageRef.current || 'en');
     } else {
       // Size images wider than the scroll container to create horizontal overflow.
       // For height-fit mode use container height to drive image size instead.
@@ -3326,7 +3337,7 @@ function PdfPane({
               <canvas ref={canvasRef} />
             </div>
           ) : (
-            <div ref={scrollRef} className="pdf-scroll-pages" />
+            <div ref={scrollRef} className="pdf-scroll-pages" data-bilingual-pane={paneLanguage} />
           )}
         </div>
       </div>
