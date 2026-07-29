@@ -69,34 +69,11 @@ function withTimestamp(url) {
  */
 function centerAnchoredScroll(container, oldScrollTop, oldScrollHeight, axis = 'vertical', oldScrollLeft = 0, oldScrollWidth = 0, oldClientHeight = 0, oldClientWidth = 0) {
   const activePinchAnchor = typeof window !== 'undefined' ? window.__pdfReaderPinchZoomAnchor : null;
-  if (activePinchAnchor) {
-    const targetMatch = activePinchAnchor.target === container;
-    const age = Date.now() - activePinchAnchor.createdAt;
-    console.log('[pinch-zoom-center] centerAnchoredScroll check', {
-      hasAnchor: true,
-      targetMatch,
-      age,
-      expired: age >= 1000,
-      containerClass: container?.className?.slice(0, 40),
-      anchorTargetClass: activePinchAnchor.target?.className?.slice(0, 40),
-    });
-  }
-  // Only use the pinch anchor for the pane that matches the target.
-  // The sibling pane in bilingual mode is synced by App.jsx's rAF correction
-  // which applies the same scroll delta to all panes.
-  const anchorNotExpired = activePinchAnchor && Date.now() - activePinchAnchor.createdAt < 1000;
-  const targetMatch = activePinchAnchor?.target === container;
-  if (anchorNotExpired && targetMatch) {
+  if (activePinchAnchor?.target === container && Date.now() - activePinchAnchor.createdAt < 1000) {
     // Use the image-fraction approach: find where the pinch point's fraction
     // lands in the now-resized image, then scroll so that point stays at the
     // same screen position (offsetX/Y from the container edge).
-    // Re-locate the SAME page the anchor was captured against (by data-page
-    // number) — a plain querySelector would always return the FIRST page in
-    // DOM order, which is wrong once the user has scrolled into a
-    // multi-page document and causes the zoom center to drift vertically.
-    const pageEl = activePinchAnchor.anchorPageNum != null
-      ? container.querySelector(`[data-page="${activePinchAnchor.anchorPageNum}"]`)
-      : container.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
+    const pageEl = container.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
     const containerRect = container.getBoundingClientRect();
     const pageRect = pageEl ? pageEl.getBoundingClientRect() : null;
     if (pageRect && pageRect.width > 0 && pageRect.height > 0 && activePinchAnchor.fracX != null) {
@@ -104,26 +81,10 @@ function centerAnchoredScroll(container, oldScrollTop, oldScrollHeight, axis = '
       const newPointInImgY = activePinchAnchor.fracY * pageRect.height;
       const currentScreenX = pageRect.left + newPointInImgX;
       const currentScreenY = pageRect.top + newPointInImgY;
-      // For target pane: use absolute screen position
-      // For non-target pane (bilingual sibling): use offsetX/Y relative to this container
-      const isTargetPane = activePinchAnchor.target === container;
-      const desiredScreenX = isTargetPane && activePinchAnchor.screenX != null
-        ? activePinchAnchor.screenX : (containerRect.left + activePinchAnchor.offsetX);
-      const desiredScreenY = isTargetPane && activePinchAnchor.screenY != null
-        ? activePinchAnchor.screenY : (containerRect.top + activePinchAnchor.offsetY);
+      const desiredScreenX = containerRect.left + activePinchAnchor.offsetX;
+      const desiredScreenY = containerRect.top + activePinchAnchor.offsetY;
       const dx = currentScreenX - desiredScreenX;
       const dy = currentScreenY - desiredScreenY;
-      console.log('[pinch-zoom-center] centerAnchoredScroll', {
-        pinchCenterScreenX: desiredScreenX.toFixed(1),
-        pinchCenterScreenY: desiredScreenY.toFixed(1),
-        zoomCenterScreenX: currentScreenX.toFixed(1),
-        zoomCenterScreenY: currentScreenY.toFixed(1),
-        dx: dx.toFixed(1), dy: dy.toFixed(1),
-        fracX: activePinchAnchor.fracX.toFixed(4),
-        fracY: activePinchAnchor.fracY.toFixed(4),
-        pageRectTop: pageRect.top.toFixed(1), pageRectHeight: pageRect.height.toFixed(1),
-        containerTop: containerRect.top.toFixed(1),
-      });
       const newTop = container.scrollTop + dy;
       const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
       const result = { top: Math.max(0, Math.min(newTop, maxTop)), behavior: 'instant' };
@@ -390,7 +351,7 @@ function updateBilingualPageHeightCSS(maxH, paneLanguage) {
 
 }
 
-function repositionBilingualPages(mount, syncGroup, paneLanguage) {
+function repositionBilingualPages(mount, syncGroup, paneLanguage, skipScrollAdjust = false) {
   const paneKey = syncGroup + '::' + paneLanguage;
   const maxH = _bilingualMaxHeights.get(paneKey) || 0;
   if (!maxH) { return; }
@@ -474,8 +435,12 @@ function repositionBilingualPages(mount, syncGroup, paneLanguage) {
   // Set _bilingualRepositioning so the scroll event handler suppresses
   // onPageChange — otherwise syncPageIndicator may detect a different page
   // due to rounding and cause an unwanted page jump (e.g. 9 → 8).
+  // Skipped when the caller (e.g. the zoom/resize effect) already owns
+  // scroll-anchoring for this pass — doing both here AND there causes
+  // competing scrollTop writes that visibly jitter/shake during a
+  // continuous zoom gesture (trackpad pinch or wheel+ctrl).
   const newScrollHeight = Math.max(1, mount.scrollHeight);
-  if (newScrollHeight !== oldScrollHeight) {
+  if (!skipScrollAdjust && newScrollHeight !== oldScrollHeight) {
     _bilingualRepositioning = true;
     mySetScrollTop(mount, oldScrollTop * (newScrollHeight / oldScrollHeight));
     // Reset on the next macrotask so the rAF-deferred syncPageIndicator
@@ -492,7 +457,7 @@ function updateBilingualMaxHeight(syncGroup, localMax, paneLanguage) {
   return next;
 }
 
-function normalizeBilingualHeights(mount, syncGroup, reset = false, paneLanguage = 'en') {
+function normalizeBilingualHeights(mount, syncGroup, reset = false, paneLanguage = 'en', skipScrollAdjust = false) {
   const paneKey = syncGroup + '::' + paneLanguage;
   const children = mount.querySelectorAll('[data-page]');
   if (!children.length) return;
@@ -521,7 +486,7 @@ function normalizeBilingualHeights(mount, syncGroup, reset = false, paneLanguage
 
   // Reposition if max changed
   if (newMax !== prevMax || prevMax === 0) {
-    repositionBilingualPages(mount, syncGroup, paneLanguage);
+    repositionBilingualPages(mount, syncGroup, paneLanguage, skipScrollAdjust);
     // If the max grew, notify the OTHER pane to reposition (its own height is independent)
     if (newMax !== prevMax) {
       window.dispatchEvent(new CustomEvent(BILINGUAL_REPOSITION_EVENT, {
@@ -1162,13 +1127,6 @@ function PdfPane({
 
     const heightChanged = height > 0 && height !== container.scrollHeight;
     const widthChanged = width > 0 && width !== container.scrollWidth;
-    const hasPinchAnchor = !!window.__pdfReaderPinchZoomAnchor;
-    console.log('[pinch-zoom-center] img-pagination layoutEffect', {
-      heightChanged, widthChanged,
-      hasPinchAnchor,
-      refHeight: height, containerScrollH: container.scrollHeight,
-      zoom,
-    });
     if (isDebugZooming()) {
       console.log('[zoom-img-pagination] center-anchor check', {
         zoom, fitMode,
@@ -1301,7 +1259,7 @@ function PdfPane({
     // the DOM so they render at the correct size from the start.
     if (isBilingual) {
       const estH = Math.round(baseWidth * zoom * Math.SQRT2);
-      updateBilingualPageHeightCSS(estH);
+      updateBilingualPageHeightCSS(estH, paneLanguageRef.current || paneLanguage || 'en');
     }
 
     const drawAll = async () => {
@@ -2988,7 +2946,7 @@ function PdfPane({
       const estH = fitMode === 'height'
         ? Math.round(Math.max(180, mount.getBoundingClientRect().height) * zoom)
         : Math.round(sharedW * zoom * Math.SQRT2);
-      updateBilingualPageHeightCSS(estH);
+      updateBilingualPageHeightCSS(estH, paneLanguageRef.current || paneLanguage || 'en');
       // Update image widths to match the new container width.
       // Update EVERY <img> created for this images array (imgElementsRef),
       // not just ones currently attached via querySelectorAll — pages far
@@ -3011,7 +2969,13 @@ function PdfPane({
       });
       // Re-measure and reposition — image dimensions changed.
       // reset=true allows the shared max to shrink if needed.
-      normalizeBilingualHeights(mount, syncGroup, true, paneLanguageRef.current || 'en');
+      // skipScrollAdjust=true: this zoom effect already anchors scroll
+      // precisely via Phase 1 (sync estimate) + Phase 2 (setTimeout
+      // fine-tune) below — letting repositionBilingualPages ALSO rescale
+      // scrollTop here causes two competing writes per zoom tick, which
+      // is what produced the shaky/jittery scroll during continuous
+      // trackpad-pinch or ctrl+wheel zoom in bilingual scrolling mode.
+      normalizeBilingualHeights(mount, syncGroup, true, paneLanguageRef.current || 'en', true);
     } else {
       // Size images wider than the scroll container to create horizontal overflow.
       // For height-fit mode use container height to drive image size instead.
@@ -3031,13 +2995,11 @@ function PdfPane({
         });
         placeholders.forEach((ph) => { ph.style.height = `${h}px`; });
       } else {
-        const w = baseWidth * zoom;
         imgs.forEach((img) => {
-          img.style.width = `${w}px`;
+          img.style.width = `${baseWidth * zoom}px`;
           img.style.height = 'auto';
           img.style.maxWidth = 'none';
         });
-        placeholders.forEach((ph) => { ph.style.width = `${w}px`; });
       }
     }
 
@@ -3108,108 +3070,20 @@ function PdfPane({
     // handler) instead of the viewport center — matches native pinch-zoom
     // behaviour and the anchoring already used for PDF-canvas/pagination.
     const activePinchAnchor = typeof window !== 'undefined' ? window.__pdfReaderPinchZoomAnchor : null;
-    const anchorNotExpired = activePinchAnchor && Date.now() - activePinchAnchor.createdAt < 1000;
-    // Only use the pinch anchor for the pane that is the target.
-    // The sibling pane in bilingual mode is synced by App.jsx's rAF correction.
-    const targetMatch = activePinchAnchor?.target === mount;
-    const pinchAnchorActive = anchorNotExpired && targetMatch;
-    console.log('[pinch-zoom-center] scrolling-mode zoom effect', {
-      zoomChanged,
-      pinchAnchorActive,
-      hasGlobalAnchor: !!activePinchAnchor,
-      targetMatch,
-      anchorAge: activePinchAnchor ? (Date.now() - activePinchAnchor.createdAt) : 'n/a',
-      zoom, oldZoom, zoomRatio: zoomRatio.toFixed(3),
-    });
+    const pinchAnchorActive = activePinchAnchor?.target === mount && Date.now() - activePinchAnchor.createdAt < 1000;
     const anchorOffsetY = pinchAnchorActive ? activePinchAnchor.offsetY : oldCH / 2;
     const anchorOffsetX = pinchAnchorActive ? activePinchAnchor.offsetX : oldCW / 2;
-    if (pinchAnchorActive) {
-      const containerRect = mount.getBoundingClientRect();
-      // Use absolute screen position when available (robust against container shifts)
-      const pinchScreenX = activePinchAnchor.screenX != null ? activePinchAnchor.screenX : (containerRect.left + activePinchAnchor.offsetX);
-      const pinchScreenY = activePinchAnchor.screenY != null ? activePinchAnchor.screenY : (containerRect.top + activePinchAnchor.offsetY);
-      console.log('[pinch-zoom-center] pinching center (screen)', {
-        pinchScreenX: pinchScreenX.toFixed(1),
-        pinchScreenY: pinchScreenY.toFixed(1),
-        offsetX: activePinchAnchor.offsetX.toFixed(1),
-        offsetY: activePinchAnchor.offsetY.toFixed(1),
-        screenX: activePinchAnchor.screenX?.toFixed(1) ?? 'n/a',
-        screenY: activePinchAnchor.screenY?.toFixed(1) ?? 'n/a',
-        fracX: activePinchAnchor.fracX?.toFixed(4),
-        fracY: activePinchAnchor.fracY?.toFixed(4),
-        anchorPageNum: activePinchAnchor.anchorPageNum,
+    if (isDebugZooming() && pinchAnchorActive) {
+      console.log('[zoom-img-scrolling] using pinch-midpoint anchor', {
+        anchorOffsetX: anchorOffsetX.toFixed(1), anchorOffsetY: anchorOffsetY.toFixed(1),
       });
     }
 
     // ═══ PHASE 1 (synchronous): apply estimated scroll immediately ═══
     // Only needed when zoom actually changed — for contentWidth-only re-runs
     // the browser naturally preserves scrollTop at the correct content position.
-    if (zoomChanged && pinchAnchorActive && activePinchAnchor.fracX != null) {
-      // Use page-element bounding rect for precise pinch-center anchoring.
-      // The ratio-based formula (scrollTop + offset) * zoomRatio - offset is
-      // inaccurate because page margins (which don't scale) cause non-uniform
-      // content scaling. Instead, find the anchor page and compute exact position.
-      const pageEl = activePinchAnchor.anchorPageNum != null
-        ? mount.querySelector(`[data-page="${activePinchAnchor.anchorPageNum}"]`)
-        : mount.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
-      const containerRect = mount.getBoundingClientRect();
-      const pageRect = pageEl ? pageEl.getBoundingClientRect() : null;
-      if (pageRect && pageRect.width > 0 && pageRect.height > 0) {
-        // Where the pinch point currently IS on screen (after CSS resize)
-        const newPointInImgX = activePinchAnchor.fracX * pageRect.width;
-        const newPointInImgY = activePinchAnchor.fracY * pageRect.height;
-        const currentScreenX = pageRect.left + newPointInImgX;
-        const currentScreenY = pageRect.top + newPointInImgY;
-        // Where we WANT it to be:
-        // - For the target pane (cursor is here): use absolute screen position
-        // - For non-target pane (bilingual sibling): use offsetX/Y relative to
-        //   this pane's own container so both panes anchor at the same fraction
-        const isTargetPane = activePinchAnchor.target === mount;
-        const desiredScreenX = isTargetPane && activePinchAnchor.screenX != null
-          ? activePinchAnchor.screenX : (containerRect.left + activePinchAnchor.offsetX);
-        const desiredScreenY = isTargetPane && activePinchAnchor.screenY != null
-          ? activePinchAnchor.screenY : (containerRect.top + activePinchAnchor.offsetY);
-        const dx = currentScreenX - desiredScreenX;
-        const dy = currentScreenY - desiredScreenY;
-        const estNewTop = mount.scrollTop + dy;
-        const estNewLeft = mount.scrollLeft + dx;
-        const estMaxTop = Math.max(0, mount.scrollHeight - mount.clientHeight);
-        const estMaxLeft = Math.max(0, mount.scrollWidth - mount.clientWidth);
-        myScrollTo(mount, {
-          top: Math.max(0, Math.min(estNewTop, estMaxTop)),
-          left: Math.max(0, Math.min(estNewLeft, estMaxLeft)),
-          behavior: 'instant',
-        });
-        // Log the zooming center for verification
-        console.log('[pinch-zoom-center] Phase 1 zooming center (screen)', {
-          pinchCenterX: desiredScreenX.toFixed(1),
-          pinchCenterY: desiredScreenY.toFixed(1),
-          zoomCenterX: currentScreenX.toFixed(1),
-          zoomCenterY: currentScreenY.toFixed(1),
-          dx: dx.toFixed(1), dy: dy.toFixed(1),
-          scrollTop: mount.scrollTop, estNewTop: estNewTop.toFixed(1),
-        });
-      } else {
-        // Fallback: ratio-based when page element not found
-        const estNewTop = (old.scrollTop + anchorOffsetY) * zoomRatio - anchorOffsetY;
-        const oldContentFits = oldSW <= oldCW + 1;
-        const oldHOffset = oldContentFits ? (oldCW - oldSW) / 2 : 0;
-        const contentCenterX = old.scrollLeft + anchorOffsetX - oldHOffset;
-        const estNewContentFits = oldContentFits && (zoomRatio <= 1.01);
-        const estNewHOffset = estNewContentFits ? (oldCW - oldSW * zoomRatio) / 2 : 0;
-        const estNewLeft = contentCenterX * zoomRatio + estNewHOffset - anchorOffsetX;
-        const estMaxTop = Math.max(0, oldSH * zoomRatio - oldCH);
-        const estMaxLeft = Math.max(0, oldSW * zoomRatio - oldCW);
-        if (oldSH > 0 || oldSW > 0) {
-          myScrollTo(mount, {
-            top: Math.max(0, Math.min(estNewTop, estMaxTop)),
-            left: Math.max(0, Math.min(estNewLeft, estMaxLeft)),
-            behavior: 'instant',
-          });
-        }
-      }
-    } else if (zoomChanged) {
-      // Non-pinch zoom: use ratio-based approach (viewport center)
+    if (zoomChanged) {
+      // Vertical: content is top-aligned, simple zoom-factor scaling
       const estNewTop = (old.scrollTop + anchorOffsetY) * zoomRatio - anchorOffsetY;
 
       // Horizontal: account for CSS centering offset in old state
@@ -3233,7 +3107,7 @@ function PdfPane({
       }
 
       if (isDebugZooming()) {
-        console.log('[zoom-img-scrolling] Phase 1 sync (zoom changed, non-pinch)', {
+        console.log('[zoom-img-scrolling] Phase 1 sync (zoom changed)', {
           zoom, fitMode, oldZoom, zoomRatio,
           oldScrollTop: old.scrollTop, oldScrollHeight: oldSH,
           estNewTop, estMaxTop,
@@ -3254,8 +3128,6 @@ function PdfPane({
     const phase2OldContentFits = oldSW <= oldCW + 1;
     const phase2OldHOffset = phase2OldContentFits ? (oldCW - oldSW) / 2 : 0;
     const phase2ContentCenterX = old.scrollLeft + anchorOffsetX - phase2OldHOffset;
-    // Save pinch anchor data for Phase 2 closure
-    const phase2PinchAnchor = pinchAnchorActive ? { ...activePinchAnchor } : null;
 
     const timer = setTimeout(() => {
       if (!mount) return;
@@ -3264,93 +3136,44 @@ function PdfPane({
       const newSH = mount.scrollHeight;
       const newSW = mount.scrollWidth;
 
+      // Vertical: anchor-point (pinch midpoint or viewport-center) scaling
+      const vpCenterY = old.scrollTop + anchorOffsetY;
+      const scaleY = oldSH > 0 ? newSH / oldSH : 1;
+      const newTop = vpCenterY * scaleY - anchorOffsetY;
+
+      // Horizontal (with actual new centering offset)
+      const newContentFits = newSW <= newCW + 1;
+      const newHOffset = newContentFits ? (newCW - newSW) / 2 : 0;
+      const scaleX = oldSW > 0 ? newSW / oldSW : 1;
+      const newLeft = phase2ContentCenterX * scaleX + newHOffset - anchorOffsetX;
+
+      const maxTop = Math.max(0, newSH - newCH);
+      const maxLeft = Math.max(0, newSW - newCW);
+
       const hChanged = oldSH !== newSH;
       const wChanged = oldSW !== newSW;
 
+      if (isDebugZooming()) {
+        console.log('[zoom-img-scrolling] center-anchor fine-tune', {
+          zoom, fitMode, zoomChanged, oldZoom, zoomRatio,
+          savedScrollTop: old.scrollTop, savedScrollHeight: oldSH,
+          savedScrollLeft: old.scrollLeft, savedScrollWidth: oldSW,
+          oldClientH: oldCH, oldClientW: oldCW,
+          newClientH: newCH, newClientW: newCW,
+          phase2OldContentFits, newContentFits,
+          phase2OldHOffset, newHOffset,
+          phase2ContentCenterX, scaleX, scaleY,
+          finalNewTop: newTop, finalNewLeft: newLeft,
+          curH: newSH, curW: newSW,
+          hChanged, wChanged,
+        });
+      }
       if ((hChanged || wChanged) && !_scrollRestoreInProgress) {
-        if (phase2PinchAnchor && phase2PinchAnchor.fracX != null) {
-          // Precise page-element approach for pinch zoom:
-          // Find the anchor page and compute exact scroll to place the
-          // pinch point at the correct screen position.
-          const pageEl = phase2PinchAnchor.anchorPageNum != null
-            ? mount.querySelector(`[data-page="${phase2PinchAnchor.anchorPageNum}"]`)
-            : mount.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
-          const containerRect = mount.getBoundingClientRect();
-          const pageRect = pageEl ? pageEl.getBoundingClientRect() : null;
-          if (pageRect && pageRect.width > 0 && pageRect.height > 0) {
-            const newPointInImgX = phase2PinchAnchor.fracX * pageRect.width;
-            const newPointInImgY = phase2PinchAnchor.fracY * pageRect.height;
-            const currentScreenX = pageRect.left + newPointInImgX;
-            const currentScreenY = pageRect.top + newPointInImgY;
-            // For target pane: use absolute screen position
-            // For non-target pane (bilingual sibling): use offsetX/Y relative to this container
-            const isTargetPane = phase2PinchAnchor.target === mount;
-            const desiredScreenX = isTargetPane && phase2PinchAnchor.screenX != null
-              ? phase2PinchAnchor.screenX : (containerRect.left + phase2PinchAnchor.offsetX);
-            const desiredScreenY = isTargetPane && phase2PinchAnchor.screenY != null
-              ? phase2PinchAnchor.screenY : (containerRect.top + phase2PinchAnchor.offsetY);
-            const dx = currentScreenX - desiredScreenX;
-            const dy = currentScreenY - desiredScreenY;
-            const newTop = mount.scrollTop + dy;
-            const newLeft = mount.scrollLeft + dx;
-            const maxTop = Math.max(0, newSH - newCH);
-            const maxLeft = Math.max(0, newSW - newCW);
-            myScrollTo(mount, {
-              top: Math.max(0, Math.min(newTop, maxTop)),
-              left: Math.max(0, Math.min(newLeft, maxLeft)),
-              behavior: 'instant',
-            });
-            console.log('[pinch-zoom-center] Phase 2 zooming center (screen)', {
-              pinchCenterX: desiredScreenX.toFixed(1),
-              pinchCenterY: desiredScreenY.toFixed(1),
-              zoomCenterX: currentScreenX.toFixed(1),
-              zoomCenterY: currentScreenY.toFixed(1),
-              dx: dx.toFixed(1), dy: dy.toFixed(1),
-              newTop: newTop.toFixed(1), newLeft: newLeft.toFixed(1),
-            });
-          } else {
-            // Fallback: ratio-based
-            const vpCenterY = old.scrollTop + anchorOffsetY;
-            const scaleY = oldSH > 0 ? newSH / oldSH : 1;
-            const newTop = vpCenterY * scaleY - anchorOffsetY;
-            const newContentFits = newSW <= newCW + 1;
-            const newHOffset = newContentFits ? (newCW - newSW) / 2 : 0;
-            const scaleX = oldSW > 0 ? newSW / oldSW : 1;
-            const newLeft = phase2ContentCenterX * scaleX + newHOffset - anchorOffsetX;
-            const maxTop = Math.max(0, newSH - newCH);
-            const maxLeft = Math.max(0, newSW - newCW);
-            myScrollTo(mount, {
-              top: Math.max(0, Math.min(newTop, maxTop)),
-              left: Math.max(0, Math.min(newLeft, maxLeft)),
-              behavior: 'instant',
-            });
-          }
-        } else {
-          // Non-pinch: ratio-based scaling (viewport center anchor)
-          const vpCenterY = old.scrollTop + anchorOffsetY;
-          const scaleY = oldSH > 0 ? newSH / oldSH : 1;
-          const newTop = vpCenterY * scaleY - anchorOffsetY;
-          const newContentFits = newSW <= newCW + 1;
-          const newHOffset = newContentFits ? (newCW - newSW) / 2 : 0;
-          const scaleX = oldSW > 0 ? newSW / oldSW : 1;
-          const newLeft = phase2ContentCenterX * scaleX + newHOffset - anchorOffsetX;
-          const maxTop = Math.max(0, newSH - newCH);
-          const maxLeft = Math.max(0, newSW - newCW);
-          myScrollTo(mount, {
-            top: Math.max(0, Math.min(newTop, maxTop)),
-            left: Math.max(0, Math.min(newLeft, maxLeft)),
-            behavior: 'instant',
-          });
-          if (isDebugZooming()) {
-            console.log('[zoom-img-scrolling] center-anchor fine-tune (non-pinch)', {
-              zoom, fitMode, zoomChanged, oldZoom, zoomRatio,
-              savedScrollTop: old.scrollTop, savedScrollHeight: oldSH,
-              scaleY, finalNewTop: newTop,
-              curH: newSH, curW: newSW,
-              hChanged, wChanged,
-            });
-          }
-        }
+        myScrollTo(mount, {
+          top: Math.max(0, Math.min(newTop, maxTop)),
+          left: Math.max(0, Math.min(newLeft, maxLeft)),
+          behavior: 'instant',
+        });
       }
       // Update the ref's zoom so the NEXT zoom change uses correct oldZoom.
       // For contentWidth-only re-runs, preserve the previous anchor key
