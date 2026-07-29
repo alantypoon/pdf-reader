@@ -695,6 +695,9 @@ function App() {
   const pageViewRef = useRef({ key: '', startedAt: 0, loginLogged: false });
   const touchScrollingRef = useRef(false);
   const lastTouchScrollAtRef = useRef(0);
+  // When a touch-pinch zoom gesture is active, suppress the trackpad
+  // ctrlKey wheel zoom that fires simultaneously (avoids double-zooming).
+  const touchPinchZoomingRef = useRef(false);
   const momentumRef = useRef({ animating: false, vx: 0, vy: 0, target: null, lastTime: 0, rafId: null });
   const isIOSDevice = useRef((() => {
     if (typeof navigator === 'undefined') return false;
@@ -1997,6 +2000,34 @@ function App() {
     window.__momentumDragging = false;
   }, []);
 
+  // Find the page element (img.page-img or canvas[data-page]) whose
+  // bounding rect actually contains the given screen point. In scrolling
+  // mode many pages are stacked in the same container, so a plain
+  // querySelector('img.page-img') always returns the FIRST page in DOM
+  // order — which is wrong (and badly offset) once the user has scrolled
+  // down. Falls back to the geometrically nearest page if the point falls
+  // in the gap/margin between pages.
+  const findPageElementAtPoint = useCallback((container, x, y) => {
+    if (!container) return null;
+    const candidates = container.querySelectorAll('img.page-img[data-page], canvas[data-page]');
+    if (candidates.length === 0) {
+      return container.querySelector('img.page-img, canvas:not([data-page])');
+    }
+    let best = null;
+    let bestDist = Infinity;
+    for (const el of candidates) {
+      const r = el.getBoundingClientRect();
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+        return el; // exact hit — point is inside this page
+      }
+      const dx = Math.max(r.left - x, 0, x - r.right);
+      const dy = Math.max(r.top - y, 0, y - r.bottom);
+      const dist = Math.hypot(dx, dy);
+      if (dist < bestDist) { bestDist = dist; best = el; }
+    }
+    return best;
+  }, []);
+
   const getScrollTargetForGesture = useCallback((event) => {
     const stage = stageRef.current;
     if (!stage) return null;
@@ -2042,33 +2073,70 @@ function App() {
     if (!stage) return;
 
     const onWheel = (e) => {
-      // Trackpad pinch-to-zoom fires as wheel events with ctrlKey=true
+      // Trackpad pinch-to-zoom fires as wheel events with ctrlKey=true.
+      // When a native touch-pinch zoom is already active, suppress this
+      // duplicate — otherwise the two zoom sources compound ("double doer").
       if (e.ctrlKey) {
+        if (touchPinchZoomingRef.current) return;
         e.preventDefault();
-        const delta = -e.deltaY * 0.01;
+        // Multiplicative zoom: each gesture unit scales by a fixed factor.
+        // This makes zoom feel proportional to finger spread at any zoom level.
+        // e.deltaY of ~1 → ~1% zoom change; ~10 → ~10% change.
+        const scaleFactor = Math.exp(-e.deltaY * 0.01);
         const currentZoom = zoomLevelRef.current || 1;
-        const nextZoom = Math.min(5, Math.max(0.1, Number((currentZoom + delta).toFixed(2))));
+        const nextZoom = Math.min(5, Math.max(0.1, Number((currentZoom * scaleFactor).toFixed(3))));
         if (nextZoom === currentZoom) return;
 
         // Anchor-based zoom: keep the cursor position stable on screen
         const scrollTarget = getScrollTargetForGesture(e);
         if (scrollTarget) {
           const containerRect = scrollTarget.getBoundingClientRect();
-          const pageEl = scrollTarget.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
+          const pageEl = findPageElementAtPoint(scrollTarget, e.clientX, e.clientY);
           const pageRect = pageEl ? pageEl.getBoundingClientRect() : containerRect;
+          const anchorPageNum = pageEl?.dataset?.page ?? null;
           const offsetX = e.clientX - containerRect.left;
           const offsetY = e.clientY - containerRect.top;
           const pointInImgX = e.clientX - pageRect.left;
           const pointInImgY = e.clientY - pageRect.top;
-          const fracX = pageRect.width > 0 ? pointInImgX / pageRect.width : 0.5;
-          const fracY = pageRect.height > 0 ? pointInImgY / pageRect.height : 0.5;
+          const fracX = pageRect.width > 0 ? Math.max(0, Math.min(1, pointInImgX / pageRect.width)) : 0.5;
+          const fracY = pageRect.height > 0 ? Math.max(0, Math.min(1, pointInImgY / pageRect.height)) : 0.5;
+
+          // Set the global pinch anchor so PdfPane's useEffect uses
+          // cursor position as zoom center (not viewport center).
+          // Use Date.now() as token since pinchAnchorToken is scoped to the touch effect.
+          const wheelAnchorToken = Date.now();
+          window.__pdfReaderPinchZoomAnchor = {
+            target: scrollTarget,
+            anchorPageNum,
+            offsetX,
+            offsetY,
+            screenX: e.clientX,
+            screenY: e.clientY,
+            fracX,
+            fracY,
+            scrollLeft: scrollTarget.scrollLeft || 0,
+            scrollTop: scrollTarget.scrollTop || 0,
+            scrollWidth: Math.max(1, scrollTarget.scrollWidth || 0),
+            scrollHeight: Math.max(1, scrollTarget.scrollHeight || 0),
+            clientWidth: scrollTarget.clientWidth || 0,
+            clientHeight: scrollTarget.clientHeight || 0,
+            token: wheelAnchorToken,
+            createdAt: Date.now(),
+          };
+          console.log('[pinch-zoom-center] trackpad wheel zoom anchor set', {
+            screenX: e.clientX, screenY: e.clientY,
+            fracX: fracX.toFixed(4), fracY: fracY.toFixed(4),
+            anchorPageNum, zoom: nextZoom,
+          });
 
           setFitMode('none');
           setZoomLevel(nextZoom);
 
           // After React re-renders at the new zoom, adjust scroll to keep pinch center stable
           requestAnimationFrame(() => {
-            const newPageEl = scrollTarget.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
+            const newPageEl = anchorPageNum != null
+              ? scrollTarget.querySelector(`[data-page="${anchorPageNum}"]`)
+              : scrollTarget.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
             const newContainerRect = scrollTarget.getBoundingClientRect();
             const newPageRect = newPageEl ? newPageEl.getBoundingClientRect() : null;
             if (newPageRect && newPageRect.width > 0 && newPageRect.height > 0) {
@@ -2076,10 +2144,15 @@ function App() {
               const newPointInImgY = fracY * newPageRect.height;
               const currentScreenX = newPageRect.left + newPointInImgX;
               const currentScreenY = newPageRect.top + newPointInImgY;
-              const desiredScreenX = newContainerRect.left + offsetX;
-              const desiredScreenY = newContainerRect.top + offsetY;
+              const desiredScreenX = e.clientX;
+              const desiredScreenY = e.clientY;
               const dx = currentScreenX - desiredScreenX;
               const dy = currentScreenY - desiredScreenY;
+              console.log('[pinch-zoom-center] trackpad wheel rAF correction', {
+                pinchCenterX: desiredScreenX, pinchCenterY: desiredScreenY,
+                zoomCenterX: currentScreenX.toFixed(1), zoomCenterY: currentScreenY.toFixed(1),
+                dx: dx.toFixed(1), dy: dy.toFixed(1),
+              });
               if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
                 const newLeft = scrollTarget.scrollLeft + dx;
                 const newTop = scrollTarget.scrollTop + dy;
@@ -2167,6 +2240,10 @@ function App() {
     let gestureStartMidX = 0;
     let gestureStartMidY = 0;
     let gestureLockMode = null; // null | 'pan' | 'zoom'
+    // Exponential dampening factor for pinch zoom (0..1). Lower = slower pinch.
+    // 0.65 keeps zoom proportional to finger movement but reins in the rate
+    // so slow pinches don't feel jumpy.
+    const PINCH_SENSITIVITY = 0.65;
     // Fixed anchor captured ONCE when zoom gesture is confirmed — used for
     // all subsequent zoom steps so the scroll correction is always computed
     // from the same reference, eliminating jitter/drift.
@@ -2232,10 +2309,14 @@ function App() {
       const target = touchScrollTarget || getScrollTargetForGesture({ clientX: midpoint.x, clientY: midpoint.y });
       if (!target) return null;
       const containerRect = target.getBoundingClientRect();
-      // Find the actual page image/canvas inside the scroll container —
-      // CSS grid centers it, so its rect may differ from the container's.
-      const pageEl = target.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
+      // Find the page image/canvas actually UNDER the pinch midpoint — not
+      // just the first page in DOM order. In scrolling mode many pages are
+      // stacked in the same container, so once the user has scrolled down,
+      // the first page is far off-screen and using it here would offset
+      // the zoom center (visible as the zoom center drifting vertically).
+      const pageEl = findPageElementAtPoint(target, midpoint.x, midpoint.y);
       const pageRect = pageEl ? pageEl.getBoundingClientRect() : containerRect;
+      const anchorPageNum = pageEl?.dataset?.page ?? null;
       // offsetX/Y: distance from the midpoint to the container's viewport edge
       // (this is what we subtract from the new content coordinate after zoom
       // to keep the pinch point at the same screen position).
@@ -2248,14 +2329,28 @@ function App() {
       const imgOffsetTop = pageRect.top - containerRect.top + target.scrollTop;
       const pointInImgX = midpoint.x - pageRect.left;
       const pointInImgY = midpoint.y - pageRect.top;
-      // Fraction of the image where the pinch point lands (0..1)
-      const fracX = pageRect.width > 0 ? pointInImgX / pageRect.width : 0.5;
-      const fracY = pageRect.height > 0 ? pointInImgY / pageRect.height : 0.5;
+      // Fraction of the image where the pinch point lands (0..1).
+      // Clamp to [0,1] because when pinching in page margins, the midpoint
+      // can fall outside the page rect, which would produce out-of-range
+      // fractions and cause incorrect zoom-center positioning after resize.
+      const fracX = pageRect.width > 0 ? Math.max(0, Math.min(1, pointInImgX / pageRect.width)) : 0.5;
+      const fracY = pageRect.height > 0 ? Math.max(0, Math.min(1, pointInImgY / pageRect.height)) : 0.5;
       if (!Number.isFinite(offsetX) || !Number.isFinite(offsetY)) return null;
+      console.log('[pinch-zoom-center] capturePinchZoomAnchor', {
+        midpointX: midpoint.x.toFixed(1), midpointY: midpoint.y.toFixed(1),
+        offsetX: offsetX.toFixed(1), offsetY: offsetY.toFixed(1),
+        fracX: fracX.toFixed(4), fracY: fracY.toFixed(4),
+        anchorPageNum,
+        pageRectTop: pageRect.top.toFixed(1), pageRectLeft: pageRect.left.toFixed(1),
+        pageWidth: pageRect.width.toFixed(1), pageHeight: pageRect.height.toFixed(1),
+      });
       return {
         target,
+        anchorPageNum,
         offsetX,
         offsetY,
+        screenX: midpoint.x,
+        screenY: midpoint.y,
         fracX,
         fracY,
         imgOffsetLeft,
@@ -2277,8 +2372,12 @@ function App() {
       const target = anchor.target;
       if (!target || !target.isConnected) return;
 
-      // After zoom, find the page image again to see where it is now.
-      const pageEl = target.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
+      // After zoom, re-locate the SAME page by its data-page number (not
+      // just "the first page") so the anchor math stays correct even when
+      // scrolled deep into a multi-page document.
+      const pageEl = anchor.anchorPageNum != null
+        ? target.querySelector(`[data-page="${anchor.anchorPageNum}"]`)
+        : target.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
       const containerRect = target.getBoundingClientRect();
       const pageRect = pageEl ? pageEl.getBoundingClientRect() : null;
       if (pageRect && pageRect.width > 0 && pageRect.height > 0) {
@@ -2286,10 +2385,23 @@ function App() {
         const newPointInImgY = anchor.fracY * pageRect.height;
         const currentScreenX = pageRect.left + newPointInImgX;
         const currentScreenY = pageRect.top + newPointInImgY;
-        const desiredScreenX = containerRect.left + anchor.offsetX;
-        const desiredScreenY = containerRect.top + anchor.offsetY;
+        // Use absolute screen position if available (robust against container shifts).
+        // Recompute offsetX/Y from the current container rect to handle cases where
+        // the container itself moved (flex centering added/removed during zoom).
+        const desiredScreenX = anchor.screenX != null ? anchor.screenX : (containerRect.left + anchor.offsetX);
+        const desiredScreenY = anchor.screenY != null ? anchor.screenY : (containerRect.top + anchor.offsetY);
         const dx = currentScreenX - desiredScreenX;
         const dy = currentScreenY - desiredScreenY;
+        console.log('[pinch-zoom-center] applyPinchZoomAnchor', {
+          pinchCenterScreenX: desiredScreenX.toFixed(1),
+          pinchCenterScreenY: desiredScreenY.toFixed(1),
+          zoomCenterScreenX: currentScreenX.toFixed(1),
+          zoomCenterScreenY: currentScreenY.toFixed(1),
+          dx: dx.toFixed(1), dy: dy.toFixed(1),
+          fracY: anchor.fracY.toFixed(4),
+          offsetY: anchor.offsetY.toFixed(1),
+          pageRectTop: pageRect.top.toFixed(1), pageRectHeight: pageRect.height.toFixed(1),
+        });
         if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
           const newLeft = target.scrollLeft + dx;
           const newTop = target.scrollTop + dy;
@@ -2331,16 +2443,18 @@ function App() {
         createdAt: Date.now(),
       };
       // Apply scroll correction after React re-renders at the new zoom.
-      // A single rAF + one follow-up is sufficient — PdfPane's own
-      // centerAnchoredScroll also uses this anchor for its scroll effect.
+      // Multiple correction passes ensure the zoom center converges:
+      // 1st (rAF): immediate post-render correction
+      // 2nd (rAF+80ms): catch async layout shifts
+      // 3rd (rAF+200ms): final convergence pass for any remaining drift
       requestAnimationFrame(() => {
         applyPinchZoomAnchor(anchor, token);
         window.setTimeout(() => {
           applyPinchZoomAnchor(anchor, token);
-          if (window.__pdfReaderPinchZoomAnchor?.token === token) {
-            window.__pdfReaderPinchZoomAnchor = null;
-          }
         }, 80);
+        window.setTimeout(() => {
+          applyPinchZoomAnchor(anchor, token);
+        }, 200);
       });
     };
 
@@ -2349,6 +2463,14 @@ function App() {
       if (latestPinchZoom == null) return;
       const { zoom: z, anchor } = latestPinchZoom;
       latestPinchZoom = null;
+      console.log('[pinch-zoom-center] applyPinchZoom', {
+        newZoom: z,
+        anchorPageNum: anchor?.anchorPageNum,
+        screenX: anchor?.screenX?.toFixed(1),
+        screenY: anchor?.screenY?.toFixed(1),
+        fracX: anchor?.fracX?.toFixed(4),
+        fracY: anchor?.fracY?.toFixed(4),
+      });
       setFitMode('none'); // release fit-width / fit-height so pinch-zoom works standalone
       setZoomLevel(z);
       schedulePinchZoomAnchor(anchor);
@@ -2529,18 +2651,36 @@ function App() {
 
           if (gestureLockMode === 'zoom') {
             skipPanAccumulation = true;
+            touchPinchZoomingRef.current = true;
             // Capture the scroll anchor ONCE when zoom gesture first locks in.
             // Reusing this single reference for every subsequent zoom step
             // prevents jitter (re-reading scrollLeft/Top after each step would
             // use values already shifted by the previous correction).
             if (!pinchStartAnchor) {
-              pinchStartAnchor = capturePinchZoomAnchor({ x: gestureStartMidX, y: gestureStartMidY }, pinchStartZoom);
+              pinchStartAnchor = capturePinchZoomAnchor({ x: curX, y: curY }, pinchStartZoom);
             }
-            // Direct 1:1 mapping of finger-distance ratio to zoom — matches
-            // Safari's native pinch-zoom feel: zoom tracks the fingers
-            // exactly, no easing/blending.
-            const scaleRatio = curDistance / pinchStartDistance;
-            const rawZoom = pinchStartZoom * scaleRatio;
+            // Update the anchor's screen offset to track the current finger
+            // midpoint — this ensures the zoom center stays strictly at the
+            // midpoint between the two fingers even as they move on screen.
+            // fracX/fracY (the content point) stays fixed from the initial
+            // capture so the same image point remains under the fingers.
+            if (pinchStartAnchor) {
+              const containerRect = pinchStartAnchor.target.getBoundingClientRect();
+              pinchStartAnchor.offsetX = curX - containerRect.left;
+              pinchStartAnchor.offsetY = curY - containerRect.top;
+              // Also store absolute screen position for robust correction
+              // even if the container shifts position during zoom.
+              pinchStartAnchor.screenX = curX;
+              pinchStartAnchor.screenY = curY;
+            }
+            // Dampened pinch-to-zoom: apply an exponential sensitivity curve
+            // so the zoom keeps pace with fingers without overshooting.
+            // scaleRatio ^ PINCH_SENSITIVITY compresses the zoom range — a
+            // 2× finger spread with sensitivity 0.65 yields ~1.57× zoom instead
+            // of 2×, which tracks finger motion at a natural, non-jumpy rate.
+            const rawScaleRatio = curDistance / pinchStartDistance;
+            const dampenedRatio = Math.pow(rawScaleRatio, PINCH_SENSITIVITY);
+            const rawZoom = pinchStartZoom * dampenedRatio;
             const clampedZoom = Math.min(5, Math.max(0.1, Number(rawZoom.toFixed(3))));
             if (isDebugZooming()) {
               console.log('[pinch-zoom] touch-move: pinch scale', {
@@ -2623,6 +2763,7 @@ function App() {
       pinchStartDistance = 0;
       gestureLockMode = null;
       pinchStartAnchor = null;
+      touchPinchZoomingRef.current = false;
       if (pendingZoomRaf) {
         cancelAnimationFrame(pendingZoomRaf);
         pendingZoomRaf = null;
