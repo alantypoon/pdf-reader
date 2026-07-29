@@ -2163,6 +2163,23 @@ function App() {
                   top: Math.max(0, Math.min(newTop, maxTop)),
                   behavior: 'instant',
                 });
+                // In bilingual/dual mode, also sync the OTHER pane(s) with
+                // the same vertical scroll correction so both stay aligned.
+                const stage = stageRef.current;
+                if (stage) {
+                  stage.querySelectorAll('.pdf-scroll-pages, .pdf-single-page').forEach((el) => {
+                    if (el === scrollTarget) return;
+                    const elMaxTop = Math.max(0, el.scrollHeight - el.clientHeight);
+                    const elMaxLeft = Math.max(0, el.scrollWidth - el.clientWidth);
+                    const elNewTop = el.scrollTop + dy;
+                    const elNewLeft = el.scrollLeft + dx;
+                    myScrollTo(el, {
+                      top: Math.max(0, Math.min(elNewTop, elMaxTop)),
+                      left: Math.max(0, Math.min(elNewLeft, elMaxLeft)),
+                      behavior: 'instant',
+                    });
+                  });
+                }
               }
             }
           });
@@ -2412,6 +2429,20 @@ function App() {
             top: Math.max(0, Math.min(newTop, maxTop)),
             behavior: 'instant',
           });
+          // In bilingual/dual mode, also sync sibling panes with same dy
+          const stage = stageRef.current;
+          if (stage) {
+            stage.querySelectorAll('.pdf-scroll-pages, .pdf-single-page').forEach((el) => {
+              if (el === target) return;
+              const elMaxTop = Math.max(0, el.scrollHeight - el.clientHeight);
+              const elMaxLeft = Math.max(0, el.scrollWidth - el.clientWidth);
+              myScrollTo(el, {
+                top: Math.max(0, Math.min(el.scrollTop + dy, elMaxTop)),
+                left: Math.max(0, Math.min(el.scrollLeft + dx, elMaxLeft)),
+                behavior: 'instant',
+              });
+            });
+          }
         }
       } else {
         // Fallback: use ratio-based approach if page image not found

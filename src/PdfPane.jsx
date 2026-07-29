@@ -81,7 +81,12 @@ function centerAnchoredScroll(container, oldScrollTop, oldScrollHeight, axis = '
       anchorTargetClass: activePinchAnchor.target?.className?.slice(0, 40),
     });
   }
-  if (activePinchAnchor?.target === container && Date.now() - activePinchAnchor.createdAt < 1000) {
+  // Only use the pinch anchor for the pane that matches the target.
+  // The sibling pane in bilingual mode is synced by App.jsx's rAF correction
+  // which applies the same scroll delta to all panes.
+  const anchorNotExpired = activePinchAnchor && Date.now() - activePinchAnchor.createdAt < 1000;
+  const targetMatch = activePinchAnchor?.target === container;
+  if (anchorNotExpired && targetMatch) {
     // Use the image-fraction approach: find where the pinch point's fraction
     // lands in the now-resized image, then scroll so that point stays at the
     // same screen position (offsetX/Y from the container edge).
@@ -99,9 +104,13 @@ function centerAnchoredScroll(container, oldScrollTop, oldScrollHeight, axis = '
       const newPointInImgY = activePinchAnchor.fracY * pageRect.height;
       const currentScreenX = pageRect.left + newPointInImgX;
       const currentScreenY = pageRect.top + newPointInImgY;
-      // Use absolute screen position when available (robust against container shifts)
-      const desiredScreenX = activePinchAnchor.screenX != null ? activePinchAnchor.screenX : (containerRect.left + activePinchAnchor.offsetX);
-      const desiredScreenY = activePinchAnchor.screenY != null ? activePinchAnchor.screenY : (containerRect.top + activePinchAnchor.offsetY);
+      // For target pane: use absolute screen position
+      // For non-target pane (bilingual sibling): use offsetX/Y relative to this container
+      const isTargetPane = activePinchAnchor.target === container;
+      const desiredScreenX = isTargetPane && activePinchAnchor.screenX != null
+        ? activePinchAnchor.screenX : (containerRect.left + activePinchAnchor.offsetX);
+      const desiredScreenY = isTargetPane && activePinchAnchor.screenY != null
+        ? activePinchAnchor.screenY : (containerRect.top + activePinchAnchor.offsetY);
       const dx = currentScreenX - desiredScreenX;
       const dy = currentScreenY - desiredScreenY;
       console.log('[pinch-zoom-center] centerAnchoredScroll', {
@@ -3099,12 +3108,16 @@ function PdfPane({
     // handler) instead of the viewport center — matches native pinch-zoom
     // behaviour and the anchoring already used for PDF-canvas/pagination.
     const activePinchAnchor = typeof window !== 'undefined' ? window.__pdfReaderPinchZoomAnchor : null;
-    const pinchAnchorActive = activePinchAnchor?.target === mount && Date.now() - activePinchAnchor.createdAt < 1000;
+    const anchorNotExpired = activePinchAnchor && Date.now() - activePinchAnchor.createdAt < 1000;
+    // Only use the pinch anchor for the pane that is the target.
+    // The sibling pane in bilingual mode is synced by App.jsx's rAF correction.
+    const targetMatch = activePinchAnchor?.target === mount;
+    const pinchAnchorActive = anchorNotExpired && targetMatch;
     console.log('[pinch-zoom-center] scrolling-mode zoom effect', {
       zoomChanged,
       pinchAnchorActive,
       hasGlobalAnchor: !!activePinchAnchor,
-      targetMatch: activePinchAnchor?.target === mount,
+      targetMatch,
       anchorAge: activePinchAnchor ? (Date.now() - activePinchAnchor.createdAt) : 'n/a',
       zoom, oldZoom, zoomRatio: zoomRatio.toFixed(3),
     });
@@ -3147,10 +3160,15 @@ function PdfPane({
         const newPointInImgY = activePinchAnchor.fracY * pageRect.height;
         const currentScreenX = pageRect.left + newPointInImgX;
         const currentScreenY = pageRect.top + newPointInImgY;
-        // Where we WANT it to be — use absolute screen position when available
-        // (robust against container position shifts during zoom)
-        const desiredScreenX = activePinchAnchor.screenX != null ? activePinchAnchor.screenX : (containerRect.left + activePinchAnchor.offsetX);
-        const desiredScreenY = activePinchAnchor.screenY != null ? activePinchAnchor.screenY : (containerRect.top + activePinchAnchor.offsetY);
+        // Where we WANT it to be:
+        // - For the target pane (cursor is here): use absolute screen position
+        // - For non-target pane (bilingual sibling): use offsetX/Y relative to
+        //   this pane's own container so both panes anchor at the same fraction
+        const isTargetPane = activePinchAnchor.target === mount;
+        const desiredScreenX = isTargetPane && activePinchAnchor.screenX != null
+          ? activePinchAnchor.screenX : (containerRect.left + activePinchAnchor.offsetX);
+        const desiredScreenY = isTargetPane && activePinchAnchor.screenY != null
+          ? activePinchAnchor.screenY : (containerRect.top + activePinchAnchor.offsetY);
         const dx = currentScreenX - desiredScreenX;
         const dy = currentScreenY - desiredScreenY;
         const estNewTop = mount.scrollTop + dy;
@@ -3264,9 +3282,13 @@ function PdfPane({
             const newPointInImgY = phase2PinchAnchor.fracY * pageRect.height;
             const currentScreenX = pageRect.left + newPointInImgX;
             const currentScreenY = pageRect.top + newPointInImgY;
-            // Use absolute screen position when available (robust against container shifts)
-            const desiredScreenX = phase2PinchAnchor.screenX != null ? phase2PinchAnchor.screenX : (containerRect.left + phase2PinchAnchor.offsetX);
-            const desiredScreenY = phase2PinchAnchor.screenY != null ? phase2PinchAnchor.screenY : (containerRect.top + phase2PinchAnchor.offsetY);
+            // For target pane: use absolute screen position
+            // For non-target pane (bilingual sibling): use offsetX/Y relative to this container
+            const isTargetPane = phase2PinchAnchor.target === mount;
+            const desiredScreenX = isTargetPane && phase2PinchAnchor.screenX != null
+              ? phase2PinchAnchor.screenX : (containerRect.left + phase2PinchAnchor.offsetX);
+            const desiredScreenY = isTargetPane && phase2PinchAnchor.screenY != null
+              ? phase2PinchAnchor.screenY : (containerRect.top + phase2PinchAnchor.offsetY);
             const dx = currentScreenX - desiredScreenX;
             const dy = currentScreenY - desiredScreenY;
             const newTop = mount.scrollTop + dy;
