@@ -1104,11 +1104,54 @@ function PdfPane({
 
   // ── Image pagination: keep viewport center anchored on zoom ─
   const imgPaginationScrollRef = useRef({ top: 0, left: 0, height: 0, width: 0, clientHeight: 0, clientWidth: 0 });
+  const imgPaginationPageRef = useRef(currentPage);
+  const imgPaginationZoomKeyRef = useRef(`${zoom}|${fitMode}|${fitRefreshToken}`);
   useLayoutEffect(() => {
     if (!isImageMode || mode !== 'pagination') return;
     const container = imgRef.current?.closest('.pdf-single-page');
     if (!container) return;
     let { top, left, height, width, clientHeight, clientWidth } = imgPaginationScrollRef.current;
+
+    // Page changed (e.g. via the page selector, prev/next, thumbnails) —
+    // scroll to the top of the new page rather than preserving/anchoring
+    // the previous page's scroll position (which can leave the new page
+    // scrolled to a mid-page position that looks blank).
+    const pageChanged = imgPaginationPageRef.current !== currentPage;
+    imgPaginationPageRef.current = currentPage;
+    if (pageChanged && !_scrollRestoreInProgress) {
+      mySetScrollTop(container, 0);
+      mySetScrollLeft(container, 0);
+      imgPaginationScrollRef.current = {
+        top: 0,
+        left: 0,
+        height: Math.max(1, container.scrollHeight),
+        width: Math.max(1, container.scrollWidth),
+        clientHeight: container.clientHeight,
+        clientWidth: container.clientWidth,
+      };
+      return;
+    }
+
+    // Only run the zoom center-anchor recalculation when zoom/fitMode
+    // actually changed. Otherwise (e.g. this effect re-running purely
+    // because an image finished loading via imageLoadVersion) skip the
+    // height/width-changed centering math — it would otherwise use a
+    // stale captured height from before the new page's image had
+    // finished laying out, producing a bogus scroll offset.
+    const zoomKey = `${zoom}|${fitMode}|${fitRefreshToken}`;
+    const zoomChanged = imgPaginationZoomKeyRef.current !== zoomKey;
+    imgPaginationZoomKeyRef.current = zoomKey;
+    if (!zoomChanged && height > 0) {
+      imgPaginationScrollRef.current = {
+        top: getScrollPos(container).scrollTop,
+        left: getScrollPos(container).scrollLeft,
+        height: Math.max(1, container.scrollHeight),
+        width: Math.max(1, container.scrollWidth),
+        clientHeight: container.clientHeight,
+        clientWidth: container.clientWidth,
+      };
+      return;
+    }
 
     // On initial load (height=0 in ref), try localStorage first
     if (height === 0) {
@@ -1153,7 +1196,7 @@ function PdfPane({
       clientHeight: container.clientHeight,
       clientWidth: container.clientWidth,
     };
-  }, [isImageMode, mode, zoom, fitMode, fitRefreshToken, imageLoadVersion]);
+  }, [isImageMode, mode, zoom, fitMode, fitRefreshToken, imageLoadVersion, currentPage]);
 
   // ── Scrolling mode (PDF) ───────────────────────────────────
   useEffect(() => {
@@ -3348,6 +3391,7 @@ function PdfPane({
                 />
               ) : imgSrc ? (
                 <img
+                  key={currentPage}
                   ref={imgRef}
                   src={withTimestamp(imgSrc)}
                   alt={`${_('pageN')} ${currentPage}`}

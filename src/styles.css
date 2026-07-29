@@ -2072,6 +2072,15 @@ button, input, select {
   width: 100%;
   height: 100%;
   display: grid;
+  /* "safe center" (Box Alignment L3) isn't supported by all iOS/Safari
+     versions — when unsupported the WHOLE declaration is invalid and
+     ignored, silently falling back to start-alignment (left/top),
+     which looks like the page is stuck against the left edge when
+     zoomed out. Declare plain "center" FIRST as a universally-supported
+     fallback, then "safe center" after so browsers that DO support it
+     upgrade to it (prevents centered content from being clipped
+     unreachably off-screen when it overflows).  */
+  place-items: center;
   place-items: safe center;
   overflow: auto;
   overscroll-behavior-y: contain;
@@ -2129,7 +2138,14 @@ button, input, select {
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15), 0 1px 4px rgba(0, 0, 0, 0.08);
   border-radius: 8px;
   border: 1px solid gray;
-  margin: 20px 0px !important;  
+  margin: 20px 0px !important;
+  /* Force a GPU compositing layer — works around an iOS Safari bug where
+     an <img> element's src is swapped (React reuses the same DOM node
+     across page changes) but the new image is not repainted on screen
+     until some other interaction (e.g. pinch-zoom) forces a repaint. */
+  will-change: transform;
+  transform: translateZ(0);
+  backface-visibility: hidden;
 }
 
 /* Page image — subtle placeholder background for loading / broken states */
@@ -2149,6 +2165,7 @@ button, input, select {
   margin: 0 auto;
   user-select: none;
   -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .pdf-scroll-pages .page-img,
@@ -2156,6 +2173,7 @@ button, input, select {
 .pdf-single-page .page-img {
   user-select: none;
   -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .pdf-scroll-pages .page-img {
