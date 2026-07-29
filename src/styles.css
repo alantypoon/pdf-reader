@@ -2091,7 +2091,7 @@ button, input, select {
   width: 100%;
   height: 100%;
   overflow: auto;
-  touch-action: pan-y;
+  touch-action: manipulation;
   overscroll-behavior-x: contain;
   overscroll-behavior-y: contain;
   user-select: none;
@@ -2109,9 +2109,9 @@ button, input, select {
   box-sizing: border-box;
 }
 
-/* touch-action is NOT inherited — children need explicit pan-y too */
+/* touch-action is NOT inherited — children need explicit value too */
 .pdf-scroll-pages > * {
-  touch-action: pan-y;
+  touch-action: manipulation;
 }
 
 .pdf-scroll-pages canvas,
