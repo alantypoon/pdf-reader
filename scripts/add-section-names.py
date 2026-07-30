@@ -6,10 +6,12 @@ Usage:
     python3 scripts/add-section-names.py math-oup        # loops all books in math-oup/
     python3 scripts/add-section-names.py biology-oup/1a
     python3 scripts/add-section-names.py math-oup/4a
+    python3 scripts/add-section-names.py math-oup/4a/1   # only book 4a, section 1
 
 Given a subject directory (e.g. math-oup), loops over every book subdirectory
 that contains an en/ folder.  Given a specific book path (e.g. math-oup/4a),
-processes just that one book.
+processes just that one book.  Given a book path with a trailing section
+number (e.g. math-oup/4a/1), processes only that section within that book.
 
 Extracts each English section name from the first page image of that section
 and fills contents[].en.name in contents.json.
@@ -35,6 +37,60 @@ import time
 from pathlib import Path
 
 import requests
+
+
+# Set by -v/--verbose — prints full request payload + response (pretty JSON)
+VERBOSE = False
+
+
+def _log_request(url, form_fields, tag='VERBOSE'):
+    """Print the outgoing multipart form request in a readable, pretty-printed way.
+
+    *form_fields* is the dict passed as `files=` to requests.post — file tuples
+    are summarized (name/mime/size) rather than dumping raw bytes.
+    """
+    print(f'\n{"─"*50}')
+    print(f'[{tag}] POST {url}')
+    print(f'[{tag}] Form fields:')
+    display = {}
+    for key, value in form_fields.items():
+        if key == 'apiKey':
+            display[key] = '<redacted>'
+            continue
+        # requests-style tuple: (filename, fh_or_bytes, mime) or (None, value)
+        if isinstance(value, tuple):
+            if len(value) >= 3 and value[0] is not None:
+                filename, fh, mime = value[0], value[1], value[2]
+                try:
+                    pos = fh.tell()
+                    fh.seek(0, 2)
+                    size = fh.tell()
+                    fh.seek(pos)
+                except Exception:
+                    size = '?'
+                display[key] = f'<file: {filename}, {mime}, {size} bytes>'
+            else:
+                val = value[1] if len(value) > 1 else value[0]
+                if isinstance(val, str) and len(val) > 500:
+                    display[key] = val[:500] + f'… ({len(val)} chars)'
+                else:
+                    display[key] = val
+        else:
+            display[key] = value
+    print(json.dumps(display, indent=2, ensure_ascii=False))
+    print(f'{"─"*50}')
+
+
+def _log_response(status, text, tag='VERBOSE'):
+    """Print the API response, pretty-printed as JSON when possible."""
+    print(f'[{tag}] HTTP {status}  ({len(text)} bytes)')
+    try:
+        parsed = json.loads(text)
+        print(f'[{tag}] Response (pretty-printed):')
+        print(json.dumps(parsed, indent=2, ensure_ascii=False))
+    except (json.JSONDecodeError, TypeError):
+        print(f'[{tag}] Response body (raw):\n{text}')
+    print(f'{"─"*50}\n')
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -107,19 +163,26 @@ def send_ett_request(url, api_key, model, file_path, prompt, provider="ett-vllm"
     if mime_type is None:
         mime_type = "application/octet-stream"
 
+    form_fields = {
+        "provider": (None, provider),
+        "apiKey": (None, api_key),
+        "model": (None, model),
+        "prompt": (None, prompt),
+        "files": (Path(file_path).name, open(file_path, "rb"), mime_type),
+    }
+
+    if VERBOSE:
+        _log_request(url, form_fields)
+
     try:
         resp = requests.post(
             url,
-            files={
-                "provider": (None, provider),
-                "apiKey": (None, api_key),
-                "model": (None, model),
-                "prompt": (None, prompt),
-                "files": (Path(file_path).name, open(file_path, "rb"), mime_type),
-            },
+            files=form_fields,
             headers={"Accept": "application/json"},
             timeout=120,
         )
+        if VERBOSE:
+            _log_response(resp.status_code, resp.text)
         if resp.status_code != 200:
             return {"error": True, "status": resp.status_code, "body": resp.text[:500]}
         return resp.json()
@@ -182,17 +245,23 @@ def translate_to_chinese(config, english_names):
     )
 
     try:
+        form_fields = {
+            "provider": (None, config["ollama_provider"]),
+            "apiKey": (None, config["ollama_api_key"]),
+            "model": (None, config["ollama_model"]),
+            "prompt": (None, prompt),
+        }
+        if VERBOSE:
+            _log_request(config["url"], form_fields)
+
         resp = requests.post(
             config["url"],
-            files={
-                "provider": (None, config["ollama_provider"]),
-                "apiKey": (None, config["ollama_api_key"]),
-                "model": (None, config["ollama_model"]),
-                "prompt": (None, prompt),
-            },
+            files=form_fields,
             headers={"Accept": "application/json"},
             timeout=120,
         )
+        if VERBOSE:
+            _log_response(resp.status_code, resp.text)
         if resp.status_code != 200:
             print(f"  [warn] Translation request failed: HTTP {resp.status_code}")
             return {}
@@ -353,8 +422,12 @@ def _discover_book_dirs(scope_dir):
 #  Main logic
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def add_section_names(data_dir, base_dir):
-    """Extract English section names from first page images and translate to Chinese."""
+def add_section_names(data_dir, base_dir, section_filter=None):
+    """Extract English section names from first page images and translate to Chinese.
+
+    If *section_filter* is given, only that section (matched against the
+    contents.json "section" field, normalized) is processed.
+    """
     contents_path = os.path.join(data_dir, "contents.json")
 
     if not os.path.exists(contents_path):
@@ -363,6 +436,8 @@ def add_section_names(data_dir, base_dir):
 
     with open(contents_path, "r", encoding="utf-8") as f:
         contents = json.load(f)
+
+    normalized_filter = _normalize_section_id(section_filter) if section_filter is not None else None
 
     config = get_config(base_dir)
     if not config["api_key"]:
@@ -392,6 +467,8 @@ def add_section_names(data_dir, base_dir):
         section = str(item.get("section", "")).strip()
         if not section:
             continue
+        if normalized_filter is not None and _normalize_section_id(section) != normalized_filter:
+            continue
 
         image_path = _find_first_section_page_image(data_dir, section)
         if not image_path:
@@ -400,6 +477,11 @@ def add_section_names(data_dir, base_dir):
 
         rel_path = os.path.relpath(image_path, data_dir)
         print(f"  Section {section}: {rel_path} ...", end=" ", flush=True)
+
+        if VERBOSE:
+            print()
+            print(f"    [VERBOSE] Image path: {os.path.abspath(image_path)}")
+            print(f"    [VERBOSE] Extraction prompt: {prompt}")
 
         result = send_ett_request(
             config["url"], config["api_key"], config["model"],
@@ -413,6 +495,10 @@ def add_section_names(data_dir, base_dir):
             continue
 
         raw_text = extract_text_from_ett_result(result)
+
+        if VERBOSE:
+            print(f"    [VERBOSE] Generation response text: {raw_text!r}")
+
         title = _clean_extracted_section_title(raw_text, section)
 
         if not title:
@@ -424,6 +510,9 @@ def add_section_names(data_dir, base_dir):
         item.setdefault("en", {})
         item["en"]["name"] = title
         print(f"→ {title}")
+
+    if normalized_filter is not None and not extracted and not missing and not failed:
+        print(f"  [warn] No section matching '{section_filter}' found in {contents_path}")
 
     # ── Translate to Chinese ──
     if extracted:
@@ -459,21 +548,55 @@ def add_section_names(data_dir, base_dir):
         print(f"    No title extracted: {', '.join(failed)}")
 
 
+def _split_chapter_path(data_root, chapter_path):
+    """Resolve *chapter_path* to (scope_path, section_filter).
+
+    If the full path exists as a directory under data/, it's used as-is
+    (subject or book scope, section_filter=None). Otherwise, the last path
+    segment is treated as a section/chapter number filter and the parent
+    path (which must be a book directory) is used as the scope.
+    """
+    full_dir = os.path.join(data_root, chapter_path)
+    if os.path.isdir(full_dir):
+        return chapter_path, None
+
+    parent_path, sep, last_seg = chapter_path.rpartition("/")
+    if not sep:
+        return chapter_path, None
+
+    parent_dir = os.path.join(data_root, parent_path)
+    if os.path.isdir(parent_dir):
+        return parent_path, last_seg
+
+    return chapter_path, None
+
+
 def main():
+    global VERBOSE
+
     parser = argparse.ArgumentParser(
         description="Extract English section names from first page images and translate to Chinese"
     )
     parser.add_argument(
         "chapter_path",
-        help="Relative path under data/, e.g. 'math-oup' (loops all books) or 'math-oup/4a' (single book)",
+        help="Relative path under data/, e.g. 'math-oup' (all books), 'math-oup/4a' (one book), "
+             "or 'math-oup/4a/1' (one book, one section)",
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Log the full request payload and response (pretty-printed JSON) for every API call",
     )
     args = parser.parse_args()
+
+    VERBOSE = args.verbose
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     base_dir = os.path.dirname(script_dir)
     data_root = os.path.join(base_dir, "data")
 
-    scope_dir = os.path.join(data_root, args.chapter_path)
+    scope_path, section_filter = _split_chapter_path(data_root, args.chapter_path)
+    scope_dir = os.path.join(data_root, scope_path)
     if not os.path.isdir(scope_dir):
         print(f"ERROR: directory not found: {scope_dir}", file=sys.stderr)
         sys.exit(1)
@@ -483,10 +606,13 @@ def main():
     for i, book in enumerate(books):
         if book is not None:
             book_dir = os.path.join(scope_dir, book)
-            label = f"{args.chapter_path}/{book}"
+            label = f"{scope_path}/{book}"
         else:
             book_dir = scope_dir
-            label = args.chapter_path
+            label = scope_path
+
+        if section_filter is not None:
+            label = f"{label}  (section {section_filter} only)"
 
         if i > 0:
             print("\n\n")
@@ -497,7 +623,7 @@ def main():
         print("#" * 60)
         print()
 
-        add_section_names(book_dir, base_dir)
+        add_section_names(book_dir, base_dir, section_filter=section_filter)
         print()
 
     print("\nDone.")

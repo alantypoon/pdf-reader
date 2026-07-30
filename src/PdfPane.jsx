@@ -73,7 +73,13 @@ function centerAnchoredScroll(container, oldScrollTop, oldScrollHeight, axis = '
     // Use the image-fraction approach: find where the pinch point's fraction
     // lands in the now-resized image, then scroll so that point stays at the
     // same screen position (offsetX/Y from the container edge).
-    const pageEl = container.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
+    // Re-locate the SAME page the anchor was captured against (by data-page
+    // number) — a plain querySelector would always return the FIRST page in
+    // DOM order, which is wrong once the user has scrolled into a
+    // multi-page document and causes the zoom center to drift vertically.
+    const pageEl = activePinchAnchor.anchorPageNum != null
+      ? container.querySelector(`[data-page="${activePinchAnchor.anchorPageNum}"]`)
+      : container.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
     const containerRect = container.getBoundingClientRect();
     const pageRect = pageEl ? pageEl.getBoundingClientRect() : null;
     if (pageRect && pageRect.width > 0 && pageRect.height > 0 && activePinchAnchor.fracX != null) {
@@ -351,7 +357,7 @@ function updateBilingualPageHeightCSS(maxH, paneLanguage) {
 
 }
 
-function repositionBilingualPages(mount, syncGroup, paneLanguage, skipScrollAdjust = false) {
+function repositionBilingualPages(mount, syncGroup, paneLanguage) {
   const paneKey = syncGroup + '::' + paneLanguage;
   const maxH = _bilingualMaxHeights.get(paneKey) || 0;
   if (!maxH) { return; }
@@ -435,12 +441,8 @@ function repositionBilingualPages(mount, syncGroup, paneLanguage, skipScrollAdju
   // Set _bilingualRepositioning so the scroll event handler suppresses
   // onPageChange — otherwise syncPageIndicator may detect a different page
   // due to rounding and cause an unwanted page jump (e.g. 9 → 8).
-  // Skipped when the caller (e.g. the zoom/resize effect) already owns
-  // scroll-anchoring for this pass — doing both here AND there causes
-  // competing scrollTop writes that visibly jitter/shake during a
-  // continuous zoom gesture (trackpad pinch or wheel+ctrl).
   const newScrollHeight = Math.max(1, mount.scrollHeight);
-  if (!skipScrollAdjust && newScrollHeight !== oldScrollHeight) {
+  if (newScrollHeight !== oldScrollHeight) {
     _bilingualRepositioning = true;
     mySetScrollTop(mount, oldScrollTop * (newScrollHeight / oldScrollHeight));
     // Reset on the next macrotask so the rAF-deferred syncPageIndicator
@@ -457,7 +459,7 @@ function updateBilingualMaxHeight(syncGroup, localMax, paneLanguage) {
   return next;
 }
 
-function normalizeBilingualHeights(mount, syncGroup, reset = false, paneLanguage = 'en', skipScrollAdjust = false) {
+function normalizeBilingualHeights(mount, syncGroup, reset = false, paneLanguage = 'en') {
   const paneKey = syncGroup + '::' + paneLanguage;
   const children = mount.querySelectorAll('[data-page]');
   if (!children.length) return;
@@ -486,7 +488,7 @@ function normalizeBilingualHeights(mount, syncGroup, reset = false, paneLanguage
 
   // Reposition if max changed
   if (newMax !== prevMax || prevMax === 0) {
-    repositionBilingualPages(mount, syncGroup, paneLanguage, skipScrollAdjust);
+    repositionBilingualPages(mount, syncGroup, paneLanguage);
     // If the max grew, notify the OTHER pane to reposition (its own height is independent)
     if (newMax !== prevMax) {
       window.dispatchEvent(new CustomEvent(BILINGUAL_REPOSITION_EVENT, {
@@ -1104,54 +1106,11 @@ function PdfPane({
 
   // ── Image pagination: keep viewport center anchored on zoom ─
   const imgPaginationScrollRef = useRef({ top: 0, left: 0, height: 0, width: 0, clientHeight: 0, clientWidth: 0 });
-  const imgPaginationPageRef = useRef(currentPage);
-  const imgPaginationZoomKeyRef = useRef(`${zoom}|${fitMode}|${fitRefreshToken}`);
   useLayoutEffect(() => {
     if (!isImageMode || mode !== 'pagination') return;
     const container = imgRef.current?.closest('.pdf-single-page');
     if (!container) return;
     let { top, left, height, width, clientHeight, clientWidth } = imgPaginationScrollRef.current;
-
-    // Page changed (e.g. via the page selector, prev/next, thumbnails) —
-    // scroll to the top of the new page rather than preserving/anchoring
-    // the previous page's scroll position (which can leave the new page
-    // scrolled to a mid-page position that looks blank).
-    const pageChanged = imgPaginationPageRef.current !== currentPage;
-    imgPaginationPageRef.current = currentPage;
-    if (pageChanged && !_scrollRestoreInProgress) {
-      mySetScrollTop(container, 0);
-      mySetScrollLeft(container, 0);
-      imgPaginationScrollRef.current = {
-        top: 0,
-        left: 0,
-        height: Math.max(1, container.scrollHeight),
-        width: Math.max(1, container.scrollWidth),
-        clientHeight: container.clientHeight,
-        clientWidth: container.clientWidth,
-      };
-      return;
-    }
-
-    // Only run the zoom center-anchor recalculation when zoom/fitMode
-    // actually changed. Otherwise (e.g. this effect re-running purely
-    // because an image finished loading via imageLoadVersion) skip the
-    // height/width-changed centering math — it would otherwise use a
-    // stale captured height from before the new page's image had
-    // finished laying out, producing a bogus scroll offset.
-    const zoomKey = `${zoom}|${fitMode}|${fitRefreshToken}`;
-    const zoomChanged = imgPaginationZoomKeyRef.current !== zoomKey;
-    imgPaginationZoomKeyRef.current = zoomKey;
-    if (!zoomChanged && height > 0) {
-      imgPaginationScrollRef.current = {
-        top: getScrollPos(container).scrollTop,
-        left: getScrollPos(container).scrollLeft,
-        height: Math.max(1, container.scrollHeight),
-        width: Math.max(1, container.scrollWidth),
-        clientHeight: container.clientHeight,
-        clientWidth: container.clientWidth,
-      };
-      return;
-    }
 
     // On initial load (height=0 in ref), try localStorage first
     if (height === 0) {
@@ -1196,7 +1155,7 @@ function PdfPane({
       clientHeight: container.clientHeight,
       clientWidth: container.clientWidth,
     };
-  }, [isImageMode, mode, zoom, fitMode, fitRefreshToken, imageLoadVersion, currentPage]);
+  }, [isImageMode, mode, zoom, fitMode, fitRefreshToken, imageLoadVersion]);
 
   // ── Scrolling mode (PDF) ───────────────────────────────────
   useEffect(() => {
@@ -1302,7 +1261,7 @@ function PdfPane({
     // the DOM so they render at the correct size from the start.
     if (isBilingual) {
       const estH = Math.round(baseWidth * zoom * Math.SQRT2);
-      updateBilingualPageHeightCSS(estH, paneLanguageRef.current || paneLanguage || 'en');
+      updateBilingualPageHeightCSS(estH);
     }
 
     const drawAll = async () => {
@@ -2989,7 +2948,7 @@ function PdfPane({
       const estH = fitMode === 'height'
         ? Math.round(Math.max(180, mount.getBoundingClientRect().height) * zoom)
         : Math.round(sharedW * zoom * Math.SQRT2);
-      updateBilingualPageHeightCSS(estH, paneLanguageRef.current || paneLanguage || 'en');
+      updateBilingualPageHeightCSS(estH);
       // Update image widths to match the new container width.
       // Update EVERY <img> created for this images array (imgElementsRef),
       // not just ones currently attached via querySelectorAll — pages far
@@ -3012,13 +2971,7 @@ function PdfPane({
       });
       // Re-measure and reposition — image dimensions changed.
       // reset=true allows the shared max to shrink if needed.
-      // skipScrollAdjust=true: this zoom effect already anchors scroll
-      // precisely via Phase 1 (sync estimate) + Phase 2 (setTimeout
-      // fine-tune) below — letting repositionBilingualPages ALSO rescale
-      // scrollTop here causes two competing writes per zoom tick, which
-      // is what produced the shaky/jittery scroll during continuous
-      // trackpad-pinch or ctrl+wheel zoom in bilingual scrolling mode.
-      normalizeBilingualHeights(mount, syncGroup, true, paneLanguageRef.current || 'en', true);
+      normalizeBilingualHeights(mount, syncGroup, true, paneLanguageRef.current || 'en');
     } else {
       // Size images wider than the scroll container to create horizontal overflow.
       // For height-fit mode use container height to drive image size instead.
@@ -3038,11 +2991,13 @@ function PdfPane({
         });
         placeholders.forEach((ph) => { ph.style.height = `${h}px`; });
       } else {
+        const w = baseWidth * zoom;
         imgs.forEach((img) => {
-          img.style.width = `${baseWidth * zoom}px`;
+          img.style.width = `${w}px`;
           img.style.height = 'auto';
           img.style.maxWidth = 'none';
         });
+        placeholders.forEach((ph) => { ph.style.width = `${w}px`; });
       }
     }
 
@@ -3391,7 +3346,6 @@ function PdfPane({
                 />
               ) : imgSrc ? (
                 <img
-                  key={currentPage}
                   ref={imgRef}
                   src={withTimestamp(imgSrc)}
                   alt={`${_('pageN')} ${currentPage}`}
