@@ -460,7 +460,9 @@ def add_section_names(data_dir, base_dir, section_filter=None):
         "1) it is in the largest font on the page, "
         "2) it appears next to a large chapter/section number, "
         "3) it is located in the upper one fifth area of the page. "
-        "Return ONLY the section title as plain text, nothing else."
+        "4) This occupys only one line of text strictly. "
+        "5) Do not show anything except the section title. "
+        "Return ONLY the section title as plain text, nothing else. e.g. Number Systems."
     )
 
     for item in contents.get("contents", []):

@@ -649,6 +649,7 @@ function App() {
   });
   const [panelReservedHeight, setPanelReservedHeight] = useState(0);
   const [fitRefreshToken, setFitRefreshToken] = useState(0);
+  const [forceRedrawToken, setForceRedrawToken] = useState(0);
   const [singleRowToolbar, setSingleRowToolbar] = useState(false);
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [studyMenuOpen, setStudyMenuOpen] = useState(false);
@@ -2000,34 +2001,6 @@ function App() {
     window.__momentumDragging = false;
   }, []);
 
-  // Find the page element (img.page-img or canvas[data-page]) whose
-  // bounding rect actually contains the given screen point. In scrolling
-  // mode many pages are stacked in the same container, so a plain
-  // querySelector('img.page-img') always returns the FIRST page in DOM
-  // order — which is wrong (and badly offset) once the user has scrolled
-  // down. Falls back to the geometrically nearest page if the point falls
-  // in the gap/margin between pages.
-  const findPageElementAtPoint = useCallback((container, x, y) => {
-    if (!container) return null;
-    const candidates = container.querySelectorAll('img.page-img[data-page], canvas[data-page]');
-    if (candidates.length === 0) {
-      return container.querySelector('img.page-img, canvas:not([data-page])');
-    }
-    let best = null;
-    let bestDist = Infinity;
-    for (const el of candidates) {
-      const r = el.getBoundingClientRect();
-      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
-        return el; // exact hit — point is inside this page
-      }
-      const dx = Math.max(r.left - x, 0, x - r.right);
-      const dy = Math.max(r.top - y, 0, y - r.bottom);
-      const dist = Math.hypot(dx, dy);
-      if (dist < bestDist) { bestDist = dist; best = el; }
-    }
-    return best;
-  }, []);
-
   const getScrollTargetForGesture = useCallback((event) => {
     const stage = stageRef.current;
     if (!stage) return null;
@@ -2088,9 +2061,8 @@ function App() {
         const scrollTarget = getScrollTargetForGesture(e);
         if (scrollTarget) {
           const containerRect = scrollTarget.getBoundingClientRect();
-          const pageEl = findPageElementAtPoint(scrollTarget, e.clientX, e.clientY);
+          const pageEl = scrollTarget.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
           const pageRect = pageEl ? pageEl.getBoundingClientRect() : containerRect;
-          const anchorPageNum = pageEl?.dataset?.page ?? null;
           const offsetX = e.clientX - containerRect.left;
           const offsetY = e.clientY - containerRect.top;
           const pointInImgX = e.clientX - pageRect.left;
@@ -2103,9 +2075,7 @@ function App() {
 
           // After React re-renders at the new zoom, adjust scroll to keep pinch center stable
           requestAnimationFrame(() => {
-            const newPageEl = anchorPageNum != null
-              ? scrollTarget.querySelector(`[data-page="${anchorPageNum}"]`)
-              : scrollTarget.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
+            const newPageEl = scrollTarget.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
             const newContainerRect = scrollTarget.getBoundingClientRect();
             const newPageRect = newPageEl ? newPageEl.getBoundingClientRect() : null;
             if (newPageRect && newPageRect.width > 0 && newPageRect.height > 0) {
@@ -2273,14 +2243,10 @@ function App() {
       const target = touchScrollTarget || getScrollTargetForGesture({ clientX: midpoint.x, clientY: midpoint.y });
       if (!target) return null;
       const containerRect = target.getBoundingClientRect();
-      // Find the page image/canvas actually UNDER the pinch midpoint — not
-      // just the first page in DOM order. In scrolling mode many pages are
-      // stacked in the same container, so once the user has scrolled down,
-      // the first page is far off-screen and using it here would offset
-      // the zoom center (visible as the zoom center drifting vertically).
-      const pageEl = findPageElementAtPoint(target, midpoint.x, midpoint.y);
+      // Find the actual page image/canvas inside the scroll container —
+      // CSS grid centers it, so its rect may differ from the container's.
+      const pageEl = target.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
       const pageRect = pageEl ? pageEl.getBoundingClientRect() : containerRect;
-      const anchorPageNum = pageEl?.dataset?.page ?? null;
       // offsetX/Y: distance from the midpoint to the container's viewport edge
       // (this is what we subtract from the new content coordinate after zoom
       // to keep the pinch point at the same screen position).
@@ -2299,7 +2265,6 @@ function App() {
       if (!Number.isFinite(offsetX) || !Number.isFinite(offsetY)) return null;
       return {
         target,
-        anchorPageNum,
         offsetX,
         offsetY,
         fracX,
@@ -2323,12 +2288,8 @@ function App() {
       const target = anchor.target;
       if (!target || !target.isConnected) return;
 
-      // After zoom, re-locate the SAME page by its data-page number (not
-      // just "the first page") so the anchor math stays correct even when
-      // scrolled deep into a multi-page document.
-      const pageEl = anchor.anchorPageNum != null
-        ? target.querySelector(`[data-page="${anchor.anchorPageNum}"]`)
-        : target.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
+      // After zoom, find the page image again to see where it is now.
+      const pageEl = target.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
       const containerRect = target.getBoundingClientRect();
       const pageRect = pageEl ? pageEl.getBoundingClientRect() : null;
       if (pageRect && pageRect.width > 0 && pageRect.height > 0) {
@@ -2585,17 +2546,7 @@ function App() {
             // prevents jitter (re-reading scrollLeft/Top after each step would
             // use values already shifted by the previous correction).
             if (!pinchStartAnchor) {
-              pinchStartAnchor = capturePinchZoomAnchor({ x: curX, y: curY }, pinchStartZoom);
-            }
-            // Update the anchor's screen offset to track the current finger
-            // midpoint — this ensures the zoom center stays strictly at the
-            // midpoint between the two fingers even as they move on screen.
-            // fracX/fracY (the content point) stays fixed from the initial
-            // capture so the same image point remains under the fingers.
-            if (pinchStartAnchor) {
-              const containerRect = pinchStartAnchor.target.getBoundingClientRect();
-              pinchStartAnchor.offsetX = curX - containerRect.left;
-              pinchStartAnchor.offsetY = curY - containerRect.top;
+              pinchStartAnchor = capturePinchZoomAnchor({ x: gestureStartMidX, y: gestureStartMidY }, pinchStartZoom);
             }
             // Dampened pinch-to-zoom: apply an exponential sensitivity curve
             // so the zoom keeps pace with fingers without overshooting.
@@ -7293,7 +7244,7 @@ function App() {
         {isTestMode && !sidebarCollapsed && (
           <button
             type="button"
-            onClick={() => { console.log('[debug] manual fit refresh'); refreshFitForCurrentMode(); }}
+            onClick={() => { console.log('[debug] manual fit refresh'); refreshFitForCurrentMode(); setForceRedrawToken((t) => t + 1); }}
             style={{
               width: '100%', padding: '8px 12px', marginBottom: '8px',
               borderRadius: '8px', border: '1px solid #f59e0b',
@@ -7547,7 +7498,7 @@ function App() {
             {isTestMode && (
             <button
               className="sidebar-icon-btn"
-              onClick={() => { console.log('[debug] manual fit refresh'); refreshFitForCurrentMode(); }}
+              onClick={() => { console.log('[debug] manual fit refresh'); refreshFitForCurrentMode(); setForceRedrawToken((t) => t + 1); }}
               data-tooltip="Refresh Fit"
               aria-label="Refresh Fit"
               style={{ background: '#fef3c7' }}
@@ -7757,7 +7708,7 @@ function App() {
                       onThumbnailClick={(page) => { setSelectedPage(page); setDisplayMode('pagination'); }}
                       syncGroup={displayMode === 'scrolling' ? `${selectedChapter}-${selectedFile}-bilingual` : ''}
                       syncId={pane.sourceKey} zoom={zoomLevel} thumbCols={thumbCols}
-                      fitMode={fitMode} fitRefreshToken={fitRefreshToken}
+                      fitMode={fitMode} fitRefreshToken={fitRefreshToken} forceRedrawToken={forceRedrawToken}
                       onRenderScaleChange={(scale) => { setRenderScaleByLanguage((current) => { if (current[pane.sourceKey] === scale) return current; return { ...current, [pane.sourceKey]: scale }; }); }}
                       onScrollCanvasesReady={() => setRedrawTick((t) => t + 1)}
                       language={selectedLanguage}
@@ -7805,7 +7756,7 @@ function App() {
                       onThumbnailClick={(page) => { setSelectedPage(page); setDisplayMode('pagination'); }}
                       syncGroup={displayMode === 'scrolling' ? `${selectedChapter}-${selectedFile}-bilingual` : ''}
                       syncId={pane.sourceKey} zoom={zoomLevel} thumbCols={thumbCols}
-                      fitMode={fitMode} fitRefreshToken={fitRefreshToken}
+                      fitMode={fitMode} fitRefreshToken={fitRefreshToken} forceRedrawToken={forceRedrawToken}
                       onRenderScaleChange={(scale) => { setRenderScaleByLanguage((current) => { if (current[pane.sourceKey] === scale) return current; return { ...current, [pane.sourceKey]: scale }; }); }}
                       onScrollCanvasesReady={() => setRedrawTick((t) => t + 1)}
                       language={selectedLanguage}
@@ -7845,6 +7796,7 @@ function App() {
                 thumbCols={thumbCols}
                 fitMode={fitMode}
                 fitRefreshToken={fitRefreshToken}
+                forceRedrawToken={forceRedrawToken}
                 onRenderScaleChange={(scale) => {
                   setRenderScaleByLanguage((current) => {
                     if (current[pane.sourceKey] === scale) {
