@@ -74,10 +74,15 @@ function AutocompleteDropdown({
 	const updateDropdownPosition = useCallback(() => {
 		if (!containerRef.current) return;
 		const rect = containerRef.current.getBoundingClientRect();
+		const spaceBelow = window.innerHeight - rect.bottom - 6;
+		const dropdownHeight = listRef.current?.offsetHeight || 200;
+		const fitsBelow = spaceBelow >= dropdownHeight;
 		setDropdownStyle({
 			position: 'fixed',
 			left: rect.left,
-			top: rect.bottom + 6,
+			...(fitsBelow
+				? { top: rect.bottom + 6 }
+				: { bottom: window.innerHeight - rect.top + 6 }),
 			minWidth: rect.width,
 			maxWidth: Math.max(rect.width, window.innerWidth - rect.left - 16),
 			zIndex: 99999,
