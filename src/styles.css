@@ -1715,13 +1715,18 @@ button, input, select {
   touch-action: none;
 }
 
-/* In hand mode, allow native touch panning on PDF containers. */
+/* In hand mode, JS touch handler controls scrolling exclusively
+   for exact 1:1 finger tracking. */
 .book-stage.tool-hand .pdf-scroll-pages {
-  touch-action: pan-x pan-y;
+  touch-action: none;
+  -webkit-overflow-scrolling: auto;
+  overflow: hidden;
 }
 
 .book-stage.tool-hand .pdf-single-page {
-  touch-action: pan-x pan-y;
+  touch-action: none;
+  -webkit-overflow-scrolling: auto;
+  overflow: hidden;
 }
 
 /* In hand mode, ensure pdf-content doesn't block touch events */
@@ -2122,6 +2127,12 @@ button, input, select {
 .pdf-scroll-pages > * {
   touch-action: manipulation;
 }
+.book-stage.tool-hand .pdf-scroll-pages > * {
+  touch-action: none;
+}
+.book-stage.tool-hand .pdf-single-page > * {
+  touch-action: none;
+}
 
 .pdf-scroll-pages canvas,
 .pdf-single-page canvas {
@@ -2369,20 +2380,35 @@ button, input, select {
 /* Scroll container: allow both horizontal and vertical overflow when zooming freely */
 .app-shell[data-fit-mode="none"] .book-stage.scrolling .pdf-scroll-pages {
   overflow: auto !important;
-  touch-action: pan-x pan-y !important;
   overscroll-behavior: contain !important;
 }
-/* Allow horizontal panning on all children when zooming freely */
-.app-shell[data-fit-mode="none"] .book-stage.scrolling .pdf-scroll-pages > * {
+.app-shell[data-fit-mode="none"] .book-stage.scrolling.tool-hand .pdf-scroll-pages {
+  overflow: hidden !important;
+}
+.app-shell[data-fit-mode="none"] .book-stage.scrolling:not(.tool-hand) .pdf-scroll-pages {
   touch-action: pan-x pan-y !important;
+}
+.app-shell[data-fit-mode="none"] .book-stage.scrolling.tool-hand .pdf-scroll-pages {
+  touch-action: none !important;
+}
+/* Allow horizontal panning on all children when zooming freely (non-hand) */
+.app-shell[data-fit-mode="none"] .book-stage.scrolling:not(.tool-hand) .pdf-scroll-pages > * {
+  touch-action: pan-x pan-y !important;
+}
+.app-shell[data-fit-mode="none"] .book-stage.scrolling.tool-hand .pdf-scroll-pages > * {
+  touch-action: none !important;
 }
 /* Remove max-width clamp so zoomed images can extend beyond viewport */
 .app-shell[data-fit-mode="none"] .book-stage.scrolling .pdf-scroll-pages .page-img {
   max-width: none !important;
 }
 /* Also fix pagination-mode horizontal scroll for free zoom */
-.app-shell[data-fit-mode="none"] .book-stage.pagination .pdf-single-page {
+.app-shell[data-fit-mode="none"] .book-stage.pagination:not(.tool-hand) .pdf-single-page {
   touch-action: pan-x pan-y !important;
+}
+.app-shell[data-fit-mode="none"] .book-stage.pagination.tool-hand .pdf-single-page {
+  touch-action: none !important;
+  overflow: hidden !important;
 }
 .app-shell[data-fit-mode="none"] .book-stage.pagination .pdf-single-page canvas,
 .app-shell[data-fit-mode="none"] .book-stage.pagination .pdf-single-page .page-img {
