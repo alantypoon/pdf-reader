@@ -74,6 +74,10 @@ function getBookPrimaryLabel(item, subjectId, language) {
   }
 
   if (id && label) {
+    // Omit the name if it's just the book ID repeated (e.g. "4A - 4A" → "4A")
+    if (label.toUpperCase() === id.toUpperCase()) {
+      return id.toUpperCase();
+    }
     return `${id}${separator}${label}`;
   }
   return label || id.toUpperCase();

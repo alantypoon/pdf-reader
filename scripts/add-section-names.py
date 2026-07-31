@@ -34,9 +34,11 @@ import os
 import re
 import sys
 import time
+from io import BytesIO
 from pathlib import Path
 
 import requests
+from PIL import Image
 
 
 # Set by -v/--verbose — prints full request payload + response (pretty JSON)
@@ -149,6 +151,7 @@ def get_config(base_dir):
         "provider": os.environ.get("VLLM_PROVIDER") or env_values.get("VLLM_PROVIDER") or "ett-vllm",
         "ollama_provider": os.environ.get("OLLAMA_PROVIDER") or env_values.get("OLLAMA_PROVIDER") or "ollama",
         "ollama_model": "gpt-oss:20b",
+        "ollama_extract_model": "gpt-oss:120b",
         "ollama_api_key": os.environ.get("OLLAMA_APIKEY") or env_values.get("OLLAMA_APIKEY") or "",
     }
 
@@ -157,18 +160,41 @@ def get_config(base_dir):
 #  ETT image-to-text request
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def send_ett_request(url, api_key, model, file_path, prompt, provider="ett-vllm"):
-    """Send a single image + prompt to the AI gateway."""
-    mime_type, _ = mimetypes.guess_type(str(file_path))
-    if mime_type is None:
-        mime_type = "application/octet-stream"
+def crop_image_to_bytes(file_path, top=140, bottom=600):
+    """Crop the image at *file_path* to (0, top) → (max_width, bottom) and return
+    PNG bytes in memory. The file is never written to disk."""
+    img = Image.open(file_path)
+    w, h = img.size
+    crop_top = max(0, top)
+    crop_bottom = min(h, bottom)
+    cropped = img.crop((0, crop_top, w, crop_bottom))
+    buf = BytesIO()
+    cropped.save(buf, format='PNG')
+    buf.seek(0)
+    return buf
+
+
+def send_ett_request(url, api_key, model, file_path, prompt, provider="ett-vllm", image_bytes=None):
+    """Send a single image + prompt to the AI gateway.
+
+    If *image_bytes* is given (BytesIO), it is sent as the file payload instead
+    of reading *file_path* from disk.
+    """
+    if image_bytes is not None:
+        file_payload = (Path(file_path).name, image_bytes, 'image/png')
+    else:
+        mime_type, _ = mimetypes.guess_type(str(file_path))
+        if mime_type is None:
+            mime_type = "application/octet-stream"
+        file_payload = (Path(file_path).name, open(file_path, "rb"), mime_type)
 
     form_fields = {
         "provider": (None, provider),
         "apiKey": (None, api_key),
         "model": (None, model),
         "prompt": (None, prompt),
-        "files": (Path(file_path).name, open(file_path, "rb"), mime_type),
+        "responseFormat": (None, "json"),
+        "files": file_payload,
     }
 
     if VERBOSE:
@@ -223,12 +249,84 @@ def extract_text_from_ett_result(result):
     return text.strip() if isinstance(text, str) else ""
 
 
+def extract_title_from_text(config, raw_text, section):
+    """Use gpt-oss:120b via ollama to extract the section title from ETT raw text."""
+    if not raw_text:
+        return ""
+
+    prompt = (
+        "From the following text extracted from a textbook page image, "
+        "extract the English section title. The section title is the main heading "
+        "that appears in the largest font, typically next to section number "
+        f"{section}. Return ONLY the section title as plain text in a JSON object "
+        "with key \"title\". Example: {\"title\": \"Number Systems\"}.\n\n"
+        f"Extracted text:\n{raw_text}"
+    )
+
+    form_fields = {
+        "provider": (None, config["ollama_provider"]),
+        "apiKey": (None, config["ollama_api_key"]),
+        "model": (None, config["ollama_extract_model"]),
+        "prompt": (None, prompt),
+        "responseFormat": (None, "json"),
+    }
+
+    if VERBOSE:
+        _log_request(config["url"], form_fields, tag='EXTRACT')
+
+    try:
+        resp = requests.post(
+            config["url"],
+            files=form_fields,
+            headers={"Accept": "application/json"},
+            timeout=120,
+        )
+        if VERBOSE:
+            _log_response(resp.status_code, resp.text, tag='EXTRACT')
+        if resp.status_code != 200:
+            print(f"[extract] HTTP {resp.status_code}", end=" ")
+            return ""
+
+        data = resp.json()
+        text = data.get("response", "") or data.get("text", "") or data.get("output", "") or ""
+        if not text:
+            generation = data.get("generation", "")
+            if isinstance(generation, str):
+                text = generation
+            elif isinstance(generation, dict):
+                text = generation.get("text", "") or generation.get("response", "") or ""
+        if not text:
+            master = data.get("masterSummary", "")
+            if isinstance(master, str):
+                text = master
+            elif isinstance(master, dict):
+                text = master.get("text", "") or master.get("summary", "") or ""
+
+        # Try to parse the title from JSON response
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict) and "title" in parsed:
+                return parsed["title"].strip()
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        # Fallback: return the text as-is
+        return text.strip() if isinstance(text, str) else ""
+
+    except requests.Timeout:
+        print("[extract] timeout", end=" ")
+        return ""
+    except requests.RequestException as err:
+        print(f"[extract] {err}", end=" ")
+        return ""
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Translation via ollama provider
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def translate_to_chinese(config, english_names):
-    """Translate a dict of {section: english_name} to Chinese using gpt-oss:20b.
+    """Translate a dict of {section: english_name} to Chinese using gpt-oss:120b.
 
     Returns dict of {section: chinese_name}.
     """
@@ -239,8 +337,8 @@ def translate_to_chinese(config, english_names):
     names_list = "\n".join(f"{sec}: {name}" for sec, name in sorted(english_names.items(), key=lambda x: _section_sort_key(x[0])))
     prompt = (
         "Translate the following English textbook section names to Traditional Chinese (繁體中文). "
-        "Return ONLY the translations in the exact same format: one per line, \"section_number: Chinese name\". "
-        "Do not add explanations or extra text.\n\n"
+        "Return the result as a JSON object where keys are section numbers and values are the Chinese translations. "
+        "Example: {\"1\": \"數系\", \"2\": \"代數\"}.\n\n"
         f"{names_list}"
     )
 
@@ -248,8 +346,9 @@ def translate_to_chinese(config, english_names):
         form_fields = {
             "provider": (None, config["ollama_provider"]),
             "apiKey": (None, config["ollama_api_key"]),
-            "model": (None, config["ollama_model"]),
+            "model": (None, config["ollama_extract_model"]),
             "prompt": (None, prompt),
+            "responseFormat": (None, "json"),
         }
         if VERBOSE:
             _log_request(config["url"], form_fields)
@@ -286,8 +385,20 @@ def translate_to_chinese(config, english_names):
         except (json.JSONDecodeError, TypeError):
             text = raw
 
-        # Parse the response: "section: Chinese name" per line
+        # Try to parse the inner text as a JSON object of translations
         translations = {}
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                for sec, zh_name in parsed.items():
+                    if isinstance(zh_name, str) and zh_name.strip():
+                        translations[sec] = zh_name.strip()
+                if translations:
+                    return translations
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        # Fallback: parse "section: Chinese name" per line
         for line in text.strip().splitlines():
             line = line.strip()
             if not line:
@@ -391,9 +502,14 @@ def _clean_extracted_section_title(raw_text, section):
 
 
 def _natural_id_sort_key(value):
+    """Sort key that handles mixed alphanumeric book IDs like 4a, 4b, 5a, 6."""
     text = str(value).strip()
+    # Split into leading numeric part and trailing alpha part
+    match = re.match(r"^(\d+)(.*)", text)
+    if match:
+        return (0, int(match.group(1)), match.group(2))
     try:
-        return (0, float(text), text)
+        return (0, int(text), "")
     except ValueError:
         return (1, 0, text)
 
@@ -446,7 +562,7 @@ def add_section_names(data_dir, base_dir, section_filter=None):
 
     print(f"  Gateway: {config['url']}")
     print(f"  ETT Provider: {config['provider']}  |  Model: {config['model']}")
-    print(f"  Translation Provider: {config['ollama_provider']}  |  Model: {config['ollama_model']}")
+    print(f"  Extraction/Translation Provider: {config['ollama_provider']}  |  Model: {config['ollama_extract_model']}")
     print(f"  API key: {config['api_key'][:8]}...{config['api_key'][-4:]} ({len(config['api_key'])} chars)")
     print()
 
@@ -454,23 +570,29 @@ def add_section_names(data_dir, base_dir, section_filter=None):
     missing = []
     failed = []
 
-    prompt = (
-        "Extract the English section title from this textbook page. "
-        "The section title has these characteristics: "
-        "1) it is in the largest font on the page, "
-        "2) it appears next to a large chapter/section number, "
-        "3) it is located in the upper one fifth area of the page. "
-        "4) This occupys only one line of text strictly. "
-        "5) Do not show anything except the section title. "
-        "Return ONLY the section title as plain text, nothing else. e.g. Number Systems."
-    )
-
     for item in contents.get("contents", []):
         section = str(item.get("section", "")).strip()
         if not section:
             continue
         if normalized_filter is not None and _normalize_section_id(section) != normalized_filter:
             continue
+
+        # Strip leading zeros from numeric section numbers (e.g. "01" → "1")
+        section_display = section
+        try:
+            section_display = str(int(section))
+        except ValueError:
+            pass
+
+        prompt = (
+            "Extract the english title from this textbook page. "
+            "The section title has these characteristics: "
+            "1) it is in the largest font on the page, "
+            f"2) it appears on the right side of the large font-sized chapter/section number {section_display}, "
+            "3) This occupys one to two lines of text. "
+            "4) ignore the small text, footnotes, page numbers, and other text on the page. They are irrelevant. "
+            "Return the result as JSON with key \"title\". e.g. {\"title\": \"Number Systems\"}."
+        )
 
         image_path = _find_first_section_page_image(data_dir, section)
         if not image_path:
@@ -485,9 +607,13 @@ def add_section_names(data_dir, base_dir, section_filter=None):
             print(f"    [VERBOSE] Image path: {os.path.abspath(image_path)}")
             print(f"    [VERBOSE] Extraction prompt: {prompt}")
 
+        # Crop the top portion of the page (title area) in memory before sending
+        cropped_bytes = crop_image_to_bytes(image_path, top=140, bottom=600)
+
         result = send_ett_request(
             config["url"], config["api_key"], config["model"],
-            image_path, prompt, provider=config["provider"]
+            image_path, prompt, provider=config["provider"],
+            image_bytes=cropped_bytes,
         )
 
         if isinstance(result, dict) and result.get("error"):
@@ -501,7 +627,15 @@ def add_section_names(data_dir, base_dir, section_filter=None):
         if VERBOSE:
             print(f"    [VERBOSE] Generation response text: {raw_text!r}")
 
-        title = _clean_extracted_section_title(raw_text, section)
+        # Use gpt-oss:120b to extract the title from the raw OCR text
+        title = extract_title_from_text(config, raw_text, section)
+
+        if VERBOSE:
+            print(f"    [VERBOSE] gpt-oss:120b extracted title: {title!r}")
+
+        # Fallback to regex-based cleaning if LLM extraction failed
+        if not title:
+            title = _clean_extracted_section_title(raw_text, section)
 
         if not title:
             print("no title extracted")

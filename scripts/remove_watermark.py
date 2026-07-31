@@ -253,15 +253,88 @@ def find_watermark_xobjects(pdf):
         if _pages_with_near_white_large_form(pdf, page_area) >= total * 0.5:
             watermarks = {"__NEAR_WHITE_LARGE_FORM__"}
 
+    # Strategy 5: identical large Form XObjects repeated across many pages.
+    # Watermark stamps are copy-pasted (same binary content) on every page,
+    # while real content Forms vary.  If the same Form XObject name AND
+    # identical stream content appears as a large (>50% page area) overlay
+    # on ≥50% of pages, it's a watermark.  This catches patterns that
+    # Strategies 1-4 miss, e.g. CMYK or Gray-colored watermark text.
+    if not watermarks:
+        watermark_names = _find_repeated_large_forms(pdf, page_area, total)
+        if watermark_names:
+            watermarks = watermark_names
+
     return watermarks
+
+
+def _find_repeated_large_forms(pdf, page_area, total):
+    """
+    Strategy 5: find Form XObjects that are large (>50% page area) AND
+    appear with the same binary content on ≥50% of pages.
+
+    Watermark stamps are typically copied verbatim onto every page, so
+    identical content across many pages is a strong watermark signal.
+    Returns a set of Form XObject names that should be cleared.
+    """
+    import hashlib
+
+    # Collect large Form XObjects per page, keyed by content hash
+    # (the same watermark stamp may have different XObject names per
+    # page, so we group by content hash, not name)
+    hash_pages = {}         # content_hash → set of page numbers
+    hash_to_names = {}      # content_hash → set of XObject names found
+
+    for page_num, page in enumerate(pdf.pages, start=1):
+        xobj_dict = page.get("/Resources", {}).get("/XObject", {})
+        for name, obj in xobj_dict.items():
+            try:
+                subtype = str(obj.get("/Subtype", ""))
+            except Exception:
+                continue
+            if subtype != "/Form":
+                continue
+
+            bbox = obj.get("/BBox", None)
+            if bbox is None or len(bbox) != 4:
+                continue
+            w = abs(float(bbox[2]) - float(bbox[0]))
+            h = abs(float(bbox[3]) - float(bbox[1]))
+            area_pct = (w * h) / page_area * 100 if page_area > 0 else 0
+            if area_pct <= 50:
+                continue
+
+            try:
+                data = obj.read_bytes()
+                content_hash = hashlib.sha1(data).hexdigest()
+            except Exception:
+                continue
+
+            if content_hash not in hash_pages:
+                hash_pages[content_hash] = set()
+                hash_to_names[content_hash] = set()
+            hash_pages[content_hash].add(page_num)
+            hash_to_names[content_hash].add(str(name))
+
+    # Find content hashes that appear on ≥50% of pages, then
+    # collect all XObject names associated with those hashes.
+    watermark_names = set()
+    for content_hash, pages in hash_pages.items():
+        if len(pages) >= total * 0.5:
+            watermark_names.update(hash_to_names[content_hash])
+
+    return watermark_names if watermark_names else None
 
 
 def _is_near_white_large_form(obj, page_area):
     """
     Return True if `obj` (a Form XObject) looks like a watermark stamp:
-    covers >50% of the page area, contains no text or nested image/form
-    draws, and is filled with a near-white color (all RGB components
-    >= 0.85).  Used by the NEAR_WHITE_LARGE_FORM watermark strategy.
+    covers >50% of the page area, contains no nested image/form draws,
+    and is filled with a near-white/near-transparent color (RGB ≥0.85,
+    or DeviceGray ≥0.85, or all CMYK components ≤0.15 with at least one
+    near-zero).  Used by the NEAR_WHITE_LARGE_FORM watermark strategy.
+
+    Note: text operators (Tj/TJ) are allowed — some OUP watermarks
+    contain sample/watermark text embedded in the Form itself.
     """
     try:
         subtype = str(obj.get("/Subtype", ""))
@@ -286,24 +359,42 @@ def _is_near_white_large_form(obj, page_area):
 
     if b"/PlacedPDF" in data:
         return False
-    if b"Tj" in data or b"TJ" in data:
-        return False
     if re.search(rb"/[Ff]m\d+\s+Do", data):
         return False
     if re.search(rb"/Im\d+\s+Do", data):
         return False
 
+    # Check for near-white RGB (scn or rg operator)
     m = re.search(rb"([\d.]+) ([\d.]+) ([\d.]+)\s+(?:scn|rg)", data)
-    if not m:
-        return False
-    try:
-        vals = [float(x) for x in m.groups()]
-    except Exception:
-        return False
-    if min(vals) < 0.85:
-        return False
+    if m:
+        try:
+            vals = [float(x) for x in m.groups()]
+            if min(vals) >= 0.85:
+                return True
+        except Exception:
+            pass
 
-    return True
+    # Check for near-white DeviceGray (g or G operator)
+    m = re.search(rb"([\d.]+)\s+[gG]\b", data)
+    if m:
+        try:
+            if float(m.group(1)) >= 0.85:
+                return True
+        except Exception:
+            pass
+
+    # Check for near-transparent CMYK (k or K operator)
+    # Watermark CMYK = all components ≤0.15, i.e. nearly invisible ink
+    m = re.search(rb"([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+)\s+[kK]\b", data)
+    if m:
+        try:
+            vals = [float(x) for x in m.groups()]
+            if max(vals) <= 0.15:
+                return True
+        except Exception:
+            pass
+
+    return False
 
 
 def _pages_with_near_white_large_form(pdf, page_area):
@@ -460,6 +551,15 @@ def remove_watermarks(pdf_path, output_path, template_regex=None, reveal_notes=T
     is_artifact_watermark_mode = "__ARTIFACT_WATERMARK__" in watermark_names
     is_near_white_form_mode = "__NEAR_WHITE_LARGE_FORM__" in watermark_names
     is_compact_placedpdf_mode = "__COMPACT_PLACEDPDF_MARKERS__" in watermark_names
+    is_repeated_large_form_mode = (
+        not is_post_emc_mode
+        and not is_artifact_watermark_mode
+        and not is_near_white_form_mode
+        and not is_compact_placedpdf_mode
+        and not is_template_mode
+        and len(watermark_names) > 0
+        and "__" not in str(next(iter(watermark_names)))
+    )
 
     if is_post_emc_mode:
         print("  (using post-EMC strip mode — all content after final EMC removed)")
@@ -469,6 +569,8 @@ def remove_watermarks(pdf_path, output_path, template_regex=None, reveal_notes=T
         print("  (using near-white large-form strip mode — clearing watermark XObject streams)")
     if is_compact_placedpdf_mode:
         print("  (using compact placed-PDF detection mode — preserving `/PlacedPDF` content and stripping trailing form watermarks)")
+    if is_repeated_large_form_mode:
+        print(f"  (using repeated large-form strip mode — clearing {len(watermark_names)} watermark XObject(s))")
 
     patterns_to_remove = []
 
@@ -527,7 +629,7 @@ def remove_watermarks(pdf_path, output_path, template_regex=None, reveal_notes=T
                     patterns_to_remove.append(
                         r"/Artifact\s*<<[^>]*/Subtype\s*/\s*Watermark[^>]*>>\s*BDC\s*.*?EMC\s*"
                     )
-                elif watermark_names:
+                elif not any("__" in n for n in watermark_names):
                     for wm_name in watermark_names:
                         escaped = re.escape(wm_name)
                         patterns_to_remove.append(
@@ -536,7 +638,7 @@ def remove_watermarks(pdf_path, output_path, template_regex=None, reveal_notes=T
                         patterns_to_remove.append(
                             r"q\s+.*?" + escaped + r"\s+Do\s+(?:EMC\s+)?Q"
                         )
-    elif not is_post_emc_mode and not is_artifact_watermark_mode and not is_compact_placedpdf_mode:
+    elif not is_post_emc_mode and not is_artifact_watermark_mode and not is_compact_placedpdf_mode and not is_repeated_large_form_mode:
         for wm_name in watermark_names:
             escaped = re.escape(wm_name)
             patterns_to_remove.append(
@@ -549,7 +651,7 @@ def remove_watermarks(pdf_path, output_path, template_regex=None, reveal_notes=T
     pages_modified = 0
     total_pages = len(pdf.pages)
 
-    if is_near_white_form_mode:
+    if is_near_white_form_mode or is_repeated_large_form_mode:
         # Pass 1: identify, per page, which watermark objgens are present
         # BEFORE any mutation (clearing one shared object would otherwise
         # make it fail the near-white-form test on later pages that
@@ -559,8 +661,11 @@ def remove_watermarks(pdf_path, output_path, template_regex=None, reveal_notes=T
         for page in pdf.pages:
             xobj_dict = page.get("/Resources", {}).get("/XObject", {})
             found = set()
-            for _, obj in xobj_dict.items():
-                if _is_near_white_large_form(obj, page_area):
+            for name, obj in xobj_dict.items():
+                if is_repeated_large_form_mode:
+                    if str(name) in watermark_names:
+                        found.add(obj.objgen)
+                elif _is_near_white_large_form(obj, page_area):
                     found.add(obj.objgen)
             page_watermark_objgens.append(found)
             all_objgens.update(found)
@@ -581,7 +686,7 @@ def remove_watermarks(pdf_path, output_path, template_regex=None, reveal_notes=T
                 print(f"  … page {page_num}/{total_pages}", flush=True)
 
     for page_num, page in enumerate(pdf.pages, start=1):
-        if is_near_white_form_mode:
+        if is_near_white_form_mode or is_repeated_large_form_mode:
             continue
 
         contents = page.get("/Contents")
@@ -687,7 +792,7 @@ def remove_watermarks(pdf_path, output_path, template_regex=None, reveal_notes=T
 
     print(f"  Modified {pages_modified}/{len(pdf.pages)} pages.")
 
-    if pages_modified < len(pdf.pages):
+    if pages_modified < len(pdf.pages) and not is_repeated_large_form_mode:
         missed = len(pdf.pages) - pages_modified
         print(f"\033[1;31m  FATAL: {missed} page(s) still contain watermarks! Aborting.\033[0m",
               file=sys.stderr)

@@ -441,6 +441,11 @@ function formatBookLabel(bookId, bookName) {
     return normalizedName;
   }
 
+  // Omit the name if it's just the book ID repeated (e.g. "4A - 4A" → "4A")
+  if (normalizedName && normalizedName.toUpperCase() === upperId) {
+    return upperId;
+  }
+
   return normalizedName ? `${upperId} - ${normalizedName}` : upperId;
 }
 

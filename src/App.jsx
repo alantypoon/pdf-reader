@@ -796,6 +796,7 @@ function App() {
   }, [pageLoading]);
 
   const preferredAiDrawerLanguage = useMemo(() => {
+    return selectedLanguage === 'en' ? 'en' : 'zh';
   }, [selectedLanguage]);
 
   const normalizeAiContent = useCallback((content) => {
@@ -3558,12 +3559,63 @@ function App() {
     }
   };
   /**
+   * For an <img> element styled with object-fit:contain, compute the
+   * actual visible content rectangle within the CSS box.  The CSS box
+   * may be taller (or wider) than the content when the image's natural
+   * aspect ratio differs from the box aspect ratio.
+   *
+   * In bilingual scrolling mode, both language panes share a uniform
+   * page height but different language versions often have different
+   * page dimensions → object-fit:contain leaves empty margins.
+   * Annotations MUST be positioned relative to the actual visible
+   * content, not the CSS box, otherwise they appear displaced.
+   *
+   * Returns a rect with .left / .top / .width / .height relative to
+   * the viewport.  For non-img elements or images without loaded
+   * natural dimensions, returns the full box rect unchanged.
+   */
+  const getContentRectForElement = useCallback((el) => {
+    const box = el.getBoundingClientRect();
+    if (el.tagName !== 'IMG' || !el.naturalWidth || !el.naturalHeight) {
+      return { left: box.left, top: box.top, width: box.width, height: box.height };
+    }
+    const natW = el.naturalWidth;
+    const natH = el.naturalHeight;
+    if (!natW || !natH) {
+      return { left: box.left, top: box.top, width: box.width, height: box.height };
+    }
+    const boxW = box.width;
+    const boxH = box.height;
+    if (!boxW || !boxH) {
+      return { left: box.left, top: box.top, width: box.width, height: box.height };
+    }
+    // object-fit: contain fits the content maintaining aspect ratio
+    const scale = Math.min(boxW / natW, boxH / natH);
+    const contentW = natW * scale;
+    const contentH = natH * scale;
+    // object-position: top → vertically at top; horizontally centered (default)
+    const offsetX = (boxW - contentW) / 2;
+    const offsetY = 0;
+    return {
+      left: box.left + offsetX,
+      top: box.top + offsetY,
+      width: contentW,
+      height: contentH,
+    };
+  }, []);
+
+  /**
    * Get the bounding rect (relative to the annotation canvas) of the
    * rendered page IMAGE (canvas or img) inside each language pane.
    *
    * This is the authoritative source for coordinate normalization —
    * the page image dimensions stay proportional to the PDF page
    * regardless of container size / header height / layout mode.
+   *
+   * For <img> elements, uses getContentRectForElement to compute the
+   * actual visible content rectangle within object-fit:contain boxes,
+   * ensuring annotation positions are correct even when two language
+   * versions have different page dimensions in bilingual mode.
    */
   const getPageImageRects = useCallback(() => {
     const canvas = canvasRef.current;
@@ -3590,13 +3642,13 @@ function App() {
           for (const el of candidates) {
             const elPage = Number(el.getAttribute('data-page'));
             if (!elPage) continue;
-            const r = el.getBoundingClientRect();
-            if (r.width > 0 && r.height > 0) {
+            const cr = getContentRectForElement(el);
+            if (cr.width > 0 && cr.height > 0) {
               result[`${paneKey}-${elPage}`] = {
-                left: r.left - canvasRect.left,
-                top: r.top - canvasRect.top,
-                width: r.width,
-                height: r.height,
+                left: cr.left - canvasRect.left,
+                top: cr.top - canvasRect.top,
+                width: cr.width,
+                height: cr.height,
               };
             }
           }
@@ -3608,8 +3660,8 @@ function App() {
         for (const el of candidates) {
           const elPage = Number(el.getAttribute('data-page'));
           if (elPage === currentPage) {
-            const r = el.getBoundingClientRect();
-            if (r.width > 0 && r.height > 0) {
+            const cr = getContentRectForElement(el);
+            if (cr.width > 0 && cr.height > 0) {
               pageImage = el;
               break;
             }
@@ -3618,8 +3670,8 @@ function App() {
         // Last-resort fallback: first visible image
         if (!pageImage) {
           for (const el of candidates) {
-            const r = el.getBoundingClientRect();
-            if (r.width > 0 && r.height > 0) {
+            const cr = getContentRectForElement(el);
+            if (cr.width > 0 && cr.height > 0) {
               pageImage = el;
               break;
             }
@@ -3630,8 +3682,8 @@ function App() {
       if (!pageImage) {
         const activeThumb = pane.querySelector('.thumb-grid-item.active img');
         if (activeThumb) {
-          const r = activeThumb.getBoundingClientRect();
-          if (r.width > 0 && r.height > 0) {
+          const cr = getContentRectForElement(activeThumb);
+          if (cr.width > 0 && cr.height > 0) {
             pageImage = activeThumb;
           }
         }
@@ -3643,16 +3695,16 @@ function App() {
 
       if (!pageImage) continue;
 
-      const rect = pageImage.getBoundingClientRect();
+      const cr = getContentRectForElement(pageImage);
       result[paneKey] = {
-        left: rect.left - canvasRect.left,
-        top: rect.top - canvasRect.top,
-        width: rect.width,
-        height: rect.height,
+        left: cr.left - canvasRect.left,
+        top: cr.top - canvasRect.top,
+        width: cr.width,
+        height: cr.height,
       };
     }
     return result;
-  }, []);
+  }, [getContentRectForElement]);
 
   /**
    * Get the bounding rect (relative to the annotation canvas) of each
@@ -8859,9 +8911,9 @@ function App() {
                   const items = [];
                   const hasEn = bookAvailableLanguages.includes('en');
                   const hasTc = bookAvailableLanguages.includes('tc');
-                  if (hasEn && hasTc) items.push({ id: 'bilingual', primary: _('bilingual'), searchText: _('bilingual') });
                   if (hasEn) items.push({ id: 'en', primary: _('english'), searchText: _('english') });
                   if (hasTc) items.push({ id: 'tc', primary: _('chinese'), searchText: _('chinese') });
+                  if (hasEn && hasTc) items.push({ id: 'bilingual', primary: _('bilingual'), searchText: _('bilingual') });
                   return items;
                 })()}
                 value={selectedLanguage}
