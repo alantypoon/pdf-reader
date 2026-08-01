@@ -2157,6 +2157,10 @@ button, input, select {
   will-change: transform;
   transform: translateZ(0);
   backface-visibility: hidden;
+  -webkit-touch-callout: none;
+  -webkit-user-drag: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 /* Page image — subtle placeholder background for loading / broken states */
