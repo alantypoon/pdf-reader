@@ -1702,11 +1702,22 @@ function PdfPane({
     const targetTop = target.offsetTop;
     const currentScrollTop = getScrollPos(mount).scrollTop;
     const maxScroll = Math.max(0, mount.scrollHeight - mount.clientHeight);
-    // If we're already at the target position (within a 2px tolerance
-    // for sub-pixel rounding), skip the scroll entirely. This prevents
-    // unnecessary scroll events, RAF handlers, and cross-pane sync
-    // dispatches — especially important in bilingual mode where sync
-    // events from the other pane may have already positioned us correctly.
+    // In bilingual sync mode, if we're already within the target page's
+    // bounds, skip the scroll.  This prevents the scroll-to-page effect
+    // from pulling the user to the exact top of the page when they're
+    // already viewing it (e.g. after cross-pane sync positioned us
+    // partway through the page).  Without this, a race between the
+    // syncingFromRemoteRef reset and React's useEffect causes the
+    // receiving pane to snap to pageTop, then sync that position back —
+    // jumping the user to the page start.
+    if (syncGroup) {
+      const pageHeight = target.offsetHeight || 0;
+      const pageBottom = targetTop + pageHeight;
+      if (currentScrollTop >= targetTop - 2 && currentScrollTop < pageBottom) {
+        return;
+      }
+    }
+    // Also skip if already at the target position (within 2px tolerance).
     const scrollTarget = Math.min(targetTop, maxScroll);
     if (Math.abs(currentScrollTop - scrollTarget) <= 2) {
       return;
@@ -1926,17 +1937,27 @@ function PdfPane({
       if (hMax > 0 && typeof hRatio === 'number') {
         mySetScrollLeft(mount, hRatio * hMax);
       }
-      // Use setTimeout(0) instead of requestAnimationFrame so the reset
-      // always runs AFTER React commits the batched onPageChange state
-      // update.  On Safari, RAF callbacks can run before React's commit,
-      // causing lastScrolledFromSyncRef to be reset too early — the
-      // scroll-to-currentPage effect then sees false and jumps to the
-      // top of the target page instead of skipping.
+      // Reset syncingFromRemoteRef after a double-RAF so that any browser
+      // scroll events triggered by the programmatic scrollTop assignment
+      // are still suppressed.  Scroll events from el.scrollTop assignment
+      // may fire in the same or next animation frame — a single RAF can
+      // race with them.  The double-RAF ensures we only clear the flag
+      // after the scroll event has had a full frame to fire and be
+      // suppressed by the onScrollWithSave guard.
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          syncingFromRemoteRef.current = false;
+        });
+      });
+      // Reset lastScrolledFromSyncRef via setTimeout(0) so it survives
+      // until React commits the batched state update — on Safari, RAF
+      // can fire before React's commit, causing the scroll-to-page
+      // effect to see false and jump to the top of the target page.
+      // The scroll-to-page effect now has an additional "already within
+      // page bounds" guard, so this race is less critical, but keeping
+      // setTimeout ensures the flag is still true for the effect when
+      // a page change DID occur.
       setTimeout(() => {
-        syncingFromRemoteRef.current = false;
-        // If no React state update consumed lastScrolledFromSyncRef
-        // (i.e. no page change occurred), reset it here so the next
-        // prev/next button click doesn't get wrongly suppressed.
         lastScrolledFromSyncRef.current = false;
       }, 0);
     };
@@ -2830,7 +2851,7 @@ function PdfPane({
         onPageChange(nearest);
       }
 
-      if (syncGroup && !isInitialLoadRef.current) {
+      if (syncGroup && !isInitialLoadRef.current && !syncingFromRemoteRef.current) {
         const max = Math.max(1, mount.scrollHeight - mount.clientHeight);
         const syncPos2 = getScrollPos(mount);
         const ratio = syncPos2.scrollTop / max;
