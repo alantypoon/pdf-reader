@@ -2175,19 +2175,24 @@ function App() {
     let gestureStartMidX = 0;
     let gestureStartMidY = 0;
     let gestureLockMode = null; // null | 'pan' | 'zoom'
+    // On touch screens (iPad), fingers drift more and events are coarser,
+    // so we use more forgiving constants than on trackpad.
+    const isTouchDevice = isIOSDevice || (navigator.maxTouchPoints > 1);
     // Exponential dampening factor for pinch zoom (0..1). Lower = slower pinch.
-    // 0.65 keeps zoom proportional to finger movement but reins in the rate
-    // so slow pinches don't feel jumpy.
-    const PINCH_SENSITIVITY = 0.65;
+    // Touch screens lack trackpad's built-in acceleration, so use higher value.
+    const PINCH_SENSITIVITY = isTouchDevice ? 0.85 : 0.65;
     // Fixed anchor captured ONCE when zoom gesture is confirmed — used for
     // all subsequent zoom steps so the scroll correction is always computed
     // from the same reference, eliminating jitter/drift.
     let pinchStartAnchor = null;
     // Minimum combined finger movement (px) before committing to a mode.
-    const GESTURE_LOCK_DISTANCE = 10;
+    // iPad fingers drift more on initial contact, needs larger deadzone.
+    const GESTURE_LOCK_DISTANCE = isTouchDevice ? 16 : 10;
     // Pinch-distance change must exceed pan distance by this factor to
-    // win as 'zoom' — biases ambiguous gestures toward scrolling.
-    const ZOOM_LOCK_BIAS = 1.5;
+    // win as 'zoom'. Lower on touch because pinch intent is more obvious.
+    const ZOOM_LOCK_BIAS = isTouchDevice ? 1.2 : 1.5;
+    // Track last pinch distance for coalesced-event smoothing
+    let lastPinchDistance = 0;
 
     let velocityX = 0;
     let velocityY = 0;
@@ -2208,6 +2213,24 @@ function App() {
       const dx = touches[0].clientX - touches[1].clientX;
       const dy = touches[0].clientY - touches[1].clientY;
       return Math.hypot(dx, dy);
+    };
+
+    // Use coalesced events when available (reduces jitter on touch screens
+    // where events arrive at lower frequency than trackpad).
+    const getCoalescedDistance = (e) => {
+      if (!e.touches || e.touches.length < 2) return getTouchDistance(e.touches);
+      // getCoalescedEvents() is only on PointerEvent, not TouchEvent.
+      // For touch, average the last distance with current for smoothing.
+      const cur = getTouchDistance(e.touches);
+      if (lastPinchDistance > 0) {
+        // Weighted average: 70% current, 30% previous — smooths jitter
+        // from imprecise finger tracking on capacitive screens.
+        const smoothed = cur * 0.7 + lastPinchDistance * 0.3;
+        lastPinchDistance = cur;
+        return smoothed;
+      }
+      lastPinchDistance = cur;
+      return cur;
     };
 
     const applyScroll = () => {
@@ -2343,16 +2366,19 @@ function App() {
         createdAt: Date.now(),
       };
       // Apply scroll correction after React re-renders at the new zoom.
-      // A single rAF + one follow-up is sufficient — PdfPane's own
-      // centerAnchoredScroll also uses this anchor for its scroll effect.
+      // iPad layout settles slower than desktop, so we apply multiple
+      // correction passes with increasing delays.
       requestAnimationFrame(() => {
         applyPinchZoomAnchor(anchor, token);
+        window.setTimeout(() => {
+          applyPinchZoomAnchor(anchor, token);
+        }, 50);
         window.setTimeout(() => {
           applyPinchZoomAnchor(anchor, token);
           if (window.__pdfReaderPinchZoomAnchor?.token === token) {
             window.__pdfReaderPinchZoomAnchor = null;
           }
-        }, 80);
+        }, isTouchDevice ? 150 : 80);
       });
     };
 
@@ -2398,6 +2424,7 @@ function App() {
         // gestureLockMode stays null until onTouchMove sees enough
         // movement to confidently decide pan vs. zoom.
         pinchActive = true;
+        lastPinchDistance = 0; // reset smoothing for fresh gesture
         pinchStartDistance = getTouchDistance(e.touches);
         pinchStartZoom = zoomLevelRef.current || 1;
         gestureStartMidX = midpoint.x;
@@ -2487,6 +2514,33 @@ function App() {
       }
       if (!touchActive) return;
       if (e.touches.length !== touchFingerMode) {
+        // On iPad, a finger lifting briefly during pinch shouldn't abort
+        // the zoom gesture — only deactivate if NOT in active pinch-zoom.
+        if (gestureLockMode === 'zoom' && e.touches.length === 1 && touchFingerMode === 2) {
+          // One finger lifted during active zoom — finalize the pending
+          // zoom and end gracefully instead of discarding state.
+          if (isDebugZooming()) console.log('[pinch-zoom] finger lifted during zoom, finalizing');
+          if (pendingZoomRaf) {
+            cancelAnimationFrame(pendingZoomRaf);
+            pendingZoomRaf = null;
+            if (latestPinchZoom) {
+              const { zoom: z, anchor } = latestPinchZoom;
+              latestPinchZoom = null;
+              setFitMode('none');
+              setZoomLevel(z);
+              schedulePinchZoomAnchor(anchor);
+            }
+          }
+          touchActive = false;
+          touchFingerMode = 0;
+          touchScrollTarget = null;
+          pinchActive = false;
+          gestureLockMode = null;
+          pinchStartAnchor = null;
+          lastPinchDistance = 0;
+          touchPinchZoomingRef.current = false;
+          return;
+        }
         if (isDebugScrollingMomentum()) console.log('[momentum] touch-move: touch count changed, deactivating', { touchCount: e.touches.length, expected: touchFingerMode });
         touchActive = false;
         touchFingerMode = 0;
@@ -2494,6 +2548,7 @@ function App() {
         pinchActive = false;
         gestureLockMode = null;
         pinchStartAnchor = null;
+        lastPinchDistance = 0;
         return;
       }
       let curX, curY;
@@ -2515,7 +2570,7 @@ function App() {
         // dominate (by ZOOM_LOCK_BIAS) to win — ties/ambiguous gestures
         // default to panning, per product requirement.
         if (pinchActive && touchFingerMode === 2 && pinchStartDistance > 0) {
-          const curDistance = getTouchDistance(e.touches);
+          const curDistance = isTouchDevice ? getCoalescedDistance(e) : getTouchDistance(e.touches);
           const panDelta = Math.hypot(curX - gestureStartMidX, curY - gestureStartMidY);
           const pinchDelta = Math.abs(curDistance - pinchStartDistance);
 
@@ -2562,7 +2617,7 @@ function App() {
               console.log('[pinch-zoom] touch-move: pinch scale', {
                 curDistance: curDistance.toFixed(1),
                 pinchStartDistance: pinchStartDistance.toFixed(1),
-                scaleRatio: scaleRatio.toFixed(3),
+                scaleRatio: rawScaleRatio.toFixed(3),
                 pinchStartZoom,
                 rawZoom: rawZoom.toFixed(3),
                 clampedZoom,
@@ -2639,11 +2694,20 @@ function App() {
       pinchStartDistance = 0;
       gestureLockMode = null;
       pinchStartAnchor = null;
+      lastPinchDistance = 0;
       touchPinchZoomingRef.current = false;
+      // Apply any pending zoom that was queued but not yet flushed —
+      // ensures the final pinch position is honored on finger-up.
       if (pendingZoomRaf) {
         cancelAnimationFrame(pendingZoomRaf);
         pendingZoomRaf = null;
-        latestPinchZoom = null;
+        if (latestPinchZoom) {
+          const { zoom: z, anchor } = latestPinchZoom;
+          latestPinchZoom = null;
+          setFitMode('none');
+          setZoomLevel(z);
+          schedulePinchZoomAnchor(anchor);
+        }
       }
       if (pendingRaf) {
         cancelAnimationFrame(pendingRaf);
