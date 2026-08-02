@@ -2175,24 +2175,31 @@ function App() {
     let gestureStartMidX = 0;
     let gestureStartMidY = 0;
     let gestureLockMode = null; // null | 'pan' | 'zoom'
-    // On touch screens (iPad), fingers drift more and events are coarser,
-    // so we use more forgiving constants than on trackpad.
     const isTouchDevice = isIOSDevice || (navigator.maxTouchPoints > 1);
-    // Exponential dampening factor for pinch zoom (0..1). Lower = slower pinch.
-    // Touch screens lack trackpad's built-in acceleration, so use higher value.
-    const PINCH_SENSITIVITY = isTouchDevice ? 0.85 : 0.65;
-    // Fixed anchor captured ONCE when zoom gesture is confirmed — used for
-    // all subsequent zoom steps so the scroll correction is always computed
-    // from the same reference, eliminating jitter/drift.
+    // Touch screens lack trackpad's built-in acceleration, so use higher sensitivity.
+    const PINCH_SENSITIVITY = isTouchDevice ? 0.9 : 0.65;
     let pinchStartAnchor = null;
-    // Minimum combined finger movement (px) before committing to a mode.
     // iPad fingers drift more on initial contact, needs larger deadzone.
-    const GESTURE_LOCK_DISTANCE = isTouchDevice ? 16 : 10;
-    // Pinch-distance change must exceed pan distance by this factor to
-    // win as 'zoom'. Lower on touch because pinch intent is more obvious.
-    const ZOOM_LOCK_BIAS = isTouchDevice ? 1.2 : 1.5;
-    // Track last pinch distance for coalesced-event smoothing
+    const GESTURE_LOCK_DISTANCE = isTouchDevice ? 18 : 10;
+    // Pinch intent is more obvious on touch — lower bias.
+    const ZOOM_LOCK_BIAS = isTouchDevice ? 1.1 : 1.5;
+    // Exponential moving average state for distance smoothing
     let lastPinchDistance = 0;
+    // Minimum zoom change to apply per frame (prevents micro-jitter)
+    const MIN_ZOOM_DELTA = isTouchDevice ? 0.003 : 0.001;
+    let lastAppliedZoom = 0;
+    // CSS-transform approach: on touch devices, apply visual scale via CSS
+    // transform for instant feedback, only commit React state on end/interval.
+    let cssTransformEl = null;
+    let cssTransformOrigin = null;
+    let cssBaseScale = 1; // the React-committed zoom when CSS transform started
+    let lastCommitTime = 0;
+    // How often to commit zoom to React state during gesture (ms).
+    // Higher = smoother (fewer re-renders) but state lags more.
+    const COMMIT_INTERVAL = isTouchDevice ? 200 : 0;
+    // Track current midpoint for adaptive anchor
+    let currentMidX = 0;
+    let currentMidY = 0;
 
     let velocityX = 0;
     let velocityY = 0;
@@ -2215,22 +2222,52 @@ function App() {
       return Math.hypot(dx, dy);
     };
 
-    // Use coalesced events when available (reduces jitter on touch screens
-    // where events arrive at lower frequency than trackpad).
-    const getCoalescedDistance = (e) => {
-      if (!e.touches || e.touches.length < 2) return getTouchDistance(e.touches);
-      // getCoalescedEvents() is only on PointerEvent, not TouchEvent.
-      // For touch, average the last distance with current for smoothing.
+    // Smoothed distance for touch screens: uses EMA (exponential moving
+    // average) with adaptive alpha — fast moves get less smoothing so
+    // the gesture stays responsive, slow moves get more to absorb jitter.
+    const getSmoothedDistance = (e) => {
       const cur = getTouchDistance(e.touches);
+      if (!isTouchDevice) return cur;
       if (lastPinchDistance > 0) {
-        // Weighted average: 70% current, 30% previous — smooths jitter
-        // from imprecise finger tracking on capacitive screens.
-        const smoothed = cur * 0.7 + lastPinchDistance * 0.3;
+        const changePct = Math.abs(cur - lastPinchDistance) / lastPinchDistance;
+        // Adaptive alpha: big moves (>5% change) → mostly raw, small → smoothed
+        const alpha = Math.min(0.95, 0.6 + changePct * 4);
+        const smoothed = cur * alpha + lastPinchDistance * (1 - alpha);
         lastPinchDistance = cur;
         return smoothed;
       }
       lastPinchDistance = cur;
       return cur;
+    };
+
+    // Apply CSS transform for instant visual zoom (no React re-render needed)
+    const applyCssZoomTransform = (scale, midX, midY) => {
+      if (!cssTransformEl) {
+        const target = touchScrollTarget || getScrollTargetForGesture({ clientX: midX, clientY: midY });
+        if (!target) return;
+        const el = target.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
+        if (!el) return;
+        cssTransformEl = el;
+        const rect = el.getBoundingClientRect();
+        // Transform origin in element-local coordinates (px from top-left)
+        const ox = midX - rect.left;
+        const oy = midY - rect.top;
+        cssTransformOrigin = { x: ox, y: oy };
+        el.style.transformOrigin = `${ox}px ${oy}px`;
+        el.style.willChange = 'transform';
+      }
+      // The visual scale is relative to the base (React-committed) zoom
+      const relativeScale = scale / cssBaseScale;
+      cssTransformEl.style.transform = `translateZ(0) scale(${relativeScale})`;
+    };
+
+    const clearCssZoomTransform = () => {
+      if (cssTransformEl) {
+        cssTransformEl.style.transform = '';
+        cssTransformEl.style.transformOrigin = '';
+        cssTransformEl = null;
+        cssTransformOrigin = null;
+      }
     };
 
     const applyScroll = () => {
@@ -2366,8 +2403,7 @@ function App() {
         createdAt: Date.now(),
       };
       // Apply scroll correction after React re-renders at the new zoom.
-      // iPad layout settles slower than desktop, so we apply multiple
-      // correction passes with increasing delays.
+      // iPad layout settles slower, so apply multiple correction passes.
       requestAnimationFrame(() => {
         applyPinchZoomAnchor(anchor, token);
         window.setTimeout(() => {
@@ -2378,8 +2414,23 @@ function App() {
           if (window.__pdfReaderPinchZoomAnchor?.token === token) {
             window.__pdfReaderPinchZoomAnchor = null;
           }
-        }, isTouchDevice ? 150 : 80);
+        }, 120);
+        if (isTouchDevice) {
+          window.setTimeout(() => {
+            applyPinchZoomAnchor(anchor, token);
+          }, 200);
+        }
       });
+    };
+
+    // Commit zoom to React state (triggers re-render + layout)
+    const commitZoomToState = (z, anchor) => {
+      clearCssZoomTransform();
+      cssBaseScale = z;
+      setFitMode('none');
+      setZoomLevel(z);
+      schedulePinchZoomAnchor(anchor);
+      lastCommitTime = performance.now();
     };
 
     const applyPinchZoom = () => {
@@ -2387,9 +2438,20 @@ function App() {
       if (latestPinchZoom == null) return;
       const { zoom: z, anchor } = latestPinchZoom;
       latestPinchZoom = null;
-      setFitMode('none'); // release fit-width / fit-height so pinch-zoom works standalone
-      setZoomLevel(z);
-      schedulePinchZoomAnchor(anchor);
+      if (isTouchDevice && COMMIT_INTERVAL > 0) {
+        // On touch: use CSS transform for instant feedback
+        applyCssZoomTransform(z, currentMidX, currentMidY);
+        // Periodically commit to React state so scroll containers resize
+        const now = performance.now();
+        if (now - lastCommitTime > COMMIT_INTERVAL) {
+          commitZoomToState(z, anchor);
+        }
+      } else {
+        // Desktop trackpad: commit every frame (fast enough CPU)
+        setFitMode('none');
+        setZoomLevel(z);
+        schedulePinchZoomAnchor(anchor);
+      }
     };
 
     const onTouchStart = (e) => {
@@ -2424,11 +2486,16 @@ function App() {
         // gestureLockMode stays null until onTouchMove sees enough
         // movement to confidently decide pan vs. zoom.
         pinchActive = true;
-        lastPinchDistance = 0; // reset smoothing for fresh gesture
+        lastPinchDistance = 0;
         pinchStartDistance = getTouchDistance(e.touches);
         pinchStartZoom = zoomLevelRef.current || 1;
+        cssBaseScale = pinchStartZoom;
+        lastAppliedZoom = pinchStartZoom;
+        lastCommitTime = performance.now();
         gestureStartMidX = midpoint.x;
         gestureStartMidY = midpoint.y;
+        currentMidX = midpoint.x;
+        currentMidY = midpoint.y;
         gestureLockMode = null;
 
         if (isDebugScrollingMomentum()) {
@@ -2515,21 +2582,23 @@ function App() {
       if (!touchActive) return;
       if (e.touches.length !== touchFingerMode) {
         // On iPad, a finger lifting briefly during pinch shouldn't abort
-        // the zoom gesture — only deactivate if NOT in active pinch-zoom.
+        // the zoom gesture — finalize and commit the current zoom state.
         if (gestureLockMode === 'zoom' && e.touches.length === 1 && touchFingerMode === 2) {
-          // One finger lifted during active zoom — finalize the pending
-          // zoom and end gracefully instead of discarding state.
           if (isDebugZooming()) console.log('[pinch-zoom] finger lifted during zoom, finalizing');
+          clearCssZoomTransform();
           if (pendingZoomRaf) {
             cancelAnimationFrame(pendingZoomRaf);
             pendingZoomRaf = null;
-            if (latestPinchZoom) {
-              const { zoom: z, anchor } = latestPinchZoom;
-              latestPinchZoom = null;
-              setFitMode('none');
-              setZoomLevel(z);
-              schedulePinchZoomAnchor(anchor);
-            }
+          }
+          const finalZoom = latestPinchZoom ? latestPinchZoom.zoom : lastAppliedZoom;
+          const finalAnchor = latestPinchZoom
+            ? latestPinchZoom.anchor
+            : (pinchStartAnchor ? { ...pinchStartAnchor, nextZoom: finalZoom } : null);
+          latestPinchZoom = null;
+          if (finalZoom !== cssBaseScale) {
+            setFitMode('none');
+            setZoomLevel(finalZoom);
+            schedulePinchZoomAnchor(finalAnchor);
           }
           touchActive = false;
           touchFingerMode = 0;
@@ -2542,6 +2611,7 @@ function App() {
           return;
         }
         if (isDebugScrollingMomentum()) console.log('[momentum] touch-move: touch count changed, deactivating', { touchCount: e.touches.length, expected: touchFingerMode });
+        clearCssZoomTransform();
         touchActive = false;
         touchFingerMode = 0;
         touchScrollTarget = null;
@@ -2570,7 +2640,9 @@ function App() {
         // dominate (by ZOOM_LOCK_BIAS) to win — ties/ambiguous gestures
         // default to panning, per product requirement.
         if (pinchActive && touchFingerMode === 2 && pinchStartDistance > 0) {
-          const curDistance = isTouchDevice ? getCoalescedDistance(e) : getTouchDistance(e.touches);
+          const curDistance = getSmoothedDistance(e);
+          currentMidX = curX;
+          currentMidY = curY;
           const panDelta = Math.hypot(curX - gestureStartMidX, curY - gestureStartMidY);
           const pinchDelta = Math.abs(curDistance - pinchStartDistance);
 
@@ -2604,33 +2676,30 @@ function App() {
             if (!pinchStartAnchor) {
               pinchStartAnchor = capturePinchZoomAnchor({ x: gestureStartMidX, y: gestureStartMidY }, pinchStartZoom);
             }
-            // Dampened pinch-to-zoom: apply an exponential sensitivity curve
-            // so the zoom keeps pace with fingers without overshooting.
-            // scaleRatio ^ PINCH_SENSITIVITY compresses the zoom range — a
-            // 2× finger spread with sensitivity 0.65 yields ~1.57× zoom instead
-            // of 2×, which tracks finger motion at a natural, non-jumpy rate.
             const rawScaleRatio = curDistance / pinchStartDistance;
             const dampenedRatio = Math.pow(rawScaleRatio, PINCH_SENSITIVITY);
             const rawZoom = pinchStartZoom * dampenedRatio;
             const clampedZoom = Math.min(5, Math.max(0.1, Number(rawZoom.toFixed(3))));
-            if (isDebugZooming()) {
-              console.log('[pinch-zoom] touch-move: pinch scale', {
-                curDistance: curDistance.toFixed(1),
-                pinchStartDistance: pinchStartDistance.toFixed(1),
-                scaleRatio: rawScaleRatio.toFixed(3),
-                pinchStartZoom,
-                rawZoom: rawZoom.toFixed(3),
-                clampedZoom,
-              });
-            }
-            latestPinchZoom = {
-              zoom: clampedZoom,
-              // Use the fixed anchor captured at gesture start — never re-read
-              // scroll positions mid-gesture to avoid compounding errors.
-              anchor: pinchStartAnchor ? { ...pinchStartAnchor, nextZoom: clampedZoom } : null,
-            };
-            if (!pendingZoomRaf) {
-              pendingZoomRaf = requestAnimationFrame(applyPinchZoom);
+            // Only apply if change exceeds jitter threshold
+            if (Math.abs(clampedZoom - lastAppliedZoom) >= MIN_ZOOM_DELTA) {
+              lastAppliedZoom = clampedZoom;
+              if (isDebugZooming()) {
+                console.log('[pinch-zoom] touch-move: pinch scale', {
+                  curDistance: curDistance.toFixed(1),
+                  pinchStartDistance: pinchStartDistance.toFixed(1),
+                  scaleRatio: rawScaleRatio.toFixed(3),
+                  pinchStartZoom,
+                  rawZoom: rawZoom.toFixed(3),
+                  clampedZoom,
+                });
+              }
+              latestPinchZoom = {
+                zoom: clampedZoom,
+                anchor: pinchStartAnchor ? { ...pinchStartAnchor, nextZoom: clampedZoom } : null,
+              };
+              if (!pendingZoomRaf) {
+                pendingZoomRaf = requestAnimationFrame(applyPinchZoom);
+              }
             }
           }
         }
@@ -2686,6 +2755,7 @@ function App() {
 
     const onTouchEnd = () => {
       if (touchPending) { touchPending = false; return; }
+      const wasPinchZooming = touchPinchZoomingRef.current;
       touchActive = false;
       touchFingerMode = 0;
       touchScrollingRef.current = false;
@@ -2693,22 +2763,26 @@ function App() {
       pinchActive = false;
       pinchStartDistance = 0;
       gestureLockMode = null;
-      pinchStartAnchor = null;
       lastPinchDistance = 0;
       touchPinchZoomingRef.current = false;
-      // Apply any pending zoom that was queued but not yet flushed —
-      // ensures the final pinch position is honored on finger-up.
+
+      // Final commit: clear CSS visual transform and commit actual zoom to React
+      clearCssZoomTransform();
       if (pendingZoomRaf) {
         cancelAnimationFrame(pendingZoomRaf);
         pendingZoomRaf = null;
-        if (latestPinchZoom) {
-          const { zoom: z, anchor } = latestPinchZoom;
-          latestPinchZoom = null;
-          setFitMode('none');
-          setZoomLevel(z);
-          schedulePinchZoomAnchor(anchor);
-        }
       }
+      if (latestPinchZoom || (wasPinchZooming && lastAppliedZoom !== cssBaseScale)) {
+        const finalZoom = latestPinchZoom ? latestPinchZoom.zoom : lastAppliedZoom;
+        const finalAnchor = latestPinchZoom
+          ? latestPinchZoom.anchor
+          : (pinchStartAnchor ? { ...pinchStartAnchor, nextZoom: finalZoom } : null);
+        latestPinchZoom = null;
+        setFitMode('none');
+        setZoomLevel(finalZoom);
+        schedulePinchZoomAnchor(finalAnchor);
+      }
+      pinchStartAnchor = null;
       if (pendingRaf) {
         cancelAnimationFrame(pendingRaf);
         pendingRaf = null;
@@ -2886,6 +2960,7 @@ function App() {
     return () => {
       if (pendingRaf) cancelAnimationFrame(pendingRaf);
       if (pendingZoomRaf) cancelAnimationFrame(pendingZoomRaf);
+      clearCssZoomTransform();
       const stage = stageRef.current;
       canvas.removeEventListener('touchstart', onTouchStart);
       canvas.removeEventListener('touchmove', onTouchMove);
