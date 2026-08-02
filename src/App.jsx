@@ -6909,11 +6909,11 @@ function App() {
         {toolMenuOpen && (
           <div className="tool-menu-popup">
             <div className="tool-menu-grid">
-            <button className={`tool-menu-item ${tool === 'highlight' ? 'active' : ''}`} onClick={() => { setTool('highlight'); setToolMenuOpen(false); }}>
+            <button className={`tool-menu-item ${tool === 'highlight' ? 'active' : ''}`} onClick={() => { setTool('highlight'); setLineWidth(4); setToolMenuOpen(false); }}>
               <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon" fill="currentColor"><path d="M15.24 2.36l-11 11a1 1 0 0 0-.24.59V17a1 1 0 0 0 1 1h3.05a1 1 0 0 0 .59-.24l11-11a1 1 0 0 0 0-1.41l-3.4-3.4a1 1 0 0 0-1.41 0zM5 16v-2.5l9-9L16.5 7l-9 9H5z" /><rect x="2" y="18" width="20" height="3" rx="1" /></svg>
               {_('highlighter')}
             </button>
-            <button className={`tool-menu-item ${tool === 'pen' ? 'active' : ''}`} onClick={() => { setTool('pen'); setToolMenuOpen(false); }}>
+            <button className={`tool-menu-item ${tool === 'pen' ? 'active' : ''}`} onClick={() => { setTool('pen'); setLineWidth(1); setToolMenuOpen(false); }}>
               <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z" /></svg>
               {_('pen')}
             </button>
@@ -6921,7 +6921,7 @@ function App() {
               <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon" fill="currentColor"><path d="M5 4v3h5.5v12h3V7H19V4H5z" /></svg>
               {_('textTool')}
             </button>
-            <button className={`tool-menu-item ${tool === 'eraser' ? 'active' : ''}`} onClick={() => { setTool('eraser'); setToolMenuOpen(false); }}>
+            <button className={`tool-menu-item ${tool === 'eraser' ? 'active' : ''}`} onClick={() => { setTool('eraser'); setLineWidth(3); setToolMenuOpen(false); }}>
               <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon" fill="currentColor"><path d="M16.24 3.56a2 2 0 0 1 2.83 0l1.37 1.37a2 2 0 0 1 0 2.83l-8.49 8.48H8.71L3.56 10.9a2 2 0 0 1 0-2.83l7.85-7.85a2 2 0 0 1 2.83 0l2 2.34zM5.68 9.49l4.28 4.27h1.16l7.9-7.9-1.36-1.37-1.44-1.44-1.31-1.54L5.68 9.49z" /><path d="M3 20h18v2H3z" /></svg>
               {_('rubber')}
             </button>
