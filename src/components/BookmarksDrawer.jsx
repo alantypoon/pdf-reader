@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { t } from '../i18n';
+import FontSizeControl from './FontSizeControl';
 
 const LIMIT = 20;
 
@@ -23,6 +24,16 @@ function getSectionNameFromStructure(structure, currentSubject, subjectId, bookI
   return val.name || '';
 }
 
+function getSubjectShortName(subjectId) {
+  const normalized = String(subjectId || '').trim().toLowerCase();
+  if (normalized === 'biology-oup') return 'Bio';
+  if (normalized === 'chemistry-aristo') return 'Chem';
+  if (normalized === 'chemistry-winter') return 'Chem.W';
+  if (normalized === 'math-oup') return 'Math';
+  if (normalized === 'physics-oup') return 'Phy';
+  return String(subjectId || '').slice(0, 6);
+}
+
 function extractSummaryText(aiContent, language) {
   if (!aiContent) return '';
   const langKey = language === 'tc' ? 'zh' : 'en';
@@ -35,7 +46,7 @@ function extractSummaryText(aiContent, language) {
   return '';
 }
 
-export default function BookmarksDrawer({ lang, userId, onClose, onNavigate, onKeyDown, structure, selectedLanguage, currentSubject, refreshToken, subjectOptions = [], selectedSubjects = [], onSelectedSubjectsChange }) {
+export default function BookmarksDrawer({ lang, userId, onClose, onNavigate, onKeyDown, structure, selectedLanguage, currentSubject, refreshToken, subjectOptions = [], selectedSubjects = [], onSelectedSubjectsChange, drawerFontSize, onDrawerFontSizeChange }) {
   const _ = (key) => t(key, lang);
   const displayLang = selectedLanguage === 'tc' ? 'tc' : 'en';
 
@@ -230,7 +241,10 @@ export default function BookmarksDrawer({ lang, userId, onClose, onNavigate, onK
             </svg>
             {_('bookmarks')}
           </h2>
-          <button className="modal-close" onClick={onClose} aria-label={_('close')}>✕</button>
+          <div className="ai-drawer-header-actions">
+            <FontSizeControl value={drawerFontSize} onChange={onDrawerFontSizeChange} lang={lang} />
+            <button className="modal-close" onClick={onClose} aria-label={_('close')}>✕</button>
+          </div>
         </div>
 
         <div className="bookmarks-controls">
@@ -276,7 +290,7 @@ export default function BookmarksDrawer({ lang, userId, onClose, onNavigate, onK
           </div>
         </div>
 
-        <div className="ai-drawer-body bookmarks-list" ref={scrollRef} onScroll={handleScroll}>
+        <div className="ai-drawer-body bookmarks-list" ref={scrollRef} onScroll={handleScroll} style={{ fontSize: `${drawerFontSize}px` }}>
           {loading && (
             <div className="ai-loading">
               <div className="ai-spinner" />
@@ -302,6 +316,7 @@ export default function BookmarksDrawer({ lang, userId, onClose, onNavigate, onK
                 onClick={() => onNavigate(item)}
               >
                 <div className="bookmark-item-meta">
+                  <span className="bookmark-badge bookmark-subject">{getSubjectShortName(item.subjectId)}</span>
                   <span className="bookmark-badge bookmark-book">{item.bookId?.toUpperCase?.() ?? item.bookId}</span>
                   <span className="bookmark-badge bookmark-section">§{item.sectionId}</span>
                   <span className="bookmark-badge bookmark-page">p.{item.pageId}</span>

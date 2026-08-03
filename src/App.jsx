@@ -11,14 +11,15 @@ import StepperSelect from './StepperSelect';
 import AutocompleteDropdown from './components/AutocompleteDropdown';
 import MathText from './components/MathText';
 import BookmarksDrawer from './components/BookmarksDrawer';
+import FontSizeControl from './components/FontSizeControl';
 import { t, uiLang } from './i18n';
 import { isDebugScrollingMomentum, isDebugScrollingPersistence, isDebugZooming, isDebugAnnoStrokes } from './debug';
 import { myScrollBy, myScrollTo } from './MyScroll';
-import { loadScrollPos } from './myLocalStorage';
+import { loadScrollPos, deleteScrollPos } from './myLocalStorage';
 import { initQueue, enqueue, updateScope, getPendingCount } from './annotationQueue';
 
 const PREFERENCES_KEY = 'pdfReaderPreferences';
-const AI_FONT_SIZE_KEY = 'pdfReaderAiFontSize';
+const DRAWER_FONT_SIZE_KEY = 'pdfReaderDrawerFontSize';
 const AI_THEME_KEY = 'pdfReaderAiTheme';
 const DEFAULT_ANNOTATION_COLOR = '#9acd32';
 const ANNOTATION_TOOLS = new Set(['pen', 'highlight', 'text', 'eraser', 'move', 'hand']);
@@ -579,20 +580,21 @@ function App() {
   const [aiDrawerOpen, setAiDrawerOpen] = useState(false);
   const [bookmarksDrawerOpen, setBookmarksDrawerOpen] = useState(false);
   const [bookmarksRefreshToken, setBookmarksRefreshToken] = useState(0);
+  const pendingSectionPageResetRef = useRef(false);
   const [aiDrawerLanguage, setAiDrawerLanguage] = useState('en');
-  const [aiFontSize, setAiFontSize] = useState(() => {
+  const [drawerFontSize, setDrawerFontSize] = useState(() => {
     if (typeof window === 'undefined') return 16;
     try {
-      const v = parseInt(window.localStorage.getItem(AI_FONT_SIZE_KEY), 10);
+      const v = parseInt(window.localStorage.getItem(DRAWER_FONT_SIZE_KEY), 10);
       if (v >= 10 && v <= 28) return v;
     } catch { /* ignore */ }
     return 16;
   });
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      window.localStorage.setItem(AI_FONT_SIZE_KEY, String(aiFontSize));
+      window.localStorage.setItem(DRAWER_FONT_SIZE_KEY, String(drawerFontSize));
     }
-  }, [aiFontSize]);
+  }, [drawerFontSize]);
   const [globalTheme, setGlobalTheme] = useState(() => {
     if (typeof window === 'undefined') return 'light';
     try {
@@ -1245,10 +1247,19 @@ function App() {
     if (!nextBook) return;
     const nextSection = nextBook.contents?.find((item) => String(toFileId(item.page ?? item.section)) === String(nextSectionId));
     const normalizedSectionId = nextSection ? toFileId(nextSection.page ?? nextSection.section) : nextSectionId;
+    deleteScrollPos(`scroll-${selectedBook}-${nextBook.id}-${normalizedSectionId}`);
+    pendingSectionPageResetRef.current = true;
     handleBookSelect(nextBook.id || '');
     setSelectedFile(normalizedSectionId);
-    setSelectedPage(1);
-  }, [structure, handleBookSelect]);
+  }, [structure, handleBookSelect, selectedBook]);
+
+  const handleSectionSelect = useCallback((nextSectionId) => {
+    if (nextSectionId == null || nextSectionId === '') return;
+    // Clear saved scroll so PdfPane's initial-load restore can't overwrite page 1
+    deleteScrollPos(`scroll-${selectedBook}-${selectedChapter}-${nextSectionId}`);
+    pendingSectionPageResetRef.current = true;
+    setSelectedFile(nextSectionId);
+  }, [selectedBook, selectedChapter]);
 
   const physicsBookChapterMeta = useMemo(() => {
     if (selectedBook !== 'physics-oup' || !physicsChapterCatalog) return null;
@@ -1356,6 +1367,14 @@ function App() {
     const sectionName = selectedLanguage === 'tc' ? (tc || en) : (en || tc);
     return `${sectionId}${sectionName ? `. ${sectionName}` : ''}`;
   }, [currentSection, selectedChapter, selectedFile, selectedLanguage]);
+
+  const combinedSteppableOptions = useMemo(() => {
+    return (combinedBookSectionOptions || []).filter((opt) => !opt.disabled);
+  }, [combinedBookSectionOptions]);
+
+  const currentCombinedSteppableIndex = useMemo(() => {
+    return combinedSteppableOptions.findIndex((opt) => opt.id === currentCombinedBookSectionValue);
+  }, [combinedSteppableOptions, currentCombinedBookSectionValue]);
 
   /** Normalize a section/page identifier based on the book's PDF mode.
    *  In "one PDF for all sections" mode the identifier is the book ID (string),
@@ -1627,6 +1646,12 @@ function App() {
   }, [currentChapter, isOnePdfForAllSections]);
 
   useEffect(() => {
+    if (!pendingSectionPageResetRef.current) return;
+    pendingSectionPageResetRef.current = false;
+    setSelectedPage(1);
+  }, [selectedChapter, selectedFile]);
+
+  useEffect(() => {
     const loadPages = async () => {
       setPageLoading(true);
       try {
@@ -1694,8 +1719,10 @@ function App() {
             if (entry.status !== 'fulfilled') return;
             const [language, role, source] = entry.value;
             const countKey = getPageSourceKey(language, role);
-            if (Array.isArray(source) && source.length > 0 && !updated[countKey]) {
+            if (Array.isArray(source) && source.length > 0) {
               updated[countKey] = source.length;
+            } else if (!hasRenderableSource(source)) {
+              delete updated[countKey];
             }
           });
           console.log('[page-count] seeded from server:', updated);
@@ -7698,7 +7725,13 @@ function App() {
               </svg>
               {_('bookSection')}
             </span>
-            <div className="selector-single-row" data-autocomplete-id="section-combined">
+            <div className="selector-stepper-row" data-autocomplete-id="section-combined">
+              <button type="button" className="selector-stepper-btn" onClick={() => {
+                if (currentCombinedSteppableIndex > 0) {
+                  const prev = combinedSteppableOptions[currentCombinedSteppableIndex - 1];
+                  handleCombinedBookSectionSelect(prev._bookId, prev._sectionId);
+                }
+              }} disabled={currentCombinedSteppableIndex <= 0}>-</button>
               <SectionAutocomplete
                 sections={combinedBookSectionOptions}
                 currentSection={{ section: currentCombinedBookSectionValue, label: currentCombinedBookSectionDisplay }}
@@ -7711,6 +7744,12 @@ function App() {
                   handleCombinedBookSectionSelect(bookId, sectionId);
                 }}
               />
+              <button type="button" className="selector-stepper-btn" onClick={() => {
+                if (currentCombinedSteppableIndex >= 0 && currentCombinedSteppableIndex < combinedSteppableOptions.length - 1) {
+                  const next = combinedSteppableOptions[currentCombinedSteppableIndex + 1];
+                  handleCombinedBookSectionSelect(next._bookId, next._sectionId);
+                }
+              }} disabled={currentCombinedSteppableIndex < 0 || currentCombinedSteppableIndex >= combinedSteppableOptions.length - 1}>+</button>
             </div>
           </label>
         )}
@@ -7748,18 +7787,15 @@ function App() {
               {_('section')}
             </span>
             <div className="selector-stepper-row" data-autocomplete-id="section">
-              <button type="button" className="selector-stepper-btn" onClick={() => { const idx = currentSectionIndex; if (idx > 0) { setSelectedFile(sectionSelectOptions[idx - 1].id); setSelectedPage(1); } else { moveBook(-1); } }}>-</button>
+              <button type="button" className="selector-stepper-btn" onClick={() => { const idx = currentSectionIndex; if (idx > 0) { handleSectionSelect(sectionSelectOptions[idx - 1].id); } else { moveBook(-1); } }}>-</button>
               <SectionAutocomplete
                 sections={currentChapter?.contents || []}
                 currentSection={currentSection}
                 language={selectedLanguage}
                 getSectionName={getSectionName}
-                onSelect={(sectionId) => {
-                  setSelectedFile(sectionId);
-                  setSelectedPage(1);
-                }}
+                onSelect={handleSectionSelect}
               />
-              <button type="button" className="selector-stepper-btn" onClick={() => { const idx = currentSectionIndex; const len = sectionSelectOptions.length; if (idx >= 0 && idx < len - 1) { setSelectedFile(sectionSelectOptions[idx + 1].id); setSelectedPage(1); } else { moveBook(1); } }}>+</button>
+              <button type="button" className="selector-stepper-btn" onClick={() => { const idx = currentSectionIndex; const len = sectionSelectOptions.length; if (idx >= 0 && idx < len - 1) { handleSectionSelect(sectionSelectOptions[idx + 1].id); } else { moveBook(1); } }}>+</button>
             </div>
           </label>
         )}
@@ -7863,6 +7899,10 @@ function App() {
               aria-pressed={selectedLanguage === 'en'}
               disabled={!bookAvailableLanguages.includes('en')}
             >
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="lang-toggle-icon">
+                <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="1.5"/>
+                <text x="12" y="16" textAnchor="middle" fontSize="11" fontWeight="700" fill="currentColor" fontFamily="system-ui, sans-serif">A</text>
+              </svg>
               {_('english')}
             </button>
             <button
@@ -7871,6 +7911,10 @@ function App() {
               aria-pressed={selectedLanguage === 'tc'}
               disabled={!bookAvailableLanguages.includes('tc')}
             >
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="lang-toggle-icon">
+                <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="1.5"/>
+                <text x="12" y="17" textAnchor="middle" fontSize="13" fontWeight="700" fill="currentColor" fontFamily="system-ui, sans-serif">文</text>
+              </svg>
               {_('chinese')}
             </button>
             <button
@@ -7879,6 +7923,12 @@ function App() {
               aria-pressed={selectedLanguage === 'bilingual'}
               disabled={!(bookAvailableLanguages.includes('en') && bookAvailableLanguages.includes('tc'))}
             >
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="lang-toggle-icon">
+                <rect x="2" y="4" width="9" height="16" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.5"/>
+                <rect x="13" y="4" width="9" height="16" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.5"/>
+                <text x="6.5" y="16" textAnchor="middle" fontSize="8" fontWeight="700" fill="currentColor" fontFamily="system-ui, sans-serif">A</text>
+                <text x="17.5" y="16" textAnchor="middle" fontSize="8" fontWeight="700" fill="currentColor" fontFamily="system-ui, sans-serif">文</text>
+              </svg>
               {_('bilingual')}
             </button>
           </div>
@@ -8470,9 +8520,12 @@ function App() {
                 </svg>
                 {_('resources')}
               </h2>
-              <button className="modal-close" onClick={() => setResourcesDrawerOpen(false)} aria-label={_('close')}>✕</button>
+              <div className="ai-drawer-header-actions">
+                <FontSizeControl value={drawerFontSize} onChange={setDrawerFontSize} lang={lang} />
+                <button className="modal-close" onClick={() => setResourcesDrawerOpen(false)} aria-label={_('close')}>✕</button>
+              </div>
             </div>
-            <div className="ai-drawer-body">
+            <div className="ai-drawer-body" style={{ fontSize: `${drawerFontSize}px` }}>
             {(selectedLanguage === 'bilingual' || selectedLanguage === 'en') && (
               <div className="resources-column">
                 <h3>{getSectionName(currentSection, 'en')}</h3>
@@ -8694,21 +8747,7 @@ function App() {
                     <span>{_('resetAnswers')}</span>
                   </button>
                 )}
-                <div className="ai-font-size-control">
-                  <button
-                    className="ai-font-btn"
-                    onClick={() => setAiFontSize(s => Math.max(10, s - 1))}
-                    title={_('decreaseFontSize')}
-                    aria-label={_('decreaseFontSize')}
-                  >−</button>
-                  <span className="ai-font-size-value">{aiFontSize}</span>
-                  <button
-                    className="ai-font-btn"
-                    onClick={() => setAiFontSize(s => Math.min(28, s + 1))}
-                    title={_('increaseFontSize')}
-                    aria-label={_('increaseFontSize')}
-                  >+</button>
-                </div>
+                <FontSizeControl value={drawerFontSize} onChange={setDrawerFontSize} lang={lang} />
                 <button className="modal-close" onClick={() => setAiDrawerOpen(false)} aria-label={_('close')}>✕</button>
               </div>
             </div>
@@ -8764,7 +8803,7 @@ function App() {
               )}
 
               {aiContent && !aiLoading && (
-                <div className="ai-content" style={{ fontSize: `${aiFontSize}px` }}>
+                <div className="ai-content" style={{ fontSize: `${drawerFontSize}px` }}>
                   {/* Language tabs when both languages are available */}
                   {aiHasBoth && (
                     <div className="ai-lang-tabs">
@@ -8954,9 +8993,12 @@ function App() {
                 </svg>
                 {_('search')}
               </h2>
-              <button className="modal-close" onClick={() => setSearchDrawerOpen(false)} aria-label={_('close')}>✕</button>
+              <div className="ai-drawer-header-actions">
+                <FontSizeControl value={drawerFontSize} onChange={setDrawerFontSize} lang={lang} />
+                <button className="modal-close" onClick={() => setSearchDrawerOpen(false)} aria-label={_('close')}>✕</button>
+              </div>
             </div>
-            <div className="ai-drawer-body">
+            <div className="ai-drawer-body" style={{ fontSize: `${drawerFontSize}px` }}>
               <div className="search-controls-sticky">
                 <input
                   type="text"
@@ -9098,6 +9140,8 @@ function App() {
           subjectOptions={subjectToggleOptions}
           selectedSubjects={bookmarkSubjects}
           onSelectedSubjectsChange={setBookmarkSubjects}
+          drawerFontSize={drawerFontSize}
+          onDrawerFontSizeChange={setDrawerFontSize}
           onClose={() => setBookmarksDrawerOpen(false)}
           onNavigate={handleBookmarkNavigate}
           onKeyDown={(e) => {
@@ -9275,8 +9319,7 @@ function App() {
                 language={selectedLanguage}
                 getSectionName={getSectionName}
                 onSelect={(sectionId) => {
-                  setSelectedFile(sectionId);
-                  setSelectedPage(1);
+                  handleSectionSelect(sectionId);
                   setCollapsedDropdownId(null);
                 }}
                 onOpenChange={(open) => { if (!open) setCollapsedDropdownId(null); }}

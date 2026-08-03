@@ -187,13 +187,14 @@ function findContainingPage(mount, scrollTop) {
  * Two source formats are supported:
  *
  *   1. Image mode:   "img:book:chapter:file:lang"
- *      → key: "scroll-{book}-{chapter}"  (e.g. "scroll-biology-oup-1a")
+ *      → key: "scroll-{book}-{chapter}-{file}"  (e.g. "scroll-biology-oup-1a-2")
  *
  *   2. PDF mode:     URL like "/pdf-reader/data/book/chapter/lang/file.pdf"
- *      → key: "scroll-{book}-{chapter}"  (extracted from URL path segments)
+ *      → key: "scroll-{book}-{chapter}-{file}"  (extracted from URL path segments)
  *
- * This namespaces scroll positions per subject+chapter so the same chapter
- * ID (e.g. "1a") across different books doesn't collide.
+ * This namespaces scroll positions per subject+chapter+section so switching
+ * sections (or reusing a chapter ID across books) never collides or leaks
+ * another section's saved page/scroll position.
  *
  * @param {string} source - source identifier string
  * @returns {string} localStorage key
@@ -206,22 +207,24 @@ function getScrollCacheKey(source) {
   if (parts.length >= 4 && parts[0] === 'img') {
     const book = parts[1] || 'default';
     const chapter = parts[2] || 'default';
-    return `scroll-${book}-${chapter}`;
+    const file = parts[3] || 'default';
+    return `scroll-${book}-${chapter}-${file}`;
   }
 
   // PDF-mode format: URL like "/pdf-reader/data/book/chapter/lang/file.pdf"
-  // Extract book + chapter from path segments.  Common patterns:
+  // Extract book + chapter + file from path segments.  Common patterns:
   //   /pdf-reader/data/biology-oup/1a/en/1.pdf
   //   /data/biology-oup/1a/en/1.pdf
   try {
     const url = new URL(String(source), 'http://localhost');
     const segments = url.pathname.split('/').filter(Boolean);
+    const fileSegment = (segments[segments.length - 1] || 'default').replace(/\.[^./]+$/, '');
     // Look for a "data" segment followed by book and chapter
     const dataIdx = segments.indexOf('data');
     if (dataIdx >= 0 && segments.length > dataIdx + 2) {
       const book = segments[dataIdx + 1] || 'default';
       const chapter = segments[dataIdx + 2] || 'default';
-      return `scroll-${book}-${chapter}`;
+      return `scroll-${book}-${chapter}-${fileSegment}`;
     }
     // Fallback: if path has at least 2 segments, use last two meaningful ones
     if (segments.length >= 3) {
@@ -231,7 +234,7 @@ function getScrollCacheKey(source) {
       if (langIdx >= 2) {
         const book = segments[langIdx - 2] || 'default';
         const chapter = segments[langIdx - 1] || 'default';
-        return `scroll-${book}-${chapter}`;
+        return `scroll-${book}-${chapter}-${fileSegment}`;
       }
     }
   } catch {
@@ -241,7 +244,8 @@ function getScrollCacheKey(source) {
   // Legacy/fallback: try colon-separated format anyway
   const book = parts[1] || 'default';
   const chapter = parts[2] || 'default';
-  return `scroll-${book}-${chapter}`;
+  const file = parts[3] || 'default';
+  return `scroll-${book}-${chapter}-${file}`;
 }
 
 /**

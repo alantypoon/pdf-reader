@@ -961,6 +961,17 @@ button, input, select {
   flex-shrink: 0;
 }
 
+.lang-toggle-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.lang-toggle-icon text {
+  fill: currentColor;
+  font-family: inherit;
+}
+
 .toggle-btn.active {
   background: #1f4d6c;
   color: #ffffff;
@@ -3503,7 +3514,7 @@ button, input, select {
   border-radius: 6px;
   background: #e8f0fe;
   color: #1f4d6c;
-  font-size: 0.75rem;
+  font-size: 0.75em;
   text-transform: uppercase;
 }
 
@@ -3514,14 +3525,14 @@ button, input, select {
   border-radius: 6px;
   background: #f0fdf4;
   color: #166534;
-  font-size: 0.75rem;
+  font-size: 0.75em;
   font-weight: 600;
 }
 
 .resource-url {
   display: block;
   color: #5d7184;
-  font-size: 0.78rem;
+  font-size: 0.78em;
   word-break: break-all;
   margin-top: 2px;
 }
@@ -4274,14 +4285,14 @@ button, input, select {
 
 .ai-loading p {
   margin: 0;
-  font-size: 1rem;
+  font-size: 1em;
   font-weight: 600;
   color: #102033;
 }
 
 .ai-loading small {
   color: #5d7184;
-  font-size: 0.82rem;
+  font-size: 0.82em;
 }
 
 /* ── Error ─────────────────────────────────────────────── */
@@ -5052,7 +5063,7 @@ button, input, select {
   margin-bottom: 10px;
   border: 1.5px solid #d7e0e8;
   border-radius: 10px;
-  font-size: 1rem;
+  font-size: 1em;
   color: #102033;
   background: #fff;
   outline: none;
@@ -5085,7 +5096,7 @@ button, input, select {
   padding: 8px 12px;
   border: 1.5px solid #d7e0e8;
   border-radius: 8px;
-  font-size: 0.85rem;
+  font-size: 0.85em;
   color: #475569;
   background: #fff;
   cursor: pointer;
@@ -5100,7 +5111,7 @@ button, input, select {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 0.9rem;
+  font-size: 0.9em;
   color: #475569;
   cursor: pointer;
   white-space: nowrap;
@@ -5128,7 +5139,7 @@ button, input, select {
 }
 
 .search-filter-label {
-  font-size: 0.9rem;
+  font-size: 0.9em;
   color: #64748b;
   font-weight: 500;
   white-space: nowrap;
@@ -5138,7 +5149,7 @@ button, input, select {
   display: inline-block;
   padding: 2px 8px;
   margin-left: 6px;
-  font-size: 0.82rem;
+  font-size: 0.82em;
   font-weight: 600;
   color: #92400e;
   background: #fef3c7;
@@ -5162,7 +5173,7 @@ button, input, select {
 .search-results-count-end {
   text-align: center;
   color: #5d7184;
-  font-size: 0.85rem;
+  font-size: 0.85em;
   font-weight: 600;
   padding: 16px 0 8px;
   margin: 0;
@@ -5189,7 +5200,7 @@ button, input, select {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 0.9rem;
+  font-size: 0.9em;
   font-weight: 600;
   color: #667eea;
   margin-bottom: 6px;
@@ -5202,7 +5213,7 @@ button, input, select {
 
 .search-result-snippet {
   margin: 0;
-  font-size: 0.95rem;
+  font-size: 0.95em;
   color: #475569;
   line-height: 1.5;
   overflow: hidden;
@@ -5221,7 +5232,7 @@ button, input, select {
 .search-no-results {
   text-align: center;
   color: #94a3b8;
-  font-size: 1rem;
+  font-size: 1em;
   padding: 24px 0;
 }
 
@@ -5281,7 +5292,7 @@ button, input, select {
   border-radius: 12px;
   border: 1.5px solid #d1d5db;
   background: transparent;
-  font-size: 12px;
+  font-size: 0.85em;
   cursor: pointer;
   color: #374151;
   transition: background 0.15s, border-color 0.15s;
@@ -5374,17 +5385,18 @@ button, input, select {
   display: inline-block;
   padding: 1px 7px;
   border-radius: 10px;
-  font-size: 11px;
+  font-size: 0.8em;
   font-weight: 600;
 }
 
+.bookmark-subject { background: #fce7f3; color: #9d174d; }
 .bookmark-book { background: #dbeafe; color: #1e40af; }
 .bookmark-section { background: #dcfce7; color: #166534; }
 .bookmark-page { background: #fef9c3; color: #854d0e; }
 .bookmark-lang { background: #f3e8ff; color: #6d28d9; }
 
 .bookmark-summary {
-  font-size: 12px;
+  font-size: 0.9em;
   color: #64748b;
   margin: 0;
   line-height: 1.4;
@@ -5395,7 +5407,7 @@ button, input, select {
 }
 
 .bookmark-section-name {
-  font-size: 12px;
+  font-size: 0.85em;
   font-weight: 600;
   color: #334155;
   margin: 2px 0 0;
@@ -5414,7 +5426,7 @@ button, input, select {
 
 .bookmark-date {
   margin-left: auto;
-  font-size: 11px;
+  font-size: 0.8em;
   color: #94a3b8;
   white-space: nowrap;
 }
@@ -5450,6 +5462,7 @@ button, input, select {
   border-color: #667eea;
   color: #fff;
 }
+:root.dark .bookmark-badge.bookmark-subject { background: #4a1942; color: #f9a8d4; }
 :root.dark .bookmark-badge.bookmark-book { background: #1e3a5f; color: #93c5fd; }
 :root.dark .bookmark-badge.bookmark-section { background: #14532d; color: #86efac; }
 :root.dark .bookmark-badge.bookmark-page { background: #451a03; color: #fde68a; }
