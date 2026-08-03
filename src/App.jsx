@@ -10,9 +10,11 @@ import SectionAutocomplete from './SectionAutocomplete';
 import StepperSelect from './StepperSelect';
 import AutocompleteDropdown from './components/AutocompleteDropdown';
 import MathText from './components/MathText';
+import BookmarksDrawer from './components/BookmarksDrawer';
 import { t, uiLang } from './i18n';
 import { isDebugScrollingMomentum, isDebugScrollingPersistence, isDebugZooming, isDebugAnnoStrokes } from './debug';
 import { myScrollBy, myScrollTo } from './MyScroll';
+import { loadScrollPos } from './myLocalStorage';
 import { initQueue, enqueue, updateScope, getPendingCount } from './annotationQueue';
 
 const PREFERENCES_KEY = 'pdfReaderPreferences';
@@ -575,6 +577,8 @@ function App() {
   const [activeAnnotationLangId, setActiveAnnotationLangId] = useState('en');
   const [resourcesDrawerOpen, setResourcesDrawerOpen] = useState(false);
   const [aiDrawerOpen, setAiDrawerOpen] = useState(false);
+  const [bookmarksDrawerOpen, setBookmarksDrawerOpen] = useState(false);
+  const [bookmarksRefreshToken, setBookmarksRefreshToken] = useState(0);
   const [aiDrawerLanguage, setAiDrawerLanguage] = useState('en');
   const [aiFontSize, setAiFontSize] = useState(() => {
     if (typeof window === 'undefined') return 16;
@@ -642,6 +646,12 @@ function App() {
       return savedPrefs.searchSubjects;
     }
     return ['physics-oup', 'chemistry-aristo', 'chemistry-winter', 'biology-oup'];
+  });
+  const [bookmarkSubjects, setBookmarkSubjects] = useState(() => {
+    if (Array.isArray(savedPrefs.bookmarkSubjects) && savedPrefs.bookmarkSubjects.length > 0) {
+      return savedPrefs.bookmarkSubjects;
+    }
+    return [];
   });
   const [panelVisible, setPanelVisible] = useState(savedPrefs.panelVisible !== false);
   const [isFullscreen, setIsFullscreen] = useState(() => {
@@ -862,6 +872,7 @@ function App() {
         const data = await fetchJson(`api/user-selects?userId=${encodeURIComponent(userId)}`);
         setLastSubjectId(typeof data.lastSubjectId === 'string' ? data.lastSubjectId : '');
         setSubjectSelections(data.selections && typeof data.selections === 'object' ? data.selections : {});
+        if (data.lastStudyAction) setLastStudyAction(data.lastStudyAction);
       } catch (err) {
         console.error('[user-selects] failed to load:', err);
         setLastSubjectId('');
@@ -1470,6 +1481,53 @@ function App() {
     }))
   ), [subjectToggleOptions]);
 
+  useEffect(() => {
+    if (!selectedBook) return;
+    setSearchSubjects([selectedBook]);
+    setBookmarkSubjects([selectedBook]);
+  }, [selectedBook]);
+
+  const navigateToReaderLocation = useCallback(async ({ subjectId, bookId, sectionId, pageId }) => {
+    const nextSubjectId = String(subjectId || '').trim();
+    const nextBookId = String(bookId || '').trim();
+    if (!nextSubjectId || !nextBookId) return;
+
+    let nextStructure = structure;
+    if (nextSubjectId !== selectedBook) {
+      const data = await fetchJson(`api/catalog?book=${encodeURIComponent(nextSubjectId)}`);
+      nextStructure = data.chapters || [];
+      setDataBooks(Array.isArray(data.books) ? data.books : []);
+      setActiveBookId(typeof data.activeBookId === 'string' ? data.activeBookId : nextSubjectId);
+      setSelectedBook(nextSubjectId);
+      setLastSubjectId(nextSubjectId);
+      setStructure(nextStructure);
+      if (nextSubjectId === 'chemistry-winter') {
+        setSelectedLanguage('en');
+        setBookAvailableLanguages(['en']);
+      } else {
+        const apiLangs = Array.isArray(data.availableLanguages) && data.availableLanguages.length > 0
+          ? data.availableLanguages
+          : ['en', 'tc'];
+        setBookAvailableLanguages(apiLangs);
+      }
+    }
+
+    const chapter = (nextStructure || []).find((item) => String(item.id) === nextBookId);
+    const normalizedSectionId = sectionId == null
+      ? ''
+      : (() => {
+          const matchedSection = chapter?.contents?.find((item) => String(toFileId(item.page ?? item.section)) === String(sectionId));
+          return matchedSection ? toFileId(matchedSection.page ?? matchedSection.section) : sectionId;
+        })();
+
+    setSelectedChapter(nextBookId);
+    if (sectionId != null) setSelectedFile(normalizedSectionId);
+    if (pageId != null && pageId !== '') setSelectedPage(Number(pageId));
+    setSelectedPhysicsChapterId('');
+    refreshFitForCurrentMode();
+    setForceRedrawToken((tick) => tick + 1);
+  }, [refreshFitForCurrentMode, selectedBook, structure]);
+
   const handleSubjectChange = async (newBook) => {
     if (!newBook || String(newBook) === String(selectedBook)) return;
     setSelectedBook(newBook);
@@ -1764,13 +1822,14 @@ function App() {
           sectionId: selectedFile,
           pageId: selectedPage,
           physicsChapterId: selectedBook === 'physics-oup' ? selectedPhysicsChapterId : '',
+          lastStudyAction,
         }),
       }).catch((err) => {
         console.error('[user-selects] failed to save:', err);
       });
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [sessionUserResolved, userId, userSelectsLoaded, selectedBook, selectedChapter, selectedFile, selectedPage, selectedPhysicsChapterId]);
+  }, [sessionUserResolved, userId, userSelectsLoaded, selectedBook, selectedChapter, selectedFile, selectedPage, selectedPhysicsChapterId, lastStudyAction]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -6411,7 +6470,7 @@ function App() {
     loadContent();
   }, [fetchCachedAiContent, selectedChapter, selectedFile, selectedPage, selectedLanguage]);
 
-  const isRightDrawerOpen = resourcesDrawerOpen || aiDrawerOpen || searchDrawerOpen;
+  const isRightDrawerOpen = resourcesDrawerOpen || aiDrawerOpen || searchDrawerOpen || bookmarksDrawerOpen;
 
   // Reset quiz/flashcard answers every time the AI drawer opens
   useEffect(() => {
@@ -6678,6 +6737,7 @@ function App() {
         if (resourcesDrawerOpen) { setResourcesDrawerOpen(false); return; }
         if (searchDrawerOpen) { setSearchDrawerOpen(false); return; }
         if (aiDrawerOpen) { setAiDrawerOpen(false); return; }
+        if (bookmarksDrawerOpen) { setBookmarksDrawerOpen(false); return; }
         return;
       }
 
@@ -6686,6 +6746,7 @@ function App() {
         if (modalInfo) { e.preventDefault(); setModalInfo(null); return; }
         if (resourcesDrawerOpen) { e.preventDefault(); setResourcesDrawerOpen(false); return; }
         if (searchDrawerOpen) { e.preventDefault(); setSearchDrawerOpen(false); return; }
+        if (bookmarksDrawerOpen) { e.preventDefault(); setBookmarksDrawerOpen(false); return; }
         return;
       }
 
@@ -7046,14 +7107,53 @@ function App() {
     if (type === 'resources' && resourcesDrawerOpen) { setResourcesDrawerOpen(false); return; }
     if (type === 'ai' && aiDrawerOpen) { setAiDrawerOpen(false); return; }
     if (type === 'search' && searchDrawerOpen) { setSearchDrawerOpen(false); return; }
+    if (type === 'bookmarks' && bookmarksDrawerOpen) { setBookmarksDrawerOpen(false); return; }
     // Close all others, then open the requested one
     if (type !== 'resources') setResourcesDrawerOpen(false);
     if (type !== 'ai') setAiDrawerOpen(false);
     if (type !== 'search') setSearchDrawerOpen(false);
+    if (type !== 'bookmarks') setBookmarksDrawerOpen(false);
     if (type === 'resources') setResourcesDrawerOpen(true);
     else if (type === 'search') setSearchDrawerOpen(true);
+    else if (type === 'bookmarks') setBookmarksDrawerOpen(true);
     else if (type === 'ai') handleAiGenerate();
-  }, [handleAiGenerate, resourcesDrawerOpen, aiDrawerOpen, searchDrawerOpen]);
+  }, [handleAiGenerate, resourcesDrawerOpen, aiDrawerOpen, searchDrawerOpen, bookmarksDrawerOpen]);
+
+  const handleAddBookmark = useCallback(async () => {
+    if (!userId || !selectedChapter) return;
+    const scrollKey = `scroll-${selectedChapter}-${selectedFile}`;
+    const scrollPos = loadScrollPos(scrollKey) || {};
+    try {
+      await fetch('api/bookmarks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          subjectId: selectedBook,
+          bookId: selectedChapter,
+          sectionId: selectedFile,
+          pageId: selectedPage,
+          scrollTop: scrollPos.top || 0,
+          scrollLeft: scrollPos.left || 0,
+        }),
+      });
+      // Ensure bookmarks drawer is open (don't toggle) and trigger refresh
+      if (!bookmarksDrawerOpen) {
+        setResourcesDrawerOpen(false);
+        setAiDrawerOpen(false);
+        setSearchDrawerOpen(false);
+        setBookmarksDrawerOpen(true);
+      }
+      setBookmarksRefreshToken((n) => n + 1);
+    } catch (err) {
+      console.error('[bookmarks] add error:', err);
+    }
+  }, [userId, selectedBook, selectedChapter, selectedFile, selectedPage, bookmarksDrawerOpen]);
+
+  const handleBookmarkNavigate = useCallback((item) => {
+    navigateToReaderLocation(item);
+    setBookmarksDrawerOpen(false);
+  }, [navigateToReaderLocation]);
 
   const restoreSidebarCollapsed = useCallback(() => {
     setSidebarCollapsed(true);
@@ -7279,6 +7379,9 @@ function App() {
             {lastStudyAction === 'ai' && (
               <svg viewBox="0 0 24 24" role="presentation" focusable="false" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"><path d="M10 7L9.48415 8.39405C8.80774 10.222 8.46953 11.136 7.80278 11.8028C7.13603 12.4695 6.22204 12.8077 4.39405 13.4842L3 14L4.39405 14.5158C6.22204 15.1923 7.13603 15.5305 7.80278 16.1972C8.46953 16.864 8.80774 17.778 9.48415 19.6059L10 21L10.5158 19.6059C11.1923 17.778 11.5305 16.864 12.1972 16.1972C12.864 15.5305 13.778 15.1923 15.6059 14.5158L17 14L15.6059 13.4842C13.778 12.8077 12.864 12.4695 12.1972 11.8028C11.5305 11.136 11.1923 10.222 10.5158 8.39405L10 7Z" /><path d="M18 3L17.7789 3.59745C17.489 4.38087 17.3441 4.77259 17.0583 5.05833C16.7726 5.34408 16.3809 5.48903 15.5975 5.77892L15 6L15.5975 6.22108C16.3809 6.51097 16.7726 6.65592 17.0583 6.94167C17.3441 7.22741 17.489 7.61913 17.7789 8.40255L18 9L18.2211 8.40255C18.511 7.61913 18.6559 7.22741 18.9417 6.94166C19.2274 6.65592 19.6191 6.51097 20.4025 6.22108L21 6L20.4025 5.77892C19.6191 5.48903 19.2274 5.34408 18.9417 5.05833C18.6559 4.77259 18.511 4.38087 18.2211 3.59745L18 3Z" /></svg>
             )}
+            {lastStudyAction === 'bookmarks' && (
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" fill="currentColor"><path d="M17 3H7c-1.1 0-2 .9-2 2v16l7-3 7 3V5c0-1.1-.9-2-2-2z" /></svg>
+            )}
           </button>
           <button
             className="tool-btn tool-split-arrow"
@@ -7305,6 +7408,15 @@ function App() {
             <button className={`tool-menu-item ${searchDrawerOpen ? 'active' : ''}`} onClick={() => { openStudyDrawer('search'); setLastStudyAction('search'); setStudyMenuOpen(false); }}>
               <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" /></svg>
               {_('search')}
+            </button>
+            <div className="tool-menu-section-label">{_('bookmarks')}</div>
+            <button className="tool-menu-item" onClick={() => { handleAddBookmark(); setStudyMenuOpen(false); }}>
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon" fill="currentColor"><path d="M17 3H7c-1.1 0-2 .9-2 2v16l7-3 7 3V5c0-1.1-.9-2-2-2zm0 15l-5-2.18L7 18V5h10v13z" /></svg>
+              {_('addBookmark')}
+            </button>
+            <button className={`tool-menu-item ${bookmarksDrawerOpen ? 'active' : ''}`} onClick={() => { openStudyDrawer('bookmarks'); setLastStudyAction('bookmarks'); setStudyMenuOpen(false); }}>
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon" fill="currentColor"><path d="M17 3H7c-1.1 0-2 .9-2 2v16l7-3 7 3V5c0-1.1-.9-2-2-2z" /></svg>
+              {_('bookmarks')}
             </button>
           </div>
         )}
@@ -7348,7 +7460,7 @@ function App() {
 
   return (
     <div
-      className={`app-shell ${displayMode === 'scrolling' ? 'scrolling-mode' : ''} ${sidebarHidden ? 'sidebar-hidden' : ''} ${isFullscreen ? 'fullscreen-active' : ''}`}
+      className={`app-shell ${displayMode === 'scrolling' ? 'scrolling-mode' : ''} ${sidebarHidden ? 'sidebar-hidden' : ''} ${sidebarCollapsed && !sidebarHidden ? 'sidebar-collapsed' : ''} ${isFullscreen ? 'fullscreen-active' : ''}`}
       style={{ '--bottom-toolbar-offset': `${panelReservedHeight}px` }}
       data-fit-mode={fitMode}
       onDoubleClick={() => {
@@ -8886,7 +8998,6 @@ function App() {
                   </label>
                 </div>
                 <div className="search-subject-filters">
-                  <span className="search-filter-label">{_('searchFilterSubjects')}</span>
                   {subjectToggleOptions.map((subj) => (
                     <label key={subj.id} className="search-checkbox-label">
                       <input
@@ -8894,11 +9005,12 @@ function App() {
                         checked={searchSubjects.includes(subj.id)}
                         disabled={searchSubjectsDisabled}
                         onChange={(e) => {
-                          setSearchSubjects((prev) =>
-                            e.target.checked
-                              ? [...prev, subj.id]
-                              : prev.filter((id) => id !== subj.id)
-                          );
+                          setSearchSubjects((prev) => {
+                            const next = e.target.checked
+                              ? [...new Set([...prev, subj.id])]
+                              : prev.filter((id) => id !== subj.id);
+                            return next.length ? next : prev;
+                          });
                         }}
                       />
                       <span style={searchSubjectsDisabled ? { opacity: 0.5 } : undefined}>{subj.label}</span>
@@ -8921,14 +9033,7 @@ function App() {
                         key={result._id || `${result.source}-${result.subjectId}-${result.bookId}-${result.sectionId}-${result.pageId}-${idx}`}
                         className="search-result-item"
                         onClick={() => {
-                          // Navigate to the result's page
-                          const subjectChanged = result.subjectId && result.subjectId !== selectedBook;
-                          if (subjectChanged) {
-                            setSelectedBook(result.subjectId);
-                          }
-                          setSelectedChapter(result.bookId);
-                          setSelectedFile(result.sectionId);
-                          if (result.pageId) setSelectedPage(Number(result.pageId));
+                          navigateToReaderLocation(result);
                           // Keep drawer open so user can try another result
                         }}
                       >
@@ -8980,6 +9085,32 @@ function App() {
             </div>
           </section>
         </div>
+      )}
+
+      {bookmarksDrawerOpen && (
+        <BookmarksDrawer
+          lang={lang}
+          userId={userId}
+          structure={structure}
+          selectedLanguage={selectedLanguage}
+          currentSubject={selectedBook}
+          refreshToken={bookmarksRefreshToken}
+          subjectOptions={subjectToggleOptions}
+          selectedSubjects={bookmarkSubjects}
+          onSelectedSubjectsChange={setBookmarkSubjects}
+          onClose={() => setBookmarksDrawerOpen(false)}
+          onNavigate={handleBookmarkNavigate}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+              const tag = (e.target.tagName || '').toLowerCase();
+              if (tag !== 'input' && tag !== 'textarea' && !e.target.isContentEditable) e.preventDefault();
+            }
+            if (e.key === 'Backspace') {
+              const tag = (e.target.tagName || '').toLowerCase();
+              if (tag === 'input' || tag === 'textarea' || e.target.isContentEditable) e.stopPropagation();
+            }
+          }}
+        />
       )}
 
       {modalInfo && (

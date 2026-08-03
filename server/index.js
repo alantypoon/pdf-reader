@@ -55,6 +55,7 @@ let userActions;
 let userSelects;
 let annotationsCollection;
 let annotationsRedoCollection;
+let bookmarksCollection;
 
 function normalizeStringId(value, fallback = '') {
   return String(value != null ? value : fallback).trim();
@@ -178,6 +179,7 @@ async function connectMongo() {
     userSelects = db.collection('user-selects');
     annotationsCollection = db.collection('annotations');
     annotationsRedoCollection = db.collection('annotations-redo');
+    bookmarksCollection = db.collection('bookmarks');
     await migrateAiGenerationSubjectIds();
     await aiGenerations.createIndex(
       { subjectId: 1, bookId: 1, sectionId: 1, pageId: 1 },
@@ -208,6 +210,14 @@ async function connectMongo() {
     await annotationsRedoCollection.createIndex(
       { userId: 1, subjectId: 1, bookId: 1, sectionId: 1, pageId: 1 },
       { unique: true, name: 'annotations_redo_page_unique' }
+    );
+    await bookmarksCollection.createIndex(
+      { userId: 1, subjectId: 1, bookId: 1, sectionId: 1, pageId: 1 },
+      { name: 'bookmarks_lookup_v2' }
+    );
+    await bookmarksCollection.createIndex(
+      { userId: 1, createdAt: -1 },
+      { name: 'bookmarks_user_time' }
     );
     console.log('[mongo] connected to', MONGO_URI.replace(/\/\/.*@/, '//<credentials>@'));
   } catch (err) {
@@ -522,6 +532,7 @@ app.get('/api/user-selects', requireValidUserId(true), asyncRoute(async (request
     userId,
     lastSubjectId: typeof doc?.lastSubjectId === 'string' ? doc.lastSubjectId : '',
     selections: doc?.selections && typeof doc.selections === 'object' ? doc.selections : {},
+    lastStudyAction: typeof doc?.lastStudyAction === 'string' ? doc.lastStudyAction : null,
     updatedAt: doc?.updatedAt || null,
   });
 }));
@@ -551,6 +562,7 @@ app.post('/api/user-selects', requireValidUserId(true), asyncRoute(async (reques
       $set: {
         lastSubjectId: String(body.lastSubjectId || subjectId),
         [`selections.${subjectId}`]: selection,
+        ...(body.lastStudyAction ? { lastStudyAction: String(body.lastStudyAction) } : {}),
         updatedAt: now,
       },
       $setOnInsert: {
@@ -2785,6 +2797,72 @@ app.delete('/api/ai-content', async (request, response) => {
     response.status(500).json({ error: err.message });
   }
 });
+
+// ── Bookmarks ─────────────────────────────────────────────
+app.get('/api/bookmarks', requireValidUserId(true), asyncRoute(async (request, response) => {
+  const userId = request.validatedUserId;
+  if (!bookmarksCollection) return response.status(500).json({ error: 'MongoDB not connected' });
+
+  const limit = Math.min(parseInt(request.query.limit, 10) || 20, 100);
+  const offset = Math.max(parseInt(request.query.offset, 10) || 0, 0);
+  const sort = String(request.query.sort || 'time'); // 'time', 'alpha', 'section'
+  const order = String(request.query.order || 'desc'); // 'asc', 'desc'
+
+  const query = { userId };
+
+  let sortSpec;
+  if (sort === 'alpha') {
+    sortSpec = { bookId: order === 'asc' ? 1 : -1, sectionId: order === 'asc' ? 1 : -1, pageId: order === 'asc' ? 1 : -1 };
+  } else if (sort === 'section') {
+    sortSpec = { sectionId: order === 'asc' ? 1 : -1, pageId: order === 'asc' ? 1 : -1 };
+  } else {
+    sortSpec = { createdAt: order === 'asc' ? 1 : -1 };
+  }
+
+  const total = await bookmarksCollection.countDocuments(query);
+  const items = await bookmarksCollection.find(query).sort(sortSpec).skip(offset).limit(limit).toArray();
+  response.json({ items, total, offset, limit });
+}));
+
+app.post('/api/bookmarks', requireValidUserId(true), asyncRoute(async (request, response) => {
+  const userId = request.validatedUserId;
+  if (!bookmarksCollection) return response.status(500).json({ error: 'MongoDB not connected' });
+
+  const body = request.body || {};
+  const subjectId = normalizeStringId(body.subjectId);
+  const bookId = normalizeStringId(body.bookId);
+  const sectionId = normalizeNumberId(body.sectionId);
+  const pageId = normalizeNumberId(body.pageId);
+  if (!subjectId || !bookId) return response.status(400).json({ error: 'subjectId and bookId are required' });
+
+  const identity = { userId, subjectId, bookId, sectionId, pageId };
+  const now = hkNow();
+
+  const update = {
+    $set: {
+      scrollTop: Number(body.scrollTop) || 0,
+      scrollLeft: Number(body.scrollLeft) || 0,
+      updatedAt: now,
+    },
+    $setOnInsert: { createdAt: now },
+  };
+
+  const result = await bookmarksCollection.findOneAndUpdate(identity, update, { upsert: true, returnDocument: 'after' });
+  response.json({ ok: true, id: result._id, updated: result.createdAt !== result.updatedAt });
+}));
+
+app.delete('/api/bookmarks/:id', requireValidUserId(true), asyncRoute(async (request, response) => {
+  const userId = request.validatedUserId;
+  if (!bookmarksCollection) return response.status(500).json({ error: 'MongoDB not connected' });
+
+  const { ObjectId } = await import('mongodb');
+  let oid;
+  try { oid = new ObjectId(request.params.id); } catch { return response.status(400).json({ error: 'Invalid id' }); }
+
+  const result = await bookmarksCollection.deleteOne({ _id: oid, userId });
+  if (result.deletedCount === 0) return response.status(404).json({ error: 'Not found' });
+  response.json({ ok: true });
+}));
 
 // ── QR decode using zbarimg (industrial-grade, same as dnschecker.org backend) ──
 app.post('/api/qr-decode', asyncRoute(async (request, response) => {

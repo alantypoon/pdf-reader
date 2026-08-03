@@ -435,7 +435,7 @@ Book 4B (diabled)
 
 ///
 
-add bookmarks page on right sidebar:
+add a bookmarks page on right sidebar:
 - add a bookmark (store the langId, subjectId, bookId, sectionId, pageId and scrolling positions)
 - infinite scroll on all the stored bookmarks
   > with filter input
