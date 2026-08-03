@@ -24,13 +24,14 @@ function getSectionNameFromStructure(structure, currentSubject, subjectId, bookI
   return val.name || '';
 }
 
-function getSubjectShortName(subjectId) {
+function getSubjectShortName(subjectId, selectedLanguage = 'en') {
   const normalized = String(subjectId || '').trim().toLowerCase();
-  if (normalized === 'biology-oup') return 'Bio';
-  if (normalized === 'chemistry-aristo') return 'Chem';
-  if (normalized === 'chemistry-winter') return 'Chem.W';
-  if (normalized === 'math-oup') return 'Math';
-  if (normalized === 'physics-oup') return 'Phy';
+  const showChinese = selectedLanguage === 'tc';
+  if (normalized === 'biology-oup') return showChinese ? '生物' : 'Bio';
+  if (normalized === 'chemistry-aristo') return showChinese ? '化學' : 'Chem';
+  if (normalized === 'chemistry-winter') return showChinese ? '化學.W' : 'Chem.W';
+  if (normalized === 'math-oup') return showChinese ? '數學' : 'Math';
+  if (normalized === 'physics-oup') return showChinese ? '物理' : 'Phy';
   return String(subjectId || '').slice(0, 6);
 }
 
@@ -316,10 +317,15 @@ export default function BookmarksDrawer({ lang, userId, onClose, onNavigate, onK
                 onClick={() => onNavigate(item)}
               >
                 <div className="bookmark-item-meta">
-                  <span className="bookmark-badge bookmark-subject">{getSubjectShortName(item.subjectId)}</span>
-                  <span className="bookmark-badge bookmark-book">{item.bookId?.toUpperCase?.() ?? item.bookId}</span>
-                  <span className="bookmark-badge bookmark-section">§{item.sectionId}</span>
-                  <span className="bookmark-badge bookmark-page">p.{item.pageId}</span>
+                  <span className="bookmark-breadcrumb">
+                    <span>{getSubjectShortName(item.subjectId, selectedLanguage)}</span>
+                    <span className="bookmark-breadcrumb-sep">›</span>
+                    <span>{String(item.bookId || '').toUpperCase()}</span>
+                    <span className="bookmark-breadcrumb-sep">›</span>
+                    <span>§{item.sectionId}</span>
+                    <span className="bookmark-breadcrumb-sep">›</span>
+                    <span>p.{item.pageId}</span>
+                  </span>
                   {sectionName && <span className="bookmark-badge bookmark-lang">{sectionName}</span>}
                   <span className="bookmark-date">{formatDate(item.updatedAt || item.createdAt)}</span>
                 </div>
