@@ -115,6 +115,7 @@ function AutocompleteDropdown({
 	}, [open, dropdownFiltered]);
 
 	const handleSelect = (item) => {
+		if (item?.disabled) return;
 		console.log('[page-select] AutocompleteDropdown handleSelect  item.id=', item.id, '  item.primary=', item.primary);
 		onSelect?.(item.id, item);
 		setQuery('');
@@ -334,6 +335,7 @@ function AutocompleteDropdown({
 									const isHighlighted = index === highlightIndex;
 									const classNames = [
 										'autocomplete-item',
+										item.disabled ? 'disabled' : '',
 										isSelected ? 'selected' : '',
 										isHighlighted ? 'highlighted' : '',
 									].filter(Boolean).join(' ');
@@ -342,9 +344,11 @@ function AutocompleteDropdown({
 											key={itemKey}
 											className={classNames}
 											role="option"
+											aria-disabled={item.disabled ? 'true' : undefined}
 											aria-selected={isSelected || isHighlighted}
 											onMouseDown={(event) => {
 												event.preventDefault();
+												if (item.disabled) return;
 												handleSelect(item);
 											}}
 											onMouseEnter={() => setHighlightIndex(index)}

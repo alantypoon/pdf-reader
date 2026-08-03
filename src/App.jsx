@@ -429,6 +429,7 @@ function App() {
   const selectedLanguageRef = useRef(selectedLanguage);
   const [selectedRoleMode, setSelectedRoleMode] = useState(savedPrefs.selectedRoleMode || savedPrefs.selectedAudienceMode || 'student');
   const selectedRoleModeRef = useRef(selectedRoleMode);
+  const [bookSectionListMode, setBookSectionListMode] = useState(savedPrefs.bookSectionListMode === 'separated' ? 'separated' : 'combined');
 
   // Auto-fallback to English if the selected language isn't available for the current book.
   // 'bilingual' is a UI mode combining en+tc — only skip fallback when both languages exist.
@@ -1227,6 +1228,17 @@ function App() {
     applyBookSelection(structure, newBookId, options);
   };
 
+  const handleCombinedBookSectionSelect = useCallback((nextBookId, nextSectionId) => {
+    if (!nextBookId) return;
+    const nextBook = (structure || []).find((book) => String(book.id) === String(nextBookId));
+    if (!nextBook) return;
+    const nextSection = nextBook.contents?.find((item) => String(toFileId(item.page ?? item.section)) === String(nextSectionId));
+    const normalizedSectionId = nextSection ? toFileId(nextSection.page ?? nextSection.section) : nextSectionId;
+    handleBookSelect(nextBook.id || '');
+    setSelectedFile(normalizedSectionId);
+    setSelectedPage(1);
+  }, [structure, handleBookSelect]);
+
   const physicsBookChapterMeta = useMemo(() => {
     if (selectedBook !== 'physics-oup' || !physicsChapterCatalog) return null;
     return physicsChapterCatalog[String(selectedChapter || '').toLowerCase()] || null;
@@ -1265,6 +1277,74 @@ function App() {
   const bookAutocompleteOptions = useMemo(() => {
     return structure;
   }, [structure]);
+
+  const combinedBookSectionOptions = useMemo(() => {
+    return (structure || []).flatMap((book) => {
+      const bookId = String(book?.id || '').trim();
+      if (!bookId) return [];
+      const zhName = typeof book.nameZh === 'string' ? book.nameZh.trim() : '';
+      const enName = typeof book.nameEn === 'string' ? book.nameEn.trim() : '';
+      const fallbackName = typeof book.name === 'string' ? book.name.trim() : '';
+      const displayName = selectedLanguage === 'tc'
+        ? (zhName || enName || fallbackName || bookId)
+        : (enName || fallbackName || zhName || bookId);
+      const upperId = bookId.toUpperCase();
+      const bookLabel = !displayName || displayName.toUpperCase() === upperId
+        ? upperId
+        : `${upperId} - ${displayName}`;
+
+      const headerItem = {
+        id: `__book__${bookId}`,
+        badge: '',
+        primary: `Book ${bookLabel}`,
+        secondary: '',
+        searchText: [bookId, book.name, book.nameEn, book.nameZh].filter(Boolean).join('\n'),
+        disabled: true,
+        _bookId: bookId,
+      };
+
+      const sectionItems = (book.contents || []).map((item) => {
+        const rawId = toFileId(item.page ?? item.section);
+        const sectionId = String(rawId);
+        const en = getSectionName(item, 'en');
+        const tc = getSectionName(item, 'tc');
+        const sectionLabel = selectedLanguage === 'tc'
+          ? (tc || en || sectionId)
+          : (en || tc || sectionId);
+        const secondary = selectedLanguage === 'bilingual'
+          ? (tc || '')
+          : (selectedLanguage === 'tc' ? (en || '') : (tc || ''));
+        return {
+          id: `${bookId}::${sectionId}`,
+          badge: sectionId,
+          primary: sectionLabel,
+          secondary,
+          searchText: [bookId, sectionId, en, tc, book.name, book.nameEn, book.nameZh].filter(Boolean).join('\n'),
+          _bookId: bookId,
+          _sectionId: rawId,
+        };
+      });
+
+      return [headerItem, ...sectionItems];
+    });
+  }, [structure, selectedLanguage]);
+
+  const currentCombinedBookSectionValue = useMemo(() => {
+    const bookId = String(selectedChapter || '').trim();
+    const sectionId = String(selectedFile || '').trim();
+    if (!bookId || !sectionId) return '';
+    return `${bookId}::${sectionId}`;
+  }, [selectedChapter, selectedFile]);
+
+  const currentCombinedBookSectionDisplay = useMemo(() => {
+    const bookId = String(selectedChapter || '').trim();
+    const sectionId = String(selectedFile || '').trim();
+    if (!bookId || !sectionId) return '';
+    const en = currentSection ? getSectionName(currentSection, 'en') : '';
+    const tc = currentSection ? getSectionName(currentSection, 'tc') : '';
+    const sectionName = selectedLanguage === 'tc' ? (tc || en) : (en || tc);
+    return `${sectionId}${sectionName ? `. ${sectionName}` : ''}`;
+  }, [currentSection, selectedChapter, selectedFile, selectedLanguage]);
 
   /** Normalize a section/page identifier based on the book's PDF mode.
    *  In "one PDF for all sections" mode the identifier is the book ID (string),
@@ -1714,6 +1794,7 @@ function App() {
         displayMode: displayModeRef.current,
         selectedLanguage: selectedLanguageRef.current,
         selectedRoleMode: selectedRoleModeRef.current,
+        bookSectionListMode,
         sidebarCollapsed,
         sidebarHidden,
         tool,
@@ -1761,6 +1842,7 @@ function App() {
     displayMode,
     selectedLanguage,
     selectedRoleMode,
+    bookSectionListMode,
     sidebarCollapsed,
     sidebarHidden,
     tool,
@@ -7451,6 +7533,28 @@ function App() {
             Refresh Fit
           </button>
         )}
+        {!sidebarCollapsed && (
+          <div className="book-section-mode-toggle" role="group" aria-label={_('bookSectionListMode')}>
+            <button
+              type="button"
+              className={`toggle-btn ${bookSectionListMode === 'separated' ? 'active' : ''}`}
+              onClick={() => setBookSectionListMode('separated')}
+              aria-pressed={bookSectionListMode === 'separated'}
+            >
+              {_('separated')}
+            </button>
+            <button
+              type="button"
+              className={`toggle-btn ${bookSectionListMode === 'combined' ? 'active' : ''}`}
+              onClick={() => setBookSectionListMode('combined')}
+              aria-pressed={bookSectionListMode === 'combined'}
+            >
+              {_('combined')}
+            </button>
+          </div>
+        )}
+
+        {bookSectionListMode !== 'combined' && (
         <label>
           <span className="sidebar-label-icon">
             <svg viewBox="0 0 24 24" role="presentation" focusable="false">
@@ -7472,6 +7576,32 @@ function App() {
             <button type="button" className="selector-stepper-btn" onClick={() => stepBook(1)} disabled={currentBookIndex < 0 || currentBookIndex >= bookAutocompleteOptions.length - 1}>+</button>
           </div>
         </label>
+        )}
+
+        {!sidebarCollapsed && bookSectionListMode === 'combined' && sectionOptionsCount > 0 && !(selectedBook === 'physics-oup' && physicsChapterOptions.length > 0) && (
+          <label>
+            <span className="sidebar-label-icon">
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                <path d="M4 4h16v3H4V4zm0 6h16v3H4v-3zm0 6h16v3H4v-3z" />
+              </svg>
+              {_('bookSection')}
+            </span>
+            <div className="selector-single-row" data-autocomplete-id="section-combined">
+              <SectionAutocomplete
+                sections={combinedBookSectionOptions}
+                currentSection={{ section: currentCombinedBookSectionValue, label: currentCombinedBookSectionDisplay }}
+                language={selectedLanguage}
+                getSectionName={(item) => item?.primary || item?.label || ''}
+                onSelect={(value, item) => {
+                  if (item?.disabled) return;
+                  const bookId = item?._bookId || String(value || '').split('::')[0];
+                  const sectionId = item?._sectionId ?? String(value || '').split('::')[1];
+                  handleCombinedBookSectionSelect(bookId, sectionId);
+                }}
+              />
+            </div>
+          </label>
+        )}
 
         {!sidebarCollapsed && selectedBook === 'physics-oup' && physicsChapterOptions.length > 0 && (
           <label>
@@ -7497,7 +7627,7 @@ function App() {
           </label>
         )}
 
-        {!sidebarCollapsed && sectionOptionsCount > 1 && !(selectedBook === 'physics-oup' && physicsChapterOptions.length > 0) && (
+        {!sidebarCollapsed && bookSectionListMode !== 'combined' && sectionOptionsCount > 1 && !(selectedBook === 'physics-oup' && physicsChapterOptions.length > 0) && (
           <label>
             <span className="sidebar-label-icon">
               <svg viewBox="0 0 24 24" role="presentation" focusable="false">

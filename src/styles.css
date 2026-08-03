@@ -1057,6 +1057,11 @@ button, input, select {
   align-items: center;
 }
 
+.selector-single-row {
+  display: block;
+  width: 100%;
+}
+
 .selector-stepper-main {
   min-width: 0;
 }
@@ -2617,6 +2622,32 @@ button, input, select {
   width: 18px;
   height: 18px;
   accent-color: #2f6f9f;
+}
+
+.book-section-mode-toggle {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0 10px;
+}
+
+.book-section-mode-toggle .toggle-btn {
+  flex: 1;
+}
+
+.autocomplete-item.disabled {
+  opacity: 0.72;
+  cursor: default;
+  background: #f3f6f9;
+}
+
+.autocomplete-item.disabled:hover,
+.autocomplete-item.disabled.highlighted,
+.autocomplete-item.disabled.selected {
+  background: #f3f6f9;
+}
+
+.autocomplete-item.disabled .autocomplete-names strong {
+  color: #5a6b7d;
 }
 
 .toggle-label-with-icon {

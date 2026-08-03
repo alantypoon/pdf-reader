@@ -414,3 +414,36 @@ the pinch effect should also be down on every device with a touch screen, e.g. m
 ///
 
 the annontation positions are different when it is in dual mode with the page sizes on the two versions are different. i want the annotations to be rendered correctly even in this case.
+
+
+////
+
+book-section combined list:
+- add a switch toggle on setting dialog: books and sections (separated or combined: default is separated as what it is now)
+- when combined is selected, use a book-section label and with a select drop down like this: e.g. the subject math-oup is selected,
+Book 4A (disabled)
+  1. Number Systems
+  2. Equations of Straight Lines
+  3. More about Graphs of Functions
+  ...
+Book 4B (diabled)
+  7. Exponential Functions
+  8. Logarithmic Functions
+  9. Rational Functions
+  ...
+- remember the settings preference in database collection users
+
+///
+
+add bookmarks page on right sidebar:
+- add a bookmark (store the langId, subjectId, bookId, sectionId, pageId and scrolling positions)
+- infinite scroll on all the stored bookmarks
+  > with filter input
+  > sorting buttons by alphabets, sections, ascending and descending
+  > each item with:
+    * bookId, sectionId, pageId, short extracted
+    * filtered description if there is a filter
+    * delete button
+- implemented the required server side api for these features
+
+
