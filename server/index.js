@@ -587,6 +587,7 @@ app.post('/api/user-actions', requireValidUserId(true), asyncRoute(async (reques
 
   await logUserAction({
     userId,
+    subjectId: body.subjectId != null ? String(body.subjectId) : undefined,
     actionType,
     chapter: body.chapter != null ? String(body.chapter) : undefined,
     section: body.section != null ? String(body.section) : undefined,
@@ -605,6 +606,7 @@ app.post('/api/user-actions/logout', requireValidUserId(true), asyncRoute(async 
 
   await logUserAction({
     userId,
+    subjectId: request.body?.subjectId != null ? String(request.body.subjectId) : undefined,
     actionType: 'logout',
     source: 'pdf-reader-backend',
     metadata: request.body?.metadata && typeof request.body.metadata === 'object' ? request.body.metadata : undefined,

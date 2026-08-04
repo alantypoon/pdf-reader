@@ -828,6 +828,7 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userId,
+          subjectId: selectedBook,
           actionType,
           chapter: selectedChapter,
           section: selectedFile,
@@ -848,6 +849,7 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userId,
+          subjectId: selectedBook,
           metadata: {
             chapter: selectedChapter,
             section: selectedFile,
@@ -6450,6 +6452,7 @@ function App() {
       if (!previous.key || !previous.startedAt) return;
       const payload = JSON.stringify({
         userId,
+        subjectId: selectedBook,
         actionType: 'page_view_end',
         chapter: selectedChapter,
         section: selectedFile,
@@ -6463,7 +6466,7 @@ function App() {
 
     window.addEventListener('beforeunload', handleUnload);
     return () => window.removeEventListener('beforeunload', handleUnload);
-  }, [userId, selectedChapter, selectedFile, selectedPage, selectedLanguage]);
+  }, [userId, selectedBook, selectedChapter, selectedFile, selectedPage, selectedLanguage]);
 
   useEffect(() => {
     setRenderScaleByLanguage({});
