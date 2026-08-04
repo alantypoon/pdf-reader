@@ -1482,6 +1482,7 @@ function PdfPane({
           // page-change detections from proportional scroll adjustment.
           if (!syncingFromRemoteRef.current && !_bilingualRepositioning && !programmaticScrollingRef.current) {
             lastScrolledFromSyncRef.current = true;
+            lastScrollReportedPageRef.current = nearest;
             onPageChange(nearest);
           }
         }
@@ -1672,6 +1673,7 @@ function PdfPane({
   // Only jump when the page change came from a button click, not from
   // natural scrolling (which would create a feedback loop).
   const lastScrolledFromSyncRef = useRef(false);
+  const lastScrollReportedPageRef = useRef(null);
   useEffect(() => {
     if (mode !== 'scrolling') return;
     // During initial load, scroll restoration is handled by
@@ -1687,12 +1689,15 @@ function PdfPane({
     if (activeDomSourceRef.current && activeDomSourceRef.current !== (source || '')) return;
     const mount = scrollRef.current;
     if (!mount || !mount.children.length) return;
-    // Skip if the page change was triggered by our own scroll sync
-    // (e.g. onPageChange called from doScrollWork after natural scroll).
-    if (lastScrolledFromSyncRef.current) {
+    // Skip if this page change was reported by our own scroll handler
+    // (not a button press). Only skip when currentPage matches what scroll reported.
+    if (lastScrolledFromSyncRef.current && lastScrollReportedPageRef.current === currentPage) {
       lastScrolledFromSyncRef.current = false;
+      lastScrollReportedPageRef.current = null;
       return;
     }
+    lastScrolledFromSyncRef.current = false;
+    lastScrollReportedPageRef.current = null;
     const target = mount.querySelector(`[data-page="${currentPage}"]`);
     if (!target) {
       const allPages = [...mount.querySelectorAll('[data-page]')].map(el => el.dataset.page);
@@ -1752,15 +1757,19 @@ function PdfPane({
 
     // After scrolling, trigger background loading of ±3 pages so the
     // user sees continuous content when they scroll from the target.
-    const loadWindow = 3;
-    for (let p = Math.max(1, currentPage - loadWindow); p <= Math.min(currentPage + loadWindow, (numPages || images.length || 999)); p++) {
-      const img = mount.querySelector(`img[data-page="${p}"]`);
-      if (!img) continue;
-      const url = img.dataset?.src;
-      if (!url || img.src) continue;
-      img.onload = () => { img.style.minHeight = ''; img.style.opacity = '1'; };
-      img.onerror = () => { img.style.opacity = '0'; };
-      img.src = url;
+    if (loadVisibleRangeRef.current) {
+      loadVisibleRangeRef.current(currentPage);
+    } else {
+      const loadWindow = 3;
+      for (let p = Math.max(1, currentPage - loadWindow); p <= Math.min(currentPage + loadWindow, (numPages || images.length || 999)); p++) {
+        const img = mount.querySelector(`img[data-page="${p}"]`);
+        if (!img) continue;
+        const url = img.dataset?.src;
+        if (!url || img.src) continue;
+        img.onload = () => { img.style.minHeight = ''; img.style.opacity = '1'; };
+        img.onerror = () => { img.style.opacity = '0'; };
+        img.src = url;
+      }
     }
   }, [mode, currentPage]);
 
@@ -2004,9 +2013,11 @@ function PdfPane({
   // once swapped in via placeholder.replaceWith(img), render at the
   // wrong size until a full reload rebuilds the DOM from scratch.
   const imgElementsRef = useRef([]);
+  const loadVisibleRangeRef = useRef(null);
 
   useEffect(() => {
     if (!isImageMode || mode !== 'scrolling') {
+      loadVisibleRangeRef.current = null;
       setLoadDebugText(`chk0: skip(isArray=${Array.isArray(images)} len=${images?.length} mode=${mode})`);
       return;
     }
@@ -2502,6 +2513,7 @@ function PdfPane({
     if (isDebugLoadingPageImages()) {
       console.log(`[img-load] INIT  currentPage=${currentPage}  total=${images.length}  isBilingual=${isBilingual}  scrollH=${Math.round(mount.scrollHeight)}`);
     }
+    loadVisibleRangeRef.current = loadVisibleRange;
     loadVisibleRange(currentPage);
 
     setLoadDebugText(`chk4: ${imgElements.length} imgs src=${!!imgElements[0]?.src}`);
@@ -2852,6 +2864,7 @@ function PdfPane({
       // false page-change detections from proportional scroll adjustment.
       if (nearest !== cp && !programmaticScrollingRef.current && !_bilingualRepositioning) {
         lastScrolledFromSyncRef.current = true;
+        lastScrollReportedPageRef.current = nearest;
         onPageChange(nearest);
       }
 
