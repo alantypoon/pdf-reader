@@ -8015,6 +8015,10 @@ function App() {
               onClick={() => setSelectedRoleMode('student')}
               aria-pressed={selectedRoleMode === 'student'}
             >
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="lang-toggle-icon">
+                <circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" strokeWidth="1.6"/>
+                <path d="M4 20c0-3.31 3.58-6 8-6s8 2.69 8 6" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+              </svg>
               {_('student')}
             </button>
             <button
@@ -8022,6 +8026,11 @@ function App() {
               onClick={() => setSelectedRoleMode('teacher')}
               aria-pressed={selectedRoleMode === 'teacher'}
             >
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="lang-toggle-icon">
+                <rect x="3" y="3" width="18" height="13" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.6"/>
+                <path d="M8 21l4-5 4 5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"/>
+                <path d="M8 9h8M8 12h5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+              </svg>
               {_('teacher')}
             </button>
             <button
@@ -8029,6 +8038,13 @@ function App() {
               onClick={() => setSelectedRoleMode('dual')}
               aria-pressed={selectedRoleMode === 'dual'}
             >
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="lang-toggle-icon">
+                <circle cx="8" cy="8" r="3" fill="none" stroke="currentColor" strokeWidth="1.5"/>
+                <path d="M2 19c0-2.76 2.69-5 6-5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                <circle cx="16" cy="8" r="3" fill="none" stroke="currentColor" strokeWidth="1.5"/>
+                <path d="M16 14c3.31 0 6 2.24 6 5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                <path d="M11 19c0-2.76 2.24-5 5-5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
               {_('dual')}
             </button>
           </div>
@@ -8139,7 +8155,26 @@ function App() {
               onClick={() => openSidebarAutocomplete('language')}
               data-tooltip={_('switchLanguage')}
               aria-label={_('switchLanguage')}
-            ><span className="sidebar-icon-btn-text">{selectedLanguage === 'en' ? 'EN' : selectedLanguage === 'tc' ? '中' : '雙'}</span></button>
+            >
+              {selectedLanguage === 'en' ? (
+                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                  <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="1.5"/>
+                  <text x="12" y="16" textAnchor="middle" fontSize="11" fontWeight="700" fill="currentColor" fontFamily="system-ui, sans-serif">A</text>
+                </svg>
+              ) : selectedLanguage === 'tc' ? (
+                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                  <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="1.5"/>
+                  <text x="12" y="17" textAnchor="middle" fontSize="13" fontWeight="700" fill="currentColor" fontFamily="system-ui, sans-serif">文</text>
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                  <rect x="2" y="4" width="9" height="16" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.5"/>
+                  <rect x="13" y="4" width="9" height="16" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.5"/>
+                  <text x="6.5" y="16" textAnchor="middle" fontSize="8" fontWeight="700" fill="currentColor" fontFamily="system-ui, sans-serif">A</text>
+                  <text x="17.5" y="16" textAnchor="middle" fontSize="8" fontWeight="700" fill="currentColor" fontFamily="system-ui, sans-serif">文</text>
+                </svg>
+              )}
+            </button>
             {selectedLanguage !== 'bilingual' && (
               <button
                 className={`sidebar-icon-btn${pressedAutocompleteBtn === 'role' ? ' pressed' : ''}`}
@@ -8147,7 +8182,28 @@ function App() {
                 onClick={() => openSidebarAutocomplete('role')}
                 data-tooltip={_('toggleRole')}
                 aria-label={_('toggleRole')}
-              ><span className="sidebar-icon-btn-text">{selectedRoleMode === 'student' ? 'Stu' : selectedRoleMode === 'teacher' ? 'Tch' : 'Duo'}</span></button>
+              >
+                {selectedRoleMode === 'teacher' ? (
+                  <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                    <rect x="3" y="3" width="18" height="13" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.6"/>
+                    <path d="M8 21l4-5 4 5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"/>
+                    <path d="M8 9h8M8 12h5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                  </svg>
+                ) : selectedRoleMode === 'dual' ? (
+                  <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                    <circle cx="8" cy="8" r="3" fill="none" stroke="currentColor" strokeWidth="1.5"/>
+                    <path d="M2 19c0-2.76 2.69-5 6-5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                    <circle cx="16" cy="8" r="3" fill="none" stroke="currentColor" strokeWidth="1.5"/>
+                    <path d="M16 14c3.31 0 6 2.24 6 5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                    <path d="M11 19c0-2.76 2.24-5 5-5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                    <circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" strokeWidth="1.6"/>
+                    <path d="M4 20c0-3.31 3.58-6 8-6s8 2.69 8 6" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+                  </svg>
+                )}
+              </button>
             )}
             <button
               className={`sidebar-icon-btn ${panelVisible ? 'active' : ''}`}

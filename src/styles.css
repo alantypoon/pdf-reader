@@ -576,11 +576,12 @@ button, input, select {
   display: none;
 }
 
-.sidebar-icon-btn svg path,
-.sidebar-icon-btn svg rect,
-.sidebar-icon-btn svg circle,
-.sidebar-icon-btn svg ellipse,
-.sidebar-icon-btn svg polygon {
+/* Only fill shapes that haven't explicitly set fill="none" */
+.sidebar-icon-btn svg path:not([fill="none"]),
+.sidebar-icon-btn svg rect:not([fill="none"]),
+.sidebar-icon-btn svg circle:not([fill="none"]),
+.sidebar-icon-btn svg ellipse:not([fill="none"]),
+.sidebar-icon-btn svg polygon:not([fill="none"]) {
   fill: currentColor;
 }
 
