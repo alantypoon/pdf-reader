@@ -8602,7 +8602,7 @@ function App() {
           <div className="panel-main-controls" ref={mainControlsRef}>
           <div className="toolbar-group toolbar-primary" ref={primaryToolbarRef}>
             <button className="icon-btn" onClick={() => changePage(-1)} disabled={selectedPage <= 1} data-tooltip={displayMode === 'scrolling' ? _('jumpPrevPage') : _('prevPage')} aria-label={displayMode === 'scrolling' ? _('jumpPrevPage') : _('prevPage')}>&lt;</button>
-            <button className="icon-btn" onClick={() => changePage(1)} data-tooltip={displayMode === 'scrolling' ? _('jumpNextPage') : _('nextPage')} aria-label={displayMode === 'scrolling' ? _('jumpNextPage') : _('nextPage')}>&gt;</button>
+            <button className="icon-btn" onClick={() => changePage(1)} disabled={selectedPage >= maxNavigablePage} data-tooltip={displayMode === 'scrolling' ? _('jumpNextPage') : _('nextPage')} aria-label={displayMode === 'scrolling' ? _('jumpNextPage') : _('nextPage')}>&gt;</button>
             {!fitDisabled && (
             <div className="tool-menu-wrapper">
               <div className="tool-split-btn">

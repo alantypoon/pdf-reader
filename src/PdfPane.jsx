@@ -1950,6 +1950,17 @@ function PdfPane({
       if (hMax > 0 && typeof hRatio === 'number') {
         mySetScrollLeft(mount, hRatio * hMax);
       }
+      // After programmatic sync-scroll, preload pages around the new
+      // visible position.  syncingFromRemoteRef suppresses the normal
+      // onScroll → doScrollWork → loadVisibleRange path, so pages
+      // that just scrolled into view on this pane would stay blank.
+      // Use setTimeout so the DOM settles after scrollTop assignment.
+      setTimeout(() => {
+        const { page: nearest } = findContainingPage(mount, mount.scrollTop);
+        if (loadVisibleRangeRef.current) {
+          loadVisibleRangeRef.current(nearest);
+        }
+      }, 0);
       // Reset syncingFromRemoteRef after a double-RAF so that any browser
       // scroll events triggered by the programmatic scrollTop assignment
       // are still suppressed.  Scroll events from el.scrollTop assignment
