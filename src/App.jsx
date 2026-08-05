@@ -476,6 +476,7 @@ function App() {
   useLayoutEffect(() => { textInputStateRef.current = textInputState; }, [textInputState]);
   const textInputCommittedRef = useRef(false);
   const textInputBlurFlagRef = useRef(false);
+  const colorPickerOpeningRef = useRef(false); // set synchronously on mousedown before blur fires
   const [annotationCursor, setAnnotationCursor] = useState('default');
   const [clearedTimestamps, setClearedTimestamps] = useState(() => {
     if (typeof window === 'undefined') return [];
@@ -624,6 +625,8 @@ function App() {
   const [aiDebug, setAiDebug] = useState(null);
   const [searchDrawerOpen, setSearchDrawerOpen] = useState(false);
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
+  const colorPickerOpenRef = useRef(false);
+  useEffect(() => { colorPickerOpenRef.current = colorPickerOpen; }, [colorPickerOpen]);
   const [colorPickerPos, setColorPickerPos] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchScopePage, setSearchScopePage] = useState(Boolean(savedPrefs.searchScopePage));
@@ -729,11 +732,22 @@ function App() {
       const btn = colorBtnRef.current;
       if (!btn) return;
       const r = btn.getBoundingClientRect();
-      setColorPickerPos({
-        left: r.left + r.width / 2,
-        top: r.top - 8,
-        transform: 'translate(-50%, -100%)',
-      });
+      const popoverW = 240; // approximate popover width including padding
+      const popoverH = 180; // approximate popover height (6-col grid + divider + custom btn)
+      const pad = 10; // min distance from viewport edge
+
+      // Center horizontally on button, clamp to viewport bounds
+      let left = r.left + r.width / 2 - popoverW / 2;
+      left = Math.max(pad, Math.min(left, window.innerWidth - popoverW - pad));
+
+      // Place below button by default; flip above if no room
+      let top = r.bottom + 8;
+      if (top + popoverH > window.innerHeight - pad) {
+        top = r.top - 8 - popoverH;
+      }
+      top = Math.max(pad, top);
+
+      setColorPickerPos({ left, top });
     };
     updatePos();
     window.addEventListener('scroll', updatePos, true);
@@ -2728,7 +2742,9 @@ function App() {
         // Must prevent default to stop iOS Safari from consuming the
         // touch as a scroll gesture, which would suppress pointer events.
         // Without this, iOS never fires pointerdown/pointermove/pointerup.
-        if (e.touches.length === 1 && tool !== 'hand') {
+        // Text tool is excluded — it relies on the native click event,
+        // which preventDefault() here would suppress on iOS Safari.
+        if (e.touches.length === 1 && tool !== 'hand' && tool !== 'text') {
           e.preventDefault();
         }
         touchActive = false;
@@ -2743,7 +2759,8 @@ function App() {
     const onTouchMove = (e) => {
       // Non-hand single touch (pen/highlight/eraser): keep the gesture
       // cancelled so iOS Safari continues to fire pointer events.
-      if (e.touches.length === 1 && tool !== 'hand' && !touchActive) {
+      // Text tool excluded — see onTouchStart.
+      if (e.touches.length === 1 && tool !== 'hand' && tool !== 'text' && !touchActive) {
         e.preventDefault();
         return;
       }
@@ -4762,8 +4779,8 @@ function App() {
     const denorm = annotation.coordsNormalized ? denormalizeAnnotationCoords(annotation, imageRect) : annotation;
     textInputCommittedRef.current = false;
     setTextInputState({
-      canvasX: imageRect.left + box.pageBoxLeft + TEXT_BOX_PADDING,
-      canvasY: imageRect.top + box.pageBoxTop + TEXT_BOX_PADDING,
+      canvasX: imageRect.left + box.pageBoxLeft - 2,
+      canvasY: imageRect.top + box.pageBoxTop - 2,
       langId,
       page: annotation.page || selectedPage,
       point: { x: denorm.x || 0, y: denorm.y || 0 },
@@ -4773,15 +4790,15 @@ function App() {
       existingLangId: annotation.langId || langId,
       existingRemark: annotation,
       initialText: annotation.text || '',
-      initialWidth: Math.max(1, box.boxW - TEXT_BOX_PADDING * 2),
-      initialHeight: Math.max(1, box.boxH - TEXT_BOX_PADDING * 2),
+      initialWidth: box.boxW + 4,
+      initialHeight: box.boxH + 4,
       editBox: true,
     });
     setTimeout(() => textInputRef.current?.focus(), 0);
   };
 
   const beginTextEditDrag = (mode, event) => {
-    if (!textInputState?.editBox) return;
+    if (!textInputState) return;
     event.preventDefault();
     event.stopPropagation();
     textInputCommittedRef.current = true;
@@ -4810,7 +4827,7 @@ function App() {
     const dx = event.clientX - drag.startClientX;
     const dy = event.clientY - drag.startClientY;
     setTextInputState((prev) => {
-      if (!prev?.editBox) return prev;
+      if (!prev) return prev;
       if (drag.mode === 'move') {
         return {
           ...prev,
@@ -5464,7 +5481,7 @@ function App() {
         deletedRemark: state.existingRemark,
       });
     }
-    const width = state.editBox ? el.offsetWidth + TEXT_BOX_PADDING * 2 : el.offsetWidth;
+    const width = state.editBox ? el.offsetWidth : el.offsetWidth;
     const height = state.editBox ? getTextEditorBoxHeight(el) : el.offsetHeight;
     const remark = {
       type: 'text',
@@ -5494,8 +5511,16 @@ function App() {
     redrawAnnotationsNow();
   };
 
-  const cancelTextAnnotation = () => {
+  const cancelTextAnnotation = (restoreOriginal = false) => {
     textInputCommittedRef.current = true;
+    const state = textInputStateRef.current;
+    // If cancelling an edit, restore the original annotation and its color
+    if (restoreOriginal && state?.editBox && state.existingRemark) {
+      const orig = state.existingRemark;
+      if (orig.color) setTextColor(orig.color);
+      // Re-save the original so any instant-color-update deletions are undone
+      saveRemark({ ...orig, _skipUndoRecord: true });
+    }
     selectedAnnotationRef.current = null;
     resizeHandleRef.current = null;
     resizeStartRef.current = null;
@@ -5512,6 +5537,46 @@ function App() {
       cancelTextAnnotation();
     }
   }, [tool]);
+
+  // Instantly re-save existing annotation when color changes during edit
+  useEffect(() => {
+    const state = textInputStateRef.current;
+    if (!state?.editBox || !state.existingCreatedAt) return;
+    const el = textInputRef.current;
+    if (!el) return;
+    const text = el.value.trim();
+    if (!text) return;
+    // Delete the old annotation first (same as commitTextAnnotation)
+    deleteRemarkByCreatedAt(state.existingCreatedAt, state.existingLangId || state.langId, {
+      pageIdOverride: state.page || selectedPage,
+      deletedRemark: state.existingRemark,
+    });
+    const width = el.offsetWidth;
+    const height = getTextEditorBoxHeight(el);
+    const savedCreatedAt = hkNow();
+    const remark = {
+      type: 'text',
+      chapter: selectedChapter,
+      page: state.page || selectedPage,
+      langId: state.langId,
+      x: state.point.x,
+      y: state.point.y,
+      width: width > 0 ? width : undefined,
+      height: height > 0 ? height : undefined,
+      color: textColor,
+      fontSize: state.fontSize,
+      text,
+      createdAt: savedCreatedAt,
+    };
+    const normalizedRemark = state.imageRect
+      ? normalizeAnnotationCoords(remark, state.imageRect)
+      : remark;
+    saveRemark(normalizedRemark);
+    selectedAnnotationRef.current = { annotation: normalizedRemark, langId: normalizedRemark.langId || state.langId };
+    // Update textInputState so future commit/delete references the new createdAt
+    setTextInputState((prev) => prev ? { ...prev, existingCreatedAt: savedCreatedAt, existingRemark: normalizedRemark } : prev);
+    redrawAnnotationsNow();
+  }, [textColor]);
 
   // Clear annotation selection when switching away from move tool
   useEffect(() => {
@@ -8359,8 +8424,7 @@ function App() {
                   e.stopPropagation();
                 }}
               >
-                {textInputState.editBox && (
-                  <div className="text-annotation-toolbar-group text-annotation-toolbar-actions">
+                <div className="text-annotation-toolbar-group text-annotation-toolbar-actions">
                     <button
                       type="button"
                       className="text-annotation-move-toolbar-btn"
@@ -8376,7 +8440,6 @@ function App() {
                       </svg>
                     </button>
                   </div>
-                )}
                 <div className="text-annotation-toolbar-group">
                   <button
                     type="button"
@@ -8408,6 +8471,10 @@ function App() {
                     className="text-annotation-color-pill"
                     aria-label={_('color')}
                     title={_('color')}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      colorPickerOpenRef.current = true;
+                    }}
                     onClick={(e) => {
                       colorBtnRef.current = e.currentTarget;
                       setColorPickerOpen(true);
@@ -8416,63 +8483,79 @@ function App() {
                     <span className="text-annotation-color-dot active" style={{ background: textColor }} />
                   </button>
                 </div>
-                {textInputState.editBox && textInputState.existingCreatedAt && (
-                  <div className="text-annotation-toolbar-group text-annotation-toolbar-actions text-annotation-toolbar-actions-right">
-                    <button
-                      type="button"
-                      className="text-annotation-confirm-btn text-annotation-toolbar-icon-btn"
-                      aria-label="Confirm text annotation"
-                      title="Done"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        commitTextAnnotation();
-                      }}
-                    >
-                      <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                        <path d="M9.2 16.6 4.9 12.3 3.5 13.7l5.7 5.7L21 7.6 19.6 6.2 9.2 16.6z" />
-                      </svg>
-                    </button>
-                    <button
-                      type="button"
-                      className="text-annotation-delete-btn text-annotation-toolbar-icon-btn"
-                      aria-label="Delete text annotation"
-                      title="Delete"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
+                <div className="text-annotation-toolbar-group text-annotation-toolbar-actions text-annotation-toolbar-actions-right">
+                  <button
+                    type="button"
+                    className="text-annotation-cancel-btn text-annotation-toolbar-icon-btn"
+                    aria-label="Cancel editing"
+                    title="Cancel"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      cancelTextAnnotation(true);
+                    }}
+                  >
+                    <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                      <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    className="text-annotation-confirm-btn text-annotation-toolbar-icon-btn"
+                    aria-label="Confirm text annotation"
+                    title="Done"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      commitTextAnnotation();
+                    }}
+                  >
+                    <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                      <path d="M9.2 16.6 4.9 12.3 3.5 13.7l5.7 5.7L21 7.6 19.6 6.2 9.2 16.6z" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    className="text-annotation-delete-btn text-annotation-toolbar-icon-btn"
+                    aria-label="Delete text annotation"
+                    title="Delete"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (textInputState.editBox && textInputState.existingCreatedAt) {
                         textInputCommittedRef.current = true;
                         deleteRemarkByCreatedAt(textInputState.existingCreatedAt, textInputState.existingLangId || textInputState.langId, {
                           pageIdOverride: textInputState.page || selectedPage,
                           recordUndo: true,
                           deletedRemark: textInputState.existingRemark,
                         });
-                        selectedAnnotationRef.current = null;
-                        resizeHandleRef.current = null;
-                        resizeStartRef.current = null;
-                        moveAnnotationRef.current = null;
-                        moveStartPointRef.current = null;
-                        setTextInputState(null);
-                        updateAnnotationCursor('default');
-                        redrawAnnotationsNow();
-                      }}
-                    >
-                      <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                        <path d="M9 3h6l1 2h4v2H4V5h4l1-2zm1 6h2v9h-2V9zm4 0h2v9h-2V9zM7 9h2v10h6V9h2v12H7V9z" />
-                      </svg>
-                    </button>
-                  </div>
-                )}
+                      }
+                      selectedAnnotationRef.current = null;
+                      resizeHandleRef.current = null;
+                      resizeStartRef.current = null;
+                      moveAnnotationRef.current = null;
+                      moveStartPointRef.current = null;
+                      setTextInputState(null);
+                      updateAnnotationCursor('default');
+                      redrawAnnotationsNow();
+                    }}
+                  >
+                    <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                      <path d="M9 3h6l1 2h4v2H4V5h4l1-2zm1 6h2v9h-2V9zm4 0h2v9h-2V9zM7 9h2v10h6V9h2v12H7V9z" />
+                    </svg>
+                  </button>
+                </div>
               </div>
               <textarea
                 ref={textInputRef}
-                className={`text-annotation-textarea ${textInputState.editBox ? 'editing-selected-block' : ''}`}
+                className={`text-annotation-textarea ${textInputState.editBox ? 'editing-selected-block' : 'creating-block'}`}
                 style={{
                   left: textInputState.canvasX,
                   top: textInputState.canvasY,
                   color: textColor,
                   borderColor: textColor,
                   fontSize: textInputState.fontSize ? `${textInputState.fontSize}px` : undefined,
+                  lineHeight: textInputState.editBox ? '1.4' : undefined,
                   ...(textInputState.initialWidth ? { width: textInputState.initialWidth } : {}),
                 }}
                 placeholder={_('textPlaceholder')}
@@ -8480,18 +8563,18 @@ function App() {
                 rows={2}
                 autoFocus
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    commitTextAnnotation();
-                  }
                   if (e.key === 'Escape') {
                     e.preventDefault();
-                    cancelTextAnnotation();
+                    cancelTextAnnotation(true);
                   }
                 }}
                 onInput={handleTextEditorInput}
                 onBlur={() => {
-                  if (textInputState.editBox && (resizeHandleRef.current || moveAnnotationRef.current || textEditDragRef.current)) {
+                  if ((resizeHandleRef.current || moveAnnotationRef.current || textEditDragRef.current)) {
+                    setTimeout(() => textInputRef.current?.focus(), 0);
+                    return;
+                  }
+                  if (colorPickerOpenRef.current) {
                     setTimeout(() => textInputRef.current?.focus(), 0);
                     return;
                   }
@@ -9477,6 +9560,8 @@ function App() {
           <div
             className="color-picker-popover"
             style={colorPickerPos || {}}
+            onMouseDown={(e) => e.preventDefault()}
+            onPointerDown={(e) => e.preventDefault()}
           >
             <div className="color-picker-grid">
               {POPULAR_COLORS.map((c) => (
@@ -9487,6 +9572,7 @@ function App() {
                   onClick={() => {
                     setTextColor(c);
                     setColorPickerOpen(false);
+                    setTimeout(() => textInputRef.current?.focus(), 0);
                   }}
                   title={c}
                 />
@@ -9495,10 +9581,10 @@ function App() {
             <div className="color-picker-divider" />
             <button
               className="color-picker-custom-btn"
+              onMouseDown={(e) => e.preventDefault()}
               onClick={() => {
                 const input = customColorInputRef.current;
                 if (!input) return;
-                // Listen for the native picker to close, then close our popover
                 const onClose = () => { setColorPickerOpen(false); input.removeEventListener('change', onClose); };
                 input.addEventListener('change', onClose);
                 input.click();

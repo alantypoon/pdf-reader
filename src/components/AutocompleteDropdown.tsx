@@ -128,7 +128,8 @@ function AutocompleteDropdown({
 		if (!open) {
 			if (event.key === 'ArrowDown' || event.key === 'Enter') {
 				setOpen(true);
-				setHighlightIndex(0);
+				const firstEnabled = items.findIndex((item) => !item.disabled);
+				setHighlightIndex(firstEnabled);
 				event.preventDefault();
 			}
 			return;
@@ -136,13 +137,21 @@ function AutocompleteDropdown({
 
 		if (event.key === 'ArrowDown') {
 			event.preventDefault();
-			setHighlightIndex((current) => Math.min(dropdownFiltered.length - 1, current + 1));
+			setHighlightIndex((current) => {
+				let next = current + 1;
+				while (next < dropdownFiltered.length && dropdownFiltered[next]?.disabled) next++;
+				return next < dropdownFiltered.length ? next : current;
+			});
 			return;
 		}
 
 		if (event.key === 'ArrowUp') {
 			event.preventDefault();
-			setHighlightIndex((current) => Math.max(0, current - 1));
+			setHighlightIndex((current) => {
+				let next = current - 1;
+				while (next >= 0 && dropdownFiltered[next]?.disabled) next--;
+				return next >= 0 ? next : current;
+			});
 			return;
 		}
 
@@ -167,7 +176,8 @@ function AutocompleteDropdown({
 
 	const handleFocus = () => {
 		setOpen(true);
-		setHighlightIndex(-1);
+		// Start highlight on the first non-disabled item
+		setHighlightIndex((dropdownFiltered || items || []).findIndex((item) => !item.disabled));
 	};
 
 	const handleToggleOpen = (event) => {
@@ -199,7 +209,11 @@ function AutocompleteDropdown({
 		if (onPrev) {
 			onPrev();
 		} else if (open) {
-			setHighlightIndex((current) => Math.max(0, current - 1));
+			setHighlightIndex((current) => {
+				let next = current - 1;
+				while (next >= 0 && (dropdownFiltered[next] || filtered[next])?.disabled) next--;
+				return next >= 0 ? next : current;
+			});
 		}
 	};
 
@@ -207,7 +221,12 @@ function AutocompleteDropdown({
 		if (onNext) {
 			onNext();
 		} else if (open) {
-			setHighlightIndex((current) => Math.min(dropdownFiltered.length - 1, current + 1));
+			setHighlightIndex((current) => {
+				let next = current + 1;
+				const list = dropdownFiltered.length > 0 ? dropdownFiltered : filtered;
+				while (next < list.length && list[next]?.disabled) next++;
+				return next < list.length ? next : current;
+			});
 		}
 	};
 
@@ -305,10 +324,18 @@ function AutocompleteDropdown({
 								onKeyDown={(event) => {
 									if (event.key === 'ArrowDown') {
 										event.preventDefault();
-										setHighlightIndex((current) => Math.min(dropdownFiltered.length - 1, current + 1));
+										setHighlightIndex((current) => {
+											let next = current + 1;
+											while (next < dropdownFiltered.length && dropdownFiltered[next]?.disabled) next++;
+											return next < dropdownFiltered.length ? next : current;
+										});
 									} else if (event.key === 'ArrowUp') {
 										event.preventDefault();
-										setHighlightIndex((current) => Math.max(0, current - 1));
+										setHighlightIndex((current) => {
+											let next = current - 1;
+											while (next >= 0 && dropdownFiltered[next]?.disabled) next--;
+											return next >= 0 ? next : current;
+										});
 									} else if (event.key === 'Enter') {
 										event.preventDefault();
 										if (highlightIndex >= 0) {
@@ -331,8 +358,8 @@ function AutocompleteDropdown({
 							<ul className="autocomplete-list" role="listbox" ref={listRef}>
 								{dropdownFiltered.map((item, index) => {
 									const itemKey = String(item.id ?? '');
-									const isSelected = !query && !dropdownFilter && itemKey === selectedKey;
-									const isHighlighted = index === highlightIndex;
+										const isSelected = !query && !dropdownFilter && itemKey === selectedKey;
+									const isHighlighted = !item.disabled && index === highlightIndex;
 									const classNames = [
 										'autocomplete-item',
 										item.disabled ? 'disabled' : '',
@@ -351,7 +378,7 @@ function AutocompleteDropdown({
 												if (item.disabled) return;
 												handleSelect(item);
 											}}
-											onMouseEnter={() => setHighlightIndex(index)}
+											onMouseEnter={!item.disabled ? () => setHighlightIndex(index) : undefined}
 										>
 											{item.badge ? <span className="autocomplete-section-badge">{item.badge}</span> : null}
 											<div className="autocomplete-names">

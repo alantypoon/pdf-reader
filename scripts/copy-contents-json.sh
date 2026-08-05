@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-SRC="/var/www/html/devtest/dse/pdf-reader/_out/physics-oup-zzz"
-DST="/var/www/html/devtest/dse/pdf-reader/data/physics-oup"
+SRC="/var/www/html/pdf-reader/_out/physics-oup-zzz"
+DST="/var/www/html/pdf-reader/data/physics-oup"
 
 if [ ! -d "$SRC" ]; then
     echo "Error: Source directory does not exist: $SRC"

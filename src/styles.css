@@ -1425,13 +1425,19 @@ button, input, select {
 .text-annotation-textarea.editing-selected-block {
   min-width: 1px;
   max-width: none;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: rgba(255, 255, 255, 0.72);
-  box-shadow: none;
-  resize: horizontal;
+  /* padding matches TEXT_BOX_PADDING=6 so text aligns with canvas rendering */
+  padding: 6px;
+  border: 2px dashed;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15), 0 1px 4px rgba(0, 0, 0, 0.08);
+  resize: none;
   overflow: hidden;
+  line-height: 1.4;
+}
+
+.text-annotation-textarea.creating-block {
+  border-style: dashed;
 }
 
 .text-annotation-textarea:focus {
@@ -1585,6 +1591,7 @@ button, input, select {
 }
 
 .text-annotation-confirm-btn,
+.text-annotation-cancel-btn,
 .text-annotation-delete-btn {
   position: static;
   z-index: auto;
@@ -1592,6 +1599,22 @@ button, input, select {
   height: 36px;
   border-width: 1px;
   box-shadow: none;
+}
+
+.text-annotation-cancel-btn {
+  border-color: #e2e8f0;
+  color: #64748b;
+}
+
+.text-annotation-cancel-btn:hover {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+}
+
+.text-annotation-cancel-btn svg {
+  width: 17px;
+  height: 17px;
+  fill: currentColor;
 }
 
 .text-annotation-confirm-btn {
