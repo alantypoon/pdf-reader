@@ -1471,6 +1471,19 @@ function App() {
     return `${id} ${firstWord}`;
   }, [currentChapter, currentBookHeaderName]);
 
+  /** Compact display for the collapsed sidebar combined (book+section) button. */
+  const collapsedCombinedDisplay = useMemo(() => {
+    const bookId = String(selectedChapter || '').toUpperCase().trim();
+    const sectionId = String(selectedFile || '').trim();
+    if (!bookId || !sectionId) return '···';
+    const en = currentSection ? getSectionName(currentSection, 'en') : '';
+    const tc = currentSection ? getSectionName(currentSection, 'tc') : '';
+    const sectionName = selectedLanguage === 'tc' ? (tc || en) : (en || tc);
+    // Compact: "1A. 2 Motion" — book prefix, then section
+    const label = sectionName ? `${sectionId} ${sectionName.split(' ')[0]}` : sectionId;
+    return `${bookId}. ${label}`;
+  }, [selectedChapter, selectedFile, currentSection, selectedLanguage]);
+
   const getSectionHeaderNameForLang = useCallback((lang) => {
     if (!currentSection) return String(selectedFile || '');
     if (lang === 'tc') {
@@ -3311,22 +3324,8 @@ function App() {
             return;
           }
         }
-        // At first section of current book → try last section of previous book
-        if (structure?.length) {
-          const selCh = selectedChapterRef.current;
-          const bookIndex = structure.findIndex((ch) => ch.id === selCh);
-          if (bookIndex > 0) {
-            const prevBook = structure[bookIndex - 1];
-            const prevSections = (prevBook?.contents || []).map((item) => toFileId(item.page ?? item.section));
-            if (prevSections.length > 0) {
-              setSelectedChapter(prevBook.id);
-              setSelectedFile(prevSections[prevSections.length - 1]);
-              setSelectedPage(Number.MAX_SAFE_INTEGER);
-              return;
-            }
-          }
-        }
-        return; // nowhere to go
+        // At first section of first book — nowhere to go
+        return;
       }
     }
 
@@ -3477,7 +3476,7 @@ function App() {
   };
 
   // Refs for collapsed sidebar buttons – used to position the autocomplete dropdowns
-  const collapsedBtnRefs = useRef({ subject: null, book: null, section: null, page: null, language: null, displayMode: null, role: null });
+  const collapsedBtnRefs = useRef({ subject: null, book: null, section: null, combined: null, page: null, language: null, displayMode: null, role: null });
   const subjectBtnTextRef = useRef(null);
   const [collapsedDropdownId, setCollapsedDropdownId] = useState(null);
   const [collapsedDropdownPos, setCollapsedDropdownPos] = useState({ top: 0, left: 0 });
@@ -8002,6 +8001,17 @@ function App() {
               data-tooltip={_('selectSubject')}
               aria-label={_('selectSubject')}
             ><span className="sidebar-icon-btn-text" ref={subjectBtnTextRef}>{getSubjectAbbreviation(selectedBook, selectedLanguage)}</span></button>
+            {/* Book + Section selector – collapsed (combined mode) */}
+            {bookSectionListMode === 'combined' ? (
+              <button
+                className={`sidebar-icon-btn combined-stepper${pressedAutocompleteBtn === 'combined' ? ' pressed' : ''}`}
+                ref={(el) => { collapsedBtnRefs.current.combined = el; }}
+                onClick={() => openSidebarAutocomplete('combined')}
+                data-tooltip={_('bookSection')}
+                aria-label={_('bookSection')}
+              ><span className="sidebar-icon-btn-text">{collapsedCombinedDisplay}</span></button>
+            ) : (
+            <>
             {/* Book selector – collapsed */}
             <button
               className={`sidebar-icon-btn book-stepper${pressedAutocompleteBtn === 'book' ? ' pressed' : ''}`}
@@ -8018,6 +8028,8 @@ function App() {
               data-tooltip={_('selectSection')}
               aria-label={_('selectSection')}
             ><span className="sidebar-icon-btn-text">{collapsedSectionDisplay}</span></button>
+            </>
+            )}
             {/* Page selector – collapsed */}
             {maxNavigablePage > 1 && (
               <button
@@ -8589,7 +8601,7 @@ function App() {
           <div className="panel-row-1">
           <div className="panel-main-controls" ref={mainControlsRef}>
           <div className="toolbar-group toolbar-primary" ref={primaryToolbarRef}>
-            <button className="icon-btn" onClick={() => changePage(-1)} data-tooltip={displayMode === 'scrolling' ? _('jumpPrevPage') : _('prevPage')} aria-label={displayMode === 'scrolling' ? _('jumpPrevPage') : _('prevPage')}>&lt;</button>
+            <button className="icon-btn" onClick={() => changePage(-1)} disabled={selectedPage <= 1} data-tooltip={displayMode === 'scrolling' ? _('jumpPrevPage') : _('prevPage')} aria-label={displayMode === 'scrolling' ? _('jumpPrevPage') : _('prevPage')}>&lt;</button>
             <button className="icon-btn" onClick={() => changePage(1)} data-tooltip={displayMode === 'scrolling' ? _('jumpNextPage') : _('nextPage')} aria-label={displayMode === 'scrolling' ? _('jumpNextPage') : _('nextPage')}>&gt;</button>
             {!fitDisabled && (
             <div className="tool-menu-wrapper">
@@ -9310,6 +9322,25 @@ function App() {
                 onOpenChange={(open) => { if (!open) setCollapsedDropdownId(null); }}
                 placeholder={_('searchBookTopic')}
                 emptyText={_('noMatchingBooks')}
+                alwaysOpen
+              />
+            </div>
+          )}
+          {collapsedDropdownId === 'combined' && (
+            <div data-collapsed-autocomplete="combined">
+              <SectionAutocomplete
+                sections={combinedBookSectionOptions}
+                currentSection={{ section: currentCombinedBookSectionValue, label: currentCombinedBookSectionDisplay }}
+                language={selectedLanguage}
+                getSectionName={(item) => item?.primary || item?.label || ''}
+                onSelect={(value, item) => {
+                  if (item?.disabled) return;
+                  const bookId = item?._bookId || String(value || '').split('::')[0];
+                  const sectionId = item?._sectionId ?? String(value || '').split('::')[1];
+                  handleCombinedBookSectionSelect(bookId, sectionId);
+                  setCollapsedDropdownId(null);
+                }}
+                onOpenChange={(open) => { if (!open) setCollapsedDropdownId(null); }}
                 alwaysOpen
               />
             </div>
