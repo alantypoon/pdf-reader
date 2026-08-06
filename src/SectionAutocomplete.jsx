@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import AutocompleteDropdown from './components/AutocompleteDropdown';
 
-function SectionAutocomplete({ sections, onSelect, getSectionName, currentSection, language, onOpenChange, alwaysOpen, hideFilter }) {
+function SectionAutocomplete({ sections, onSelect, getSectionName, currentSection, language, onOpenChange, alwaysOpen, hideFilter, noSelectionHighlight }) {
   const currentSectionName = useMemo(() => {
     if (!currentSection || !language) return '';
     if (typeof currentSection.label === 'string' && currentSection.label.trim()) {
@@ -82,6 +82,7 @@ function SectionAutocomplete({ sections, onSelect, getSectionName, currentSectio
       onOpenChange={onOpenChange}
       alwaysOpen={alwaysOpen}
       hideFilter={hideFilter}
+      noSelectionHighlight={noSelectionHighlight}
     />
   );
 }

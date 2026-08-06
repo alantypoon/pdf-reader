@@ -25,6 +25,7 @@ function AutocompleteDropdown({
 	showStepper = false,
 	hideFilter = false,
 	alwaysOpen = false,
+	noSelectionHighlight = false,
 	disablePrev,
 	disableNext,
 	onPrev,
@@ -363,7 +364,7 @@ function AutocompleteDropdown({
 							<ul className="autocomplete-list" role="listbox" ref={listRef}>
 								{dropdownFiltered.map((item, index) => {
 									const itemKey = String(item.id ?? '');
-										const isSelected = !query && !dropdownFilter && itemKey === selectedKey;
+								const isSelected = !noSelectionHighlight && !query && !dropdownFilter && itemKey === selectedKey;
 									const isHighlighted = !item.disabled && index === highlightIndex;
 									const classNames = [
 										'autocomplete-item',

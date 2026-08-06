@@ -1345,6 +1345,7 @@ function App() {
       const sectionItems = (book.contents || []).map((item) => {
         const rawId = toFileId(item.page ?? item.section);
         const sectionId = String(rawId);
+        const displayBadge = String(item.section ?? item.page ?? '');
         const en = getSectionName(item, 'en');
         const tc = getSectionName(item, 'tc');
         const sectionLabel = selectedLanguage === 'tc'
@@ -1355,10 +1356,10 @@ function App() {
           : (selectedLanguage === 'tc' ? (en || '') : (tc || ''));
         return {
           id: `${bookId}::${sectionId}`,
-          badge: sectionId,
+          badge: displayBadge,
           primary: sectionLabel,
           secondary,
-          searchText: [bookId, sectionId, en, tc, book.name, book.nameEn, book.nameZh].filter(Boolean).join('\n'),
+          searchText: [bookId, sectionId, displayBadge, en, tc, book.name, book.nameEn, book.nameZh].filter(Boolean).join('\n'),
           _bookId: bookId,
           _sectionId: rawId,
         };
@@ -7899,6 +7900,7 @@ function App() {
                   const sectionId = item?._sectionId ?? String(value || '').split('::')[1];
                   handleCombinedBookSectionSelect(bookId, sectionId);
                 }}
+                noSelectionHighlight
               />
               <button type="button" className="selector-stepper-btn" onClick={() => {
                 if (currentCombinedSteppableIndex >= 0 && currentCombinedSteppableIndex < combinedSteppableOptions.length - 1) {
@@ -9570,6 +9572,7 @@ function App() {
                 }}
                 onOpenChange={(open) => { if (!open) setCollapsedDropdownId(null); }}
                 alwaysOpen
+                noSelectionHighlight
               />
             </div>
           )}
