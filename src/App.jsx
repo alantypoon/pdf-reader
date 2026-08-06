@@ -476,6 +476,7 @@ function App() {
   useLayoutEffect(() => { textInputStateRef.current = textInputState; }, [textInputState]);
   const textInputCommittedRef = useRef(false);
   const textInputBlurFlagRef = useRef(false);
+  const textEditInitiatedRef = useRef(0); // counter: number of click events to skip after pointerdown opened editor
   const colorPickerOpeningRef = useRef(false); // set synchronously on mousedown before blur fires
   const [annotationCursor, setAnnotationCursor] = useState('default');
   const [clearedTimestamps, setClearedTimestamps] = useState(() => {
@@ -4878,7 +4879,7 @@ function App() {
 
   const handlePointerDown = (event) => {
     if (isDebugAnnoStrokes()) console.log('[anno-stroke] ↓ pointerdown id=' + event.pointerId + ' tool=' + tool + ' drawing=' + drawingRef.current + ' activePtrs=' + activePointersRef.current.size);
-    if (tool !== 'pen' && tool !== 'highlight' && tool !== 'move' && tool !== 'eraser') {
+    if (tool !== 'pen' && tool !== 'highlight' && tool !== 'move' && tool !== 'eraser' && tool !== 'text') {
       return;
     }
 
@@ -5002,6 +5003,73 @@ function App() {
       return;
     }
 
+    // ── Text tool: handle drag-to-move/resize on existing text annotations ──
+    if (tool === 'text') {
+      event.preventDefault();
+      processedUpIdsRef.current.delete(event.pointerId);
+      // Reset guard for this gesture — will be set to 2 below if editor is opened
+      textEditInitiatedRef.current = 0;
+      // Clear blur flag so handleCanvasClick doesn't try to reposition
+      // the editor we just opened below.
+      textInputBlurFlagRef.current = false;
+
+      const selectedHit = getSelectedTextBoxForTarget(target);
+      if (selectedHit) {
+        const { selected, imageRect: selectedImageRect, box, handle, inside } = selectedHit;
+        if (handle) {
+          updateAnnotationCursor(getResizeCursor(handle));
+          resizeHandleRef.current = handle;
+          resizeStartRef.current = {
+            startX: target.point.x,
+            startY: target.point.y,
+            annotation: selected.annotation,
+            originalAnnotation: selected.annotation,
+            origWidth: box.boxW,
+            origHeight: box.boxH,
+            origBoxLeft: box.pageBoxLeft,
+            origBoxTop: box.pageBoxTop,
+            imageRect: selectedImageRect,
+          };
+          return;
+        }
+        if (inside) {
+          updateAnnotationCursor('move');
+          moveAnnotationRef.current = selected.annotation;
+          moveStartPointRef.current = target.point;
+          moveHasMovedRef.current = false;
+          return;
+        }
+      }
+
+      // Not a handle hit — check for annotation body hit to start move + open editor
+      textEditInitiatedRef.current = 2; // skip up to 2 subsequent click events (canvas + stage bubble)
+      const existing = findAnnotationAtPoint(target.langId, target.point, target.pageNum, target.role);
+      if (existing && existing.type === 'text') {
+        moveAnnotationRef.current = existing;
+        moveStartPointRef.current = target.point;
+        moveHasMovedRef.current = false;
+        selectedAnnotationRef.current = { annotation: existing, langId: target.langId, role: target.role };
+        updateAnnotationCursor('move');
+        const context = canvasRef.current?.getContext('2d');
+        const box = context ? getTextAnnotationBox(context, existing, {
+          left: 0,
+          top: 0,
+          width: target.imageRect.width,
+          height: target.imageRect.height,
+        }) : null;
+        if (box) {
+          openTextEditorForAnnotation(existing, target.langId, target.imageRect, box);
+        }
+        redrawAnnotationsNow();
+      } else {
+        // Not on an existing annotation — let handleCanvasClick handle creation
+        textEditInitiatedRef.current = 0;
+        selectedAnnotationRef.current = null;
+        updateAnnotationCursor('default');
+      }
+      return;
+    }
+
     drawingRef.current = true;
     // console.log('[draw] drawingRef set to TRUE');
     // Prevent browser from interpreting this drag as a scroll
@@ -5060,7 +5128,7 @@ function App() {
       return;
     }
 
-    if (tool === 'move' && !resizeHandleRef.current && !moveAnnotationRef.current && !drawingRef.current) {
+    if ((tool === 'move' || tool === 'text') && !resizeHandleRef.current && !moveAnnotationRef.current && !drawingRef.current) {
       const hoverTarget = resolveAnnotationTarget(event);
       const selectedHit = getSelectedTextBoxForTarget(hoverTarget);
       if (selectedHit?.handle) {
@@ -5069,7 +5137,7 @@ function App() {
         updateAnnotationCursor('move');
       } else {
         const hoverAnnotation = hoverTarget ? findAnnotationAtPoint(hoverTarget.langId, hoverTarget.point, hoverTarget.pageNum, hoverTarget.role) : null;
-        updateAnnotationCursor(hoverAnnotation ? 'move' : 'default');
+        updateAnnotationCursor(hoverAnnotation && hoverAnnotation.type === 'text' ? 'move' : tool === 'text' ? 'text' : 'default');
       }
       return;
     }
@@ -5578,9 +5646,9 @@ function App() {
     redrawAnnotationsNow();
   }, [textColor]);
 
-  // Clear annotation selection when switching away from move tool
+  // Clear annotation selection when switching away from move/text tools
   useEffect(() => {
-    if (tool !== 'move') {
+    if (tool !== 'move' && tool !== 'text') {
       selectedAnnotationRef.current = null;
       resizeHandleRef.current = null;
       resizeStartRef.current = null;
@@ -6103,6 +6171,11 @@ function App() {
       return;
     }
     if (tool === 'text') {
+      // If pointerdown already opened the editor, skip (handlePointerDown handled it)
+      if (textEditInitiatedRef.current > 0) {
+        textEditInitiatedRef.current--;
+        return;
+      }
       // Check if clicking on an existing text annotation (to re-edit it)
       const existing = findAnnotationAtPoint(target.langId, target.point, target.pageNum, target.role);
       const stage = stageRef.current;
@@ -8649,7 +8722,7 @@ function App() {
             style={{
               pointerEvents: tool === 'hand' ? 'none' : 'auto',
               touchAction: tool === 'hand' ? 'auto' : 'none',
-              cursor: tool === 'move' ? annotationCursor : tool === 'eraser' ? 'pointer' : tool === 'text' ? 'text' : tool === 'pen' || tool === 'highlight' ? 'crosshair' : 'default'
+              cursor: tool === 'move' ? annotationCursor : tool === 'eraser' ? 'pointer' : tool === 'text' ? (annotationCursor !== 'default' ? annotationCursor : 'text') : tool === 'pen' || tool === 'highlight' ? 'crosshair' : 'default'
             }}
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
