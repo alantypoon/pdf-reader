@@ -74,17 +74,22 @@ function AutocompleteDropdown({
 	const updateDropdownPosition = useCallback(() => {
 		if (!containerRef.current) return;
 		const rect = containerRef.current.getBoundingClientRect();
+		const viewportPadding = 16;
+		const anchoredLeft = Math.min(
+			Math.max(rect.left, viewportPadding),
+			Math.max(viewportPadding, window.innerWidth - viewportPadding - rect.width),
+		);
 		const spaceBelow = window.innerHeight - rect.bottom - 6;
 		const dropdownHeight = listRef.current?.offsetHeight || 200;
 		const fitsBelow = spaceBelow >= dropdownHeight;
 		setDropdownStyle({
 			position: 'fixed',
-			left: rect.left,
+			left: anchoredLeft,
 			...(fitsBelow
 				? { top: rect.bottom + 6 }
 				: { bottom: window.innerHeight - rect.top + 6 }),
 			minWidth: rect.width,
-			maxWidth: Math.max(rect.width, window.innerWidth - rect.left - 16),
+			maxWidth: Math.max(rect.width, window.innerWidth - anchoredLeft - viewportPadding),
 			zIndex: 99999,
 		});
 	}, []);
