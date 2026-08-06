@@ -4120,6 +4120,10 @@ function App() {
       if (annotation.height != null && annotation.height > 0) {
         normalized.height = (annotation.height / imageRect.height) * 100;
       }
+      if (annotation.fontSize != null && annotation.fontSize > 0) {
+        normalized.fontSize = (annotation.fontSize / imageRect.width) * 100;
+        normalized.fontSizeNormalized = true;
+      }
     }
     return normalized;
   }, []);
@@ -4149,6 +4153,11 @@ function App() {
       }
       if (annotation.height != null && annotation.height > 0) {
         denorm.height = (annotation.height / 100) * imageRect.height;
+      }
+      if (annotation.fontSize != null && annotation.fontSize > 0) {
+        denorm.fontSize = annotation.fontSizeNormalized
+          ? (annotation.fontSize / 100) * imageRect.width
+          : Math.max(1, Math.round(annotation.fontSize * (imageRect.width / 800)));
       }
     }
     return denorm;
@@ -4305,9 +4314,16 @@ function App() {
     const denorm = (annotation.coordsNormalized && imageRect)
       ? denormalizeAnnotationCoords(annotation, imageRect)
       : annotation;
-    const fontSize = Number.isFinite(Number(denorm.fontSize)) && Number(denorm.fontSize) > 0
-      ? Number(denorm.fontSize)
-      : Math.max(1, Math.round(18 * (imageRect.width / 800)));
+    let fontSize;
+    if (Number.isFinite(Number(denorm.fontSize)) && Number(denorm.fontSize) > 0) {
+      // For denormalized annotations, fontSize is already scaled by denormalizeAnnotationCoords.
+      // For non-normalized legacy annotations, scale the stored pixel value proportionally.
+      fontSize = annotation.coordsNormalized
+        ? Number(denorm.fontSize)
+        : Math.max(1, Math.round(Number(denorm.fontSize) * (imageRect.width / 800)));
+    } else {
+      fontSize = Math.max(1, Math.round(18 * (imageRect.width / 800)));
+    }
     const lineHeight = fontSize * 1.4;
     const text = String(denorm.text || '');
     context.save();
