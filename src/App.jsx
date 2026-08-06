@@ -4777,6 +4777,8 @@ function App() {
     const stage = stageRef.current;
     const stageRect = stage ? stage.getBoundingClientRect() : null;
     if (!stageRect || !annotation || !imageRect || !box) return;
+    // Set the color picker to the annotation's color
+    if (annotation.color) setTextColor(annotation.color);
     const denorm = annotation.coordsNormalized ? denormalizeAnnotationCoords(annotation, imageRect) : annotation;
     textInputCommittedRef.current = false;
     setTextInputState({
@@ -6209,6 +6211,8 @@ function App() {
         fontSize: Math.max(1, Math.round(18 * (target.imageRect.width / 800))),
       };
       if (existing && existing.type === 'text') {
+        // Set the color picker to the annotation's color
+        if (existing.color) setTextColor(existing.color);
         const existRectKeyBox = displayModeRef.current === 'scrolling'
           ? `${target.langId}:${target.role || 'student'}-${existing.page || selectedPage}`
           : `${target.langId}:${target.role || 'student'}`; 
