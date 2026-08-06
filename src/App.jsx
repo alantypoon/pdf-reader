@@ -4154,10 +4154,8 @@ function App() {
       if (annotation.height != null && annotation.height > 0) {
         denorm.height = (annotation.height / 100) * imageRect.height;
       }
-      if (annotation.fontSize != null && annotation.fontSize > 0) {
-        denorm.fontSize = annotation.fontSizeNormalized
-          ? (annotation.fontSize / 100) * imageRect.width
-          : Math.max(1, Math.round(annotation.fontSize * (imageRect.width / 800)));
+      if (annotation.fontSize != null && annotation.fontSize > 0 && annotation.fontSizeNormalized) {
+        denorm.fontSize = (annotation.fontSize / 100) * imageRect.width;
       }
     }
     return denorm;
@@ -4315,13 +4313,11 @@ function App() {
       ? denormalizeAnnotationCoords(annotation, imageRect)
       : annotation;
     let fontSize;
-    if (Number.isFinite(Number(denorm.fontSize)) && Number(denorm.fontSize) > 0) {
-      // For denormalized annotations, fontSize is already scaled by denormalizeAnnotationCoords.
-      // For non-normalized legacy annotations, scale the stored pixel value proportionally.
-      fontSize = annotation.coordsNormalized
-        ? Number(denorm.fontSize)
-        : Math.max(1, Math.round(Number(denorm.fontSize) * (imageRect.width / 800)));
+    if (annotation.fontSizeNormalized && Number.isFinite(Number(denorm.fontSize)) && Number(denorm.fontSize) > 0) {
+      // New-style: fontSize was normalized to percentage and already scaled back by denormalize.
+      fontSize = Number(denorm.fontSize);
     } else {
+      // Legacy or no fontSize: scale dynamically based on current page width.
       fontSize = Math.max(1, Math.round(18 * (imageRect.width / 800)));
     }
     const lineHeight = fontSize * 1.4;
