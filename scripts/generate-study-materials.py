@@ -90,7 +90,7 @@ if ENV_FILE.exists():
 MONGO_URI = os.environ.get('MONGODB_URI', 'mongodb://localhost:27017/pdf-reader')
 
 # ── VLLM / ett-vllm config (image → text extraction only) ──
-VLLM_URL = os.environ.get('VLLM_API_URL', 'https://aigateway.aied.hku.hk/api/generate')
+VLLM_URL = os.environ.get('VLLM_API_URL', 'http://aigateway.aied.hku.hk:8321/api/generate')
 VLLM_DEBUG_URL = VLLM_URL + ('&' if '?' in VLLM_URL else '?') + 'debug_log=1'
 VLLM_PROVIDER = os.environ.get('VLLM_PROVIDER', 'ett-vllm')
 VLLM_MODEL = os.environ.get('VLLM_MODEL', 'OpenGVLab/InternVL3_5-38B')
