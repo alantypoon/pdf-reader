@@ -1345,6 +1345,7 @@ function App() {
       const sectionItems = (book.contents || []).map((item) => {
         const rawId = toFileId(item.page ?? item.section);
         const sectionId = String(rawId);
+        const displayBadge = String(item.section ?? item.page ?? '');
         const en = getSectionName(item, 'en');
         const tc = getSectionName(item, 'tc');
         const sectionLabel = selectedLanguage === 'tc'
@@ -1355,10 +1356,10 @@ function App() {
           : (selectedLanguage === 'tc' ? (en || '') : (tc || ''));
         return {
           id: `${bookId}::${sectionId}`,
-          badge: sectionId,
+          badge: displayBadge,
           primary: sectionLabel,
           secondary,
-          searchText: [bookId, sectionId, en, tc, book.name, book.nameEn, book.nameZh].filter(Boolean).join('\n'),
+          searchText: [bookId, sectionId, displayBadge, en, tc, book.name, book.nameEn, book.nameZh].filter(Boolean).join('\n'),
           _bookId: bookId,
           _sectionId: rawId,
         };
@@ -4120,6 +4121,10 @@ function App() {
       if (annotation.height != null && annotation.height > 0) {
         normalized.height = (annotation.height / imageRect.height) * 100;
       }
+      if (annotation.fontSize != null && annotation.fontSize > 0) {
+        normalized.fontSize = (annotation.fontSize / imageRect.width) * 100;
+        normalized.fontSizeNormalized = true;
+      }
     }
     return normalized;
   }, []);
@@ -4149,6 +4154,9 @@ function App() {
       }
       if (annotation.height != null && annotation.height > 0) {
         denorm.height = (annotation.height / 100) * imageRect.height;
+      }
+      if (annotation.fontSize != null && annotation.fontSize > 0 && annotation.fontSizeNormalized) {
+        denorm.fontSize = (annotation.fontSize / 100) * imageRect.width;
       }
     }
     return denorm;
@@ -4305,9 +4313,14 @@ function App() {
     const denorm = (annotation.coordsNormalized && imageRect)
       ? denormalizeAnnotationCoords(annotation, imageRect)
       : annotation;
-    const fontSize = Number.isFinite(Number(denorm.fontSize)) && Number(denorm.fontSize) > 0
-      ? Number(denorm.fontSize)
-      : Math.max(1, Math.round(18 * (imageRect.width / 800)));
+    let fontSize;
+    if (annotation.fontSizeNormalized && Number.isFinite(Number(denorm.fontSize)) && Number(denorm.fontSize) > 0) {
+      // New-style: fontSize was normalized to percentage and already scaled back by denormalize.
+      fontSize = Number(denorm.fontSize);
+    } else {
+      // Legacy or no fontSize: scale dynamically based on current page width.
+      fontSize = Math.max(1, Math.round(18 * (imageRect.width / 800)));
+    }
     const lineHeight = fontSize * 1.4;
     const text = String(denorm.text || '');
     context.save();
@@ -7887,6 +7900,7 @@ function App() {
                   const sectionId = item?._sectionId ?? String(value || '').split('::')[1];
                   handleCombinedBookSectionSelect(bookId, sectionId);
                 }}
+                noSelectionHighlight
               />
               <button type="button" className="selector-stepper-btn" onClick={() => {
                 if (currentCombinedSteppableIndex >= 0 && currentCombinedSteppableIndex < combinedSteppableOptions.length - 1) {
@@ -9558,6 +9572,7 @@ function App() {
                 }}
                 onOpenChange={(open) => { if (!open) setCollapsedDropdownId(null); }}
                 alwaysOpen
+                noSelectionHighlight
               />
             </div>
           )}
