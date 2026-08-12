@@ -7336,7 +7336,6 @@ function App() {
 
   const handleBookmarkNavigate = useCallback((item) => {
     navigateToReaderLocation(item);
-    setBookmarksDrawerOpen(false);
   }, [navigateToReaderLocation]);
 
   const restoreSidebarCollapsed = useCallback(() => {
