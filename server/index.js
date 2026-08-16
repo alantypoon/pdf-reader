@@ -2584,6 +2584,9 @@ app.post('/api/ai-generate', async (request, response) => {
 app.get('/api/search', async (request, response) => {
   try {
     const { q, bookId, sectionId, pageId, includeAnnotations, offset, limit, wholeWord } = request.query;
+    const requestedLanguage = String(request.query.language || 'en').trim().toLowerCase() === 'tc' ? 'tc' : 'en';
+    const aiLanguageField = requestedLanguage === 'tc' ? 'zh' : 'en';
+    const aiTextField = requestedLanguage === 'tc' ? 'zhText' : 'enText';
     if (!q || !String(q).trim()) {
       return response.json({ results: [], hasMore: false });
     }
@@ -2627,10 +2630,8 @@ app.get('/api/search', async (request, response) => {
     const aiBaseFilter = {
       ...scopeFilter,
       $or: [
-        { 'en.summary': regex },
-        { 'zh.summary': regex },
-        { 'en.raw': regex },
-        { 'zh.raw': regex },
+        { [aiTextField]: regex },
+        { [`${aiLanguageField}.summary`]: regex },
       ]
     };
 
@@ -2639,6 +2640,7 @@ app.get('/api/search', async (request, response) => {
       .find(aiBaseFilter)
       .project({
         subjectId: 1, bookId: 1, sectionId: 1, pageId: 1,
+        enText: 1, zhText: 1,
         'en.summary': 1, 'zh.summary': 1, updatedAt: 1
       })
       .skip(skip)
@@ -2649,17 +2651,18 @@ app.get('/api/search', async (request, response) => {
     if (hasMoreAi) aiDocs.pop(); // remove the extra sentinel
 
     const results = aiDocs.map((doc) => {
-      const enText = Array.isArray(doc?.en?.summary) ? doc.en.summary.join(' ') : (typeof doc?.en?.summary === 'string' ? doc.en.summary : '');
-      const zhText = Array.isArray(doc?.zh?.summary) ? doc.zh.summary.join(' ') : (typeof doc?.zh?.summary === 'string' ? doc.zh.summary : '');
-      const enSnippet = extractSnippet(enText, q);
-      const zhSnippet = extractSnippet(zhText, q);
+      const fullText = getPreferredAiTextExtract(doc, requestedLanguage);
+      const fallbackSummaryText = normalizeTextExtract(getAiSummaryText(doc?.[aiLanguageField]));
+      const inlineText = extractSnippet(fullText, q) || extractSnippet(fallbackSummaryText, q) || buildLeadingSnippet(fullText || fallbackSummaryText);
       return {
         _id: doc._id,
         subjectId: doc.subjectId,
         bookId: doc.bookId,
         sectionId: doc.sectionId,
         pageId: doc.pageId,
-        snippet: enSnippet || zhSnippet || '',
+        snippet: inlineText,
+        inlineText,
+        fullText: fullText || fallbackSummaryText,
         source: 'ai',
         updatedAt: doc.updatedAt,
       };
@@ -2697,6 +2700,8 @@ app.get('/api/search', async (request, response) => {
           sectionId: doc.sectionId,
           pageId: doc.pageId,
           snippet,
+          inlineText: snippet,
+          fullText: typeof matchingRemark?.text === 'string' ? matchingRemark.text : '',
           source: 'annotation',
           langId: doc.langId,
           updatedAt: doc.updatedAt,
@@ -2705,7 +2710,7 @@ app.get('/api/search', async (request, response) => {
     }
 
     const hasMore = hasMoreAi || hasMoreAnno;
-    console.log(`[search] query="${String(q)}" offset=${skip} aiResults=${aiDocs.length} annoResults=${results.filter(r => r.source === 'annotation').length} total=${results.length} hasMore=${hasMore}`);
+    console.log(`[search] query="${String(q)}" lang=${requestedLanguage} offset=${skip} aiResults=${aiDocs.length} annoResults=${results.filter(r => r.source === 'annotation').length} total=${results.length} hasMore=${hasMore}`);
     response.json({ results, hasMore });
   } catch (err) {
     console.error('[search] error:', err);
@@ -2713,19 +2718,61 @@ app.get('/api/search', async (request, response) => {
   }
 });
 
+function getAiSummaryText(value) {
+  if (!value) return '';
+  if (Array.isArray(value.summary)) {
+    return value.summary.map((entry) => {
+      if (typeof entry === 'string') return entry;
+      if (entry && typeof entry === 'object') return entry.text || entry.summary || '';
+      return '';
+    }).filter(Boolean).join(' ');
+  }
+  if (typeof value.summary === 'string') return value.summary;
+  return '';
+}
+
+function normalizeTextExtract(value, { preserveLineBreaks = false } = {}) {
+  if (typeof value !== 'string') return '';
+  const normalized = value
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  if (!normalized) return '';
+  if (preserveLineBreaks) return normalized;
+  return normalized.replace(/\s+/g, ' ');
+}
+
+function getPreferredAiTextExtract(doc, language = 'en') {
+  const primaryLanguage = language === 'tc' ? 'tc' : 'en';
+  const primaryText = normalizeTextExtract(primaryLanguage === 'tc' ? doc?.zhText : doc?.enText, { preserveLineBreaks: true });
+  const fallbackText = normalizeTextExtract(primaryLanguage === 'tc' ? doc?.enText : doc?.zhText, { preserveLineBreaks: true });
+  const primarySummary = normalizeTextExtract(getAiSummaryText(primaryLanguage === 'tc' ? doc?.zh : doc?.en), { preserveLineBreaks: true });
+  const fallbackSummary = normalizeTextExtract(getAiSummaryText(primaryLanguage === 'tc' ? doc?.en : doc?.zh), { preserveLineBreaks: true });
+  return primaryText || fallbackText || primarySummary || fallbackSummary || '';
+}
+
 /** Extract a short snippet around the first match of query in text */
 function extractSnippet(text, query) {
-  const safeText = typeof text === 'string' ? text : '';
+  const safeText = normalizeTextExtract(text);
   const safeQuery = typeof query === 'string' ? query : '';
   if (!safeText || !safeQuery) return '';
   const idx = safeText.toLowerCase().indexOf(safeQuery.toLowerCase());
   if (idx < 0) return '';
-  const start = Math.max(0, idx - 40);
-  const end = Math.min(safeText.length, idx + safeQuery.length + 80);
+  const contextRadius = Math.max(40, Math.floor((180 - safeQuery.length) / 2));
+  const start = Math.max(0, idx - contextRadius);
+  const end = Math.min(safeText.length, idx + safeQuery.length + contextRadius);
   let snippet = safeText.slice(start, end);
   if (start > 0) snippet = '…' + snippet;
   if (end < safeText.length) snippet = snippet + '…';
   return snippet;
+}
+
+function buildLeadingSnippet(text, maxChars = 180) {
+  const safeText = normalizeTextExtract(text);
+  if (!safeText) return '';
+  if (safeText.length <= maxChars) return safeText;
+  return `${safeText.slice(0, maxChars).trimEnd()}…`;
 }
 
 // ── AI Content CRUD (MongoDB) ────────────────────────────
@@ -2734,12 +2781,17 @@ app.get('/api/ai-content', async (request, response) => {
   try {
     const identity = parseAiRequestIdentity(request.query, { includePage: request.query.pageId != null || request.query.page != null });
     const { language } = request.query;
+    const requestedLanguage = String(language || 'en').trim().toLowerCase() === 'tc' ? 'tc' : 'en';
     if (!aiGenerations) {
-      return response.json({ content: null });
+      return response.json(language === 'en' || language === 'tc'
+        ? { content: null, textExtract: '', updatedAt: null }
+        : { content: null, textExtracts: { en: '', zh: '' }, updatedAt: null });
     }
     const doc = await findAiGenerationDocument(identity);
     if (!doc) {
-      return response.json({ content: null });
+      return response.json(language === 'en' || language === 'tc'
+        ? { content: null, textExtract: '', updatedAt: null }
+        : { content: null, textExtracts: { en: '', zh: '' }, updatedAt: null });
     }
     // Filter out broken zh content (error envelopes from failed gateway calls)
     const validZh = isValidAiContent(doc.zh) ? doc.zh : null;
@@ -2747,9 +2799,20 @@ app.get('/api/ai-content', async (request, response) => {
     if (language === 'en' || language === 'tc') {
       const langField = language === 'tc' ? 'zh' : 'en';
       const value = langField === 'zh' ? validZh : (doc[langField] || null);
-      response.json({ content: value, updatedAt: doc.updatedAt || null });
+      response.json({
+        content: value,
+        textExtract: getPreferredAiTextExtract(doc, requestedLanguage),
+        updatedAt: doc.updatedAt || null,
+      });
     } else {
-      response.json({ content: { en: doc.en || null, zh: validZh }, updatedAt: doc.updatedAt || null });
+      response.json({
+        content: { en: doc.en || null, zh: validZh },
+        textExtracts: {
+          en: getPreferredAiTextExtract(doc, 'en'),
+          zh: getPreferredAiTextExtract(doc, 'tc'),
+        },
+        updatedAt: doc.updatedAt || null,
+      });
     }
   } catch (err) {
     console.error('[ai-content] GET error:', err);

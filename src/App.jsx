@@ -15,7 +15,7 @@ import FontSizeControl from './components/FontSizeControl';
 import { t, uiLang } from './i18n';
 import { isDebugScrollingMomentum, isDebugScrollingPersistence, isDebugZooming, isDebugAnnoStrokes } from './debug';
 import { myScrollBy, myScrollTo } from './MyScroll';
-import { loadScrollPos, deleteScrollPos } from './myLocalStorage';
+import { loadScrollPos, deleteScrollKeys } from './myLocalStorage';
 import { initQueue, enqueue, updateScope, getPendingCount } from './annotationQueue';
 
 const PREFERENCES_KEY = 'pdfReaderPreferences';
@@ -24,6 +24,7 @@ const AI_THEME_KEY = 'pdfReaderAiTheme';
 const DEFAULT_ANNOTATION_COLOR = '#9acd32';
 const ANNOTATION_TOOLS = new Set(['pen', 'highlight', 'text', 'eraser', 'move', 'hand']);
 const COLOR_TOOLS = new Set(['pen', 'highlight', 'text']);
+const PAGE_ZOOM_ANCHOR_SELECTOR = 'img.page-img, canvas[data-page], canvas:not([data-page])';
 
 // ── Resize handle constants ──────────────────────────────
 const HANDLE_RADIUS = 5;
@@ -31,6 +32,7 @@ const HANDLE_HIT_RADIUS = 12;
 const MIN_TEXT_WIDTH = 40;
 const MIN_TEXT_HEIGHT = 28;
 const TEXT_BOX_PADDING = 6;
+const RICH_TEXT_BLOCK_GAP = 6;
 
 // ── QR code debug capture levels ──────────────────────────
 // 0 = no debug
@@ -52,6 +54,229 @@ function hkNow() {
   const s = String(d.getUTCSeconds()).padStart(2, '0');
   const ms = String(d.getUTCMilliseconds()).padStart(3, '0');
   return `${Y}-${M}-${D}T${h}:${m}:${s}.${ms}+08:00`;
+}
+
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function makeTextEditorSessionId() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function isSafeAnnotationImageSrc(value) {
+  return typeof value === 'string'
+    && /^data:image\/(?:png|jpeg|jpg|webp|gif);base64,[a-z0-9+/=]+$/i.test(value.trim());
+}
+
+function annotationPlainTextToHtml(text) {
+  return escapeHtml(String(text || ''))
+    .replace(/\r\n?/g, '\n')
+    .replace(/\n/g, '<br>');
+}
+
+function normalizeTextAnnotationContent(root) {
+  if (!root) {
+    return { html: '', plainText: '', hasRichContent: false };
+  }
+
+  const htmlParts = [];
+  const textParts = [];
+  let hasRichContent = false;
+
+  const pushBreak = () => {
+    if (!htmlParts.length || htmlParts[htmlParts.length - 1] === '<br>') return;
+    htmlParts.push('<br>');
+    if (!textParts.length || textParts[textParts.length - 1] !== '\n') {
+      textParts.push('\n');
+    }
+  };
+
+  const visit = (node) => {
+    if (!node) return;
+
+    if (node.nodeType === 3) {
+      const text = String(node.textContent || '').replace(/\u00a0/g, ' ');
+      if (!text) return;
+      htmlParts.push(escapeHtml(text));
+      textParts.push(text);
+      return;
+    }
+
+    if (node.nodeType !== 1) return;
+
+    const tag = String(node.tagName || '').toLowerCase();
+    if (tag === 'img') {
+      const src = String(node.getAttribute('src') || '').trim();
+      if (!isSafeAnnotationImageSrc(src)) return;
+      const naturalWidth = Math.max(1, Number(node.getAttribute('data-natural-width')) || Number(node.naturalWidth) || 1);
+      const naturalHeight = Math.max(1, Number(node.getAttribute('data-natural-height')) || Number(node.naturalHeight) || 1);
+      htmlParts.push(
+        `<img src="${escapeHtml(src)}" data-natural-width="${naturalWidth}" data-natural-height="${naturalHeight}" alt="">`
+      );
+      hasRichContent = true;
+      return;
+    }
+
+    if (tag === 'br') {
+      pushBreak();
+      return;
+    }
+
+    const isBlock = /^(div|p|section|article|li|ul|ol)$/i.test(tag);
+    const beforeLen = htmlParts.length;
+    Array.from(node.childNodes || []).forEach(visit);
+    if (isBlock && htmlParts.length > beforeLen) {
+      pushBreak();
+    }
+  };
+
+  Array.from(root.childNodes || []).forEach(visit);
+
+  while (htmlParts[0] === '<br>') htmlParts.shift();
+  while (htmlParts[htmlParts.length - 1] === '<br>') htmlParts.pop();
+
+  const html = htmlParts.join('').replace(/(?:<br>){3,}/g, '<br><br>');
+  const plainText = textParts.join('')
+    .replace(/\r/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/^\n+|\n+$/g, '');
+
+  return { html, plainText, hasRichContent };
+}
+
+function isRichTextAnnotation(annotation) {
+  return annotation?.textFormat === 'html'
+    && typeof annotation?.html === 'string'
+    && /<img\b/i.test(annotation.html);
+}
+
+function getAnnotationDisplayHtml(annotation) {
+  if (isRichTextAnnotation(annotation)) {
+    return annotation.html;
+  }
+  return annotationPlainTextToHtml(annotation?.text || '');
+}
+
+function getRichTextBlocks(html) {
+  if (typeof document === 'undefined' || !html) {
+    return [];
+  }
+
+  const root = document.createElement('div');
+  root.innerHTML = html;
+  const blocks = [];
+  let currentText = '';
+
+  const flushText = () => {
+    const normalized = currentText.replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '');
+    if (normalized) {
+      blocks.push({ type: 'text', text: normalized });
+    }
+    currentText = '';
+  };
+
+  const pushBreak = () => {
+    if (!currentText.endsWith('\n')) currentText += '\n';
+  };
+
+  const visit = (node) => {
+    if (!node) return;
+
+    if (node.nodeType === 3) {
+      currentText += String(node.textContent || '').replace(/\u00a0/g, ' ');
+      return;
+    }
+
+    if (node.nodeType !== 1) return;
+
+    const tag = String(node.tagName || '').toLowerCase();
+    if (tag === 'img') {
+      const src = String(node.getAttribute('src') || '').trim();
+      if (!isSafeAnnotationImageSrc(src)) return;
+      flushText();
+      blocks.push({
+        type: 'image',
+        src,
+        naturalWidth: Math.max(1, Number(node.getAttribute('data-natural-width')) || Number(node.naturalWidth) || 1),
+        naturalHeight: Math.max(1, Number(node.getAttribute('data-natural-height')) || Number(node.naturalHeight) || 1),
+      });
+      return;
+    }
+
+    if (tag === 'br') {
+      pushBreak();
+      return;
+    }
+
+    const isBlock = /^(div|p|section|article|li|ul|ol)$/i.test(tag);
+    Array.from(node.childNodes || []).forEach(visit);
+    if (isBlock) pushBreak();
+  };
+
+  Array.from(root.childNodes || []).forEach(visit);
+  flushText();
+  return blocks;
+}
+
+async function imageFileToPngDataUrl(file) {
+  const inputDataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error('Failed to read image'));
+    reader.readAsDataURL(file);
+  });
+
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, img.naturalWidth || img.width || 1);
+      canvas.height = Math.max(1, img.naturalHeight || img.height || 1);
+      const context = canvas.getContext('2d');
+      if (!context) {
+        reject(new Error('Failed to create PNG canvas'));
+        return;
+      }
+      context.drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve({
+        dataUrl: canvas.toDataURL('image/png'),
+        width: canvas.width,
+        height: canvas.height,
+      });
+    };
+    img.onerror = () => reject(new Error('Failed to decode image'));
+    img.src = String(inputDataUrl || '');
+  });
+}
+
+function insertHtmlAtSelection(html, rangeOverride = null) {
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    return false;
+  }
+
+  const selection = window.getSelection();
+  const range = rangeOverride || (selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null);
+  if (!selection || !range) return false;
+
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const fragment = template.content;
+  const lastNode = fragment.lastChild;
+  range.deleteContents();
+  range.insertNode(fragment);
+  if (lastNode) {
+    range.setStartAfter(lastNode);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+  return true;
 }
 
 const POPULAR_COLORS = [
@@ -154,9 +379,72 @@ function getPageSourceKey(language, role = 'student') {
   return `${language}:${role}`;
 }
 
+function getScrollCacheKeyForSource(source) {
+  if (typeof source === 'string' && source.startsWith('img:')) {
+    const parts = source.split(':');
+    if (parts.length >= 4) return `scroll-${parts[1]}-${parts[2]}-${parts[3]}`;
+  }
+  return `scroll-${source}`;
+}
+
+function getReaderLocationScrollKeys(subjectId, bookId, sectionId) {
+  const normalizedSubjectId = String(subjectId || '').trim();
+  const normalizedBookId = String(bookId || '').trim();
+  const normalizedSectionId = sectionId == null || sectionId === '' ? '' : String(sectionId).trim();
+  if (!normalizedSubjectId || !normalizedBookId || !normalizedSectionId) return [];
+
+  const keys = new Set([
+    `scroll-${normalizedSubjectId}-${normalizedBookId}-${normalizedSectionId}`,
+    `scroll-${normalizedBookId}-${normalizedSectionId}`,
+  ]);
+
+  ['en', 'tc'].forEach((language) => {
+    ['student', 'teacher'].forEach((role) => {
+      const sourceKey = getPageSourceKey(language, role);
+      const imageSourceKey = `img:${normalizedSubjectId}:${normalizedBookId}:${normalizedSectionId}:${sourceKey}`;
+      keys.add(imageSourceKey);
+      keys.add(getScrollCacheKeyForSource(imageSourceKey));
+    });
+  });
+
+  return [...keys];
+}
+
+function clearReaderLocationScrollKeys(subjectId, bookId, sectionId) {
+  const keys = getReaderLocationScrollKeys(subjectId, bookId, sectionId);
+  if (keys.length > 0) {
+    deleteScrollKeys(keys);
+  }
+}
+
 /** Check if page content is fully visible horizontally in a scroll container. */
 function isPageFullyVisibleH(el) {
   return el.scrollWidth <= el.clientWidth + 1;
+}
+
+function getPageZoomAnchorElement(container, clientX, clientY) {
+  if (!container || !Number.isFinite(clientX) || !Number.isFinite(clientY)) return null;
+  const pages = [...container.querySelectorAll(PAGE_ZOOM_ANCHOR_SELECTOR)].filter((el) => el?.isConnected);
+  if (!pages.length) return null;
+
+  let best = null;
+  for (const pageEl of pages) {
+    const rect = pageEl.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    const pageNum = Number(pageEl.dataset?.page || pageEl.closest?.('[data-page]')?.dataset?.page || 0) || null;
+    const contains = clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+    const clampedX = Math.max(rect.left, Math.min(clientX, rect.right));
+    const clampedY = Math.max(rect.top, Math.min(clientY, rect.bottom));
+    const distance = Math.hypot(clientX - clampedX, clientY - clampedY);
+    const visibleWidth = Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0));
+    const visibleHeight = Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0));
+    const visibleArea = visibleWidth * visibleHeight;
+    const score = contains ? -visibleArea : distance;
+    if (!best || score < best.score) {
+      best = { pageEl, rect, pageNum, score };
+    }
+  }
+  return best;
 }
 
 function getSubjectLabel(subjectId, selectedLanguage = 'en') {
@@ -353,6 +641,10 @@ function highlightMatches(text, query, wholeWord) {
   return escaped.replace(regex, '<mark>$1</mark>');
 }
 
+function getSidebarExcerptLanguage(selectedLanguage) {
+  return selectedLanguage === 'tc' ? 'tc' : 'en';
+}
+
 function App() {
   const savedPrefs = loadPreferences();
   const initialTextColor = useMemo(() => {
@@ -421,9 +713,13 @@ function App() {
   const selectedPageRef = useRef(selectedPage);
   const selectedFileRef = useRef(selectedFile);
   const zoomLevelRef = useRef(null);   // synced via useEffect below
+  const zoomAnchorTokenRef = useRef(0);
   const currentChapterRef = useRef(null);  // synced via useEffect below
   const selectedChapterRef = useRef(selectedChapter);
   const maxNavigablePageRef = useRef(Infinity);
+  const loadPagesGenerationRef = useRef(0);
+  const navigatingToLocationRef = useRef(false);
+  const pendingReaderLocationRef = useRef(null);
   const regenSkipExtractionRef = useRef(false);
   const regenSkipSummaryRef = useRef(false);
   const regenSkipFlashcardsRef = useRef(false);
@@ -771,6 +1067,7 @@ function App() {
   const regenerateConfirmMessage = _('confirmRegenerate');
   const fitDisabled = displayMode === 'thumbnails';
   const panelDocked = true;
+  const sidebarExcerptLanguage = getSidebarExcerptLanguage(selectedLanguage);
 
   const refreshFitForCurrentMode = useCallback(() => {
     // Only bump the refresh token — do NOT reset zoom.
@@ -927,6 +1224,22 @@ function App() {
     setSelectedPage(nextPageId);
     setSelectedPhysicsChapterId(preferredPhysicsChapterId ? String(preferredPhysicsChapterId) : '');
   }, [selectedBook]);
+
+  const queueReaderLocationSelection = useCallback(({ subjectId, bookId, sectionId, pageId }) => {
+    const nextSubjectId = String(subjectId || '').trim();
+    const nextBookId = String(bookId || '').trim();
+    if (!nextSubjectId || !nextBookId) return false;
+
+    const normalizedPageId = Math.max(1, Number(pageId) || 1);
+    pendingReaderLocationRef.current = {
+      subjectId: nextSubjectId,
+      bookId: nextBookId,
+      sectionId: sectionId == null || sectionId === '' ? '' : String(sectionId),
+      pageId: normalizedPageId,
+    };
+    navigatingToLocationRef.current = true;
+    return true;
+  }, []);
 
   const applySubjectSelection = useCallback((subjectId, chapters, defaultSubjectId = '') => {
     const normalizedSubjectId = String(subjectId || defaultSubjectId || '').trim();
@@ -1264,7 +1577,7 @@ function App() {
     if (!nextBook) return;
     const nextSection = nextBook.contents?.find((item) => String(toFileId(item.page ?? item.section)) === String(nextSectionId));
     const normalizedSectionId = nextSection ? toFileId(nextSection.page ?? nextSection.section) : nextSectionId;
-    deleteScrollPos(`scroll-${selectedBook}-${nextBook.id}-${normalizedSectionId}`);
+    clearReaderLocationScrollKeys(selectedBook, nextBook.id, normalizedSectionId);
     pendingSectionPageResetRef.current = true;
     handleBookSelect(nextBook.id || '');
     setSelectedFile(normalizedSectionId);
@@ -1273,7 +1586,7 @@ function App() {
   const handleSectionSelect = useCallback((nextSectionId) => {
     if (nextSectionId == null || nextSectionId === '') return;
     // Clear saved scroll so PdfPane's initial-load restore can't overwrite page 1
-    deleteScrollPos(`scroll-${selectedBook}-${selectedChapter}-${nextSectionId}`);
+    clearReaderLocationScrollKeys(selectedBook, selectedChapter, nextSectionId);
     pendingSectionPageResetRef.current = true;
     setSelectedFile(nextSectionId);
   }, [selectedBook, selectedChapter]);
@@ -1540,10 +1853,16 @@ function App() {
   const navigateToReaderLocation = useCallback(async ({ subjectId, bookId, sectionId, pageId }) => {
     const nextSubjectId = String(subjectId || '').trim();
     const nextBookId = String(bookId || '').trim();
-    if (!nextSubjectId || !nextBookId) return;
+    if (!nextSubjectId || !nextBookId) return false;
+
+    if (!queueReaderLocationSelection({ subjectId: nextSubjectId, bookId: nextBookId, sectionId, pageId })) {
+      return false;
+    }
 
     let nextStructure = structure;
-    if (nextSubjectId !== selectedBook) {
+    // Fetch catalog if switching subject OR if structure is empty (e.g.
+    // share-URL navigation on initial load before catalog has loaded).
+    if (nextSubjectId !== selectedBook || !structure.length) {
       const data = await fetchJson(`api/catalog?book=${encodeURIComponent(nextSubjectId)}`);
       nextStructure = data.chapters || [];
       setDataBooks(Array.isArray(data.books) ? data.books : []);
@@ -1563,6 +1882,11 @@ function App() {
     }
 
     const chapter = (nextStructure || []).find((item) => String(item.id) === nextBookId);
+    if (!chapter) {
+      pendingReaderLocationRef.current = null;
+      requestAnimationFrame(() => { navigatingToLocationRef.current = false; });
+      return false;
+    }
     const normalizedSectionId = sectionId == null
       ? ''
       : (() => {
@@ -1570,13 +1894,96 @@ function App() {
           return matchedSection ? toFileId(matchedSection.page ?? matchedSection.section) : sectionId;
         })();
 
-    setSelectedChapter(nextBookId);
-    if (sectionId != null) setSelectedFile(normalizedSectionId);
-    if (pageId != null && pageId !== '') setSelectedPage(Number(pageId));
+    // A fresh bookmark/share jump should land on the requested page, not on a
+    // previously saved scroll position for the destination section.
+    if (typeof window !== 'undefined' && normalizedSectionId) {
+      clearReaderLocationScrollKeys(nextSubjectId, nextBookId, normalizedSectionId);
+    }
+
+    // pageCounts holds page counts for the CURRENT section only (keyed by
+    // language:role, not by section) — if we're jumping to a different
+    // book/section, clear it so the stale count doesn't clamp the target
+    // page back down to the old section's page count before the new
+    // section's count has loaded (which otherwise required several clicks).
+    if (
+      nextSubjectId !== selectedBook
+      || nextBookId !== selectedChapter
+      || String(normalizedSectionId) !== String(selectedFile)
+    ) {
+      setPageCounts({});
+    }
+
+    applyBookSelection(nextStructure, nextBookId, {
+      preferredSectionId: normalizedSectionId,
+      preferredPageId: pageId,
+      preferredPhysicsChapterId: '',
+    });
     setSelectedPhysicsChapterId('');
-    refreshFitForCurrentMode();
     setForceRedrawToken((tick) => tick + 1);
-  }, [refreshFitForCurrentMode, selectedBook, structure]);
+    refreshFitForCurrentMode();
+
+    return true;
+  }, [applyBookSelection, queueReaderLocationSelection, refreshFitForCurrentMode, selectedBook, selectedChapter, selectedFile, structure]);
+
+  useEffect(() => {
+    const pending = pendingReaderLocationRef.current;
+    if (!pending) return;
+    if (String(selectedBook) !== String(pending.subjectId)) return;
+    if (!structure.length) return;
+
+    const chapter = structure.find((item) => String(item.id) === String(pending.bookId));
+    if (!chapter) return;
+    const normalizedSectionId = pending.sectionId === ''
+      ? ''
+      : (() => {
+          const matchedSection = chapter.contents?.find((item) => String(toFileId(item.page ?? item.section)) === String(pending.sectionId));
+          return matchedSection ? String(toFileId(matchedSection.page ?? matchedSection.section)) : String(pending.sectionId);
+        })();
+
+    if (String(selectedChapter) !== String(pending.bookId)) return;
+    if (normalizedSectionId && String(selectedFile) !== normalizedSectionId) return;
+    if (Number(selectedPage) !== Number(pending.pageId)) return;
+
+    const nextSectionId = normalizedSectionId || String(selectedFile || '');
+    if (typeof window !== 'undefined' && nextSectionId) {
+      clearReaderLocationScrollKeys(pending.subjectId, pending.bookId, nextSectionId);
+    }
+
+    setPageCounts({});
+    setForceRedrawToken((tick) => tick + 1);
+    pendingReaderLocationRef.current = null;
+    requestAnimationFrame(() => { navigatingToLocationRef.current = false; });
+  }, [selectedBook, selectedChapter, selectedFile, selectedPage, structure]);
+
+  // After login, if the URL contains share params (?subject=&book=&section=&page=),
+  // navigate there and clean them from the URL so reloads don't re-trigger.
+  // Must wait for structure to be loaded so navigateToReaderLocation can
+  // resolve the section properly.
+  const shareNavDoneRef = useRef(false);
+  useEffect(() => {
+    if (!sessionUserResolved || !userId || shareNavDoneRef.current) return;
+    if (!userSelectsLoaded) return;
+    const sp = new URLSearchParams(window.location.search);
+    const subject = sp.get('subject');
+    const book = sp.get('book');
+    const section = sp.get('section');
+    const page = sp.get('page');
+    if (!subject || !book) return;
+    let cancelled = false;
+    const runShareNavigation = async () => {
+      const ok = await navigateToReaderLocation({ subjectId: subject, bookId: book, sectionId: section, pageId: page });
+      if (!ok || cancelled) return;
+      shareNavDoneRef.current = true;
+      sp.delete('subject');
+      sp.delete('book');
+      sp.delete('section');
+      sp.delete('page');
+      const newSearch = sp.toString() ? `?${sp.toString()}` : '';
+      window.history.replaceState(null, '', `${window.location.pathname}${newSearch}${window.location.hash}`);
+    };
+    runShareNavigation();
+    return () => { cancelled = true; };
+  }, [sessionUserResolved, userId, userSelectsLoaded, navigateToReaderLocation]);
 
   const handleSubjectChange = async (newBook) => {
     if (!newBook || String(newBook) === String(selectedBook)) return;
@@ -1678,12 +2085,14 @@ function App() {
 
   useEffect(() => {
     if (!pendingSectionPageResetRef.current) return;
+    if (pendingReaderLocationRef.current) return;
     pendingSectionPageResetRef.current = false;
     setSelectedPage(1);
   }, [selectedChapter, selectedFile]);
 
   useEffect(() => {
     const loadPages = async () => {
+      const generation = ++loadPagesGenerationRef.current;
       setPageLoading(true);
       try {
         const targets = selectedLanguage === 'bilingual'
@@ -1728,6 +2137,10 @@ function App() {
             return [language, role, result];
           }))
         );
+        // Stale response guard — a newer navigation started while this fetch
+        // was in flight, so its result would clobber the newer section's
+        // images/pageCounts (the "needs a second click" bug).
+        if (generation !== loadPagesGenerationRef.current) return;
         const nextSources = {};
         entries.forEach((entry) => {
           if (entry.status !== 'fulfilled') {
@@ -1760,10 +2173,13 @@ function App() {
           return updated;
         });
       } catch (err) {
+        if (generation !== loadPagesGenerationRef.current) return;
         console.error('[loadPages] failed:', err);
         setPageSources({});
       } finally {
-        setPageLoading(false);
+        if (generation === loadPagesGenerationRef.current) {
+          setPageLoading(false);
+        }
       }
     };
 
@@ -2261,21 +2677,44 @@ function App() {
         const scrollTarget = getScrollTargetForGesture(e);
         if (scrollTarget) {
           const containerRect = scrollTarget.getBoundingClientRect();
-          const pageEl = scrollTarget.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
-          const pageRect = pageEl ? pageEl.getBoundingClientRect() : containerRect;
+          const anchorInfo = getPageZoomAnchorElement(scrollTarget, e.clientX, e.clientY);
+          const pageEl = anchorInfo?.pageEl;
+          const pageRect = anchorInfo?.rect || (pageEl ? pageEl.getBoundingClientRect() : containerRect);
           const offsetX = e.clientX - containerRect.left;
           const offsetY = e.clientY - containerRect.top;
           const pointInImgX = e.clientX - pageRect.left;
           const pointInImgY = e.clientY - pageRect.top;
           const fracX = pageRect.width > 0 ? pointInImgX / pageRect.width : 0.5;
           const fracY = pageRect.height > 0 ? pointInImgY / pageRect.height : 0.5;
+          const anchorPageNum = anchorInfo?.pageNum || null;
+          const token = zoomAnchorTokenRef.current + 1;
+          zoomAnchorTokenRef.current = token;
+          window.__pdfReaderPinchZoomAnchor = {
+            target: scrollTarget,
+            offsetX,
+            offsetY,
+            fracX,
+            fracY,
+            anchorPageNum,
+            scrollLeft: scrollTarget.scrollLeft || 0,
+            scrollTop: scrollTarget.scrollTop || 0,
+            scrollWidth: Math.max(1, scrollTarget.scrollWidth || 0),
+            scrollHeight: Math.max(1, scrollTarget.scrollHeight || 0),
+            clientWidth: scrollTarget.clientWidth || 0,
+            clientHeight: scrollTarget.clientHeight || 0,
+            nextZoom,
+            token,
+            createdAt: Date.now(),
+          };
 
           setFitMode('none');
           setZoomLevel(nextZoom);
 
           // After React re-renders at the new zoom, adjust scroll to keep pinch center stable
           requestAnimationFrame(() => {
-            const newPageEl = scrollTarget.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
+            const newPageEl = anchorPageNum != null
+              ? scrollTarget.querySelector(`[data-page="${anchorPageNum}"]`)
+              : scrollTarget.querySelector(PAGE_ZOOM_ANCHOR_SELECTOR);
             const newContainerRect = scrollTarget.getBoundingClientRect();
             const newPageRect = newPageEl ? newPageEl.getBoundingClientRect() : null;
             if (newPageRect && newPageRect.width > 0 && newPageRect.height > 0) {
@@ -2299,6 +2738,11 @@ function App() {
                 });
               }
             }
+            window.setTimeout(() => {
+              if (window.__pdfReaderPinchZoomAnchor?.token === token) {
+                window.__pdfReaderPinchZoomAnchor = null;
+              }
+            }, 160);
           });
         } else {
           setFitMode('none');
@@ -2444,7 +2888,7 @@ function App() {
       if (!cssTransformEl) {
         const target = touchScrollTarget || getScrollTargetForGesture({ clientX: midX, clientY: midY });
         if (!target) return;
-        const el = target.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
+        const el = getPageZoomAnchorElement(target, midX, midY)?.pageEl || target.querySelector(PAGE_ZOOM_ANCHOR_SELECTOR);
         if (!el) return;
         cssTransformEl = el;
         const rect = el.getBoundingClientRect();
@@ -2505,8 +2949,9 @@ function App() {
       const containerRect = target.getBoundingClientRect();
       // Find the actual page image/canvas inside the scroll container —
       // CSS grid centers it, so its rect may differ from the container's.
-      const pageEl = target.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
-      const pageRect = pageEl ? pageEl.getBoundingClientRect() : containerRect;
+      const anchorInfo = getPageZoomAnchorElement(target, midpoint.x, midpoint.y);
+      const pageEl = anchorInfo?.pageEl;
+      const pageRect = anchorInfo?.rect || (pageEl ? pageEl.getBoundingClientRect() : containerRect);
       // offsetX/Y: distance from the midpoint to the container's viewport edge
       // (this is what we subtract from the new content coordinate after zoom
       // to keep the pinch point at the same screen position).
@@ -2539,6 +2984,7 @@ function App() {
         scrollHeight: Math.max(1, target.scrollHeight || 0),
         clientWidth: target.clientWidth || 0,
         clientHeight: target.clientHeight || 0,
+        anchorPageNum: anchorInfo?.pageNum || null,
         nextZoom,
       };
     };
@@ -2549,7 +2995,9 @@ function App() {
       if (!target || !target.isConnected) return;
 
       // After zoom, find the page image again to see where it is now.
-      const pageEl = target.querySelector('img.page-img, canvas[data-page], canvas:not([data-page])');
+      const pageEl = anchor.anchorPageNum != null
+        ? target.querySelector(`[data-page="${anchor.anchorPageNum}"]`)
+        : target.querySelector(PAGE_ZOOM_ANCHOR_SELECTOR);
       const containerRect = target.getBoundingClientRect();
       const pageRect = pageEl ? pageEl.getBoundingClientRect() : null;
       if (pageRect && pageRect.width > 0 && pageRect.height > 0) {
@@ -3267,6 +3715,9 @@ function App() {
     if (prevChapterForScrollRef.current === selectedChapter && prevFileForScrollRef.current === selectedFile) return;
     prevChapterForScrollRef.current = selectedChapter;
     prevFileForScrollRef.current = selectedFile;
+    // Skip when navigateToReaderLocation triggered this change — it handles
+    // scroll positioning via PdfPane's scheduleScrollToCurrent / scroll-to-page.
+    if (navigatingToLocationRef.current) return;
     const stage = stageRef.current;
     if (!stage) return;
     requestAnimationFrame(() => {
@@ -4309,7 +4760,7 @@ function App() {
   }, []);
 
   const getTextAnnotationBox = useCallback((context, annotation, imageRect) => {
-    if (!context || !annotation || !imageRect) return null;
+    if (!annotation || !imageRect) return null;
     const denorm = (annotation.coordsNormalized && imageRect)
       ? denormalizeAnnotationCoords(annotation, imageRect)
       : annotation;
@@ -4322,19 +4773,71 @@ function App() {
       fontSize = Math.max(1, Math.round(18 * (imageRect.width / 800)));
     }
     const lineHeight = fontSize * 1.4;
+    const requestedWidth = denorm.width && denorm.width > 0 ? denorm.width : null;
+    const pageBoxLeft = denorm.x || 0;
+    const pageBoxTop = (denorm.y || 0) - TEXT_BOX_PADDING - fontSize;
+
+    if (isRichTextAnnotation(annotation)) {
+      const boxW = Math.max(MIN_TEXT_WIDTH, requestedWidth || Math.max(220, Math.round(imageRect.width * 0.32)));
+      const contentWidth = Math.max(1, boxW - TEXT_BOX_PADDING * 2);
+      const blocks = getRichTextBlocks(annotation.html);
+
+      if (context) {
+        context.save();
+        context.font = `${fontSize}px Inter, system-ui, sans-serif`;
+      }
+
+      let contentHeight = 0;
+      blocks.forEach((block, index) => {
+        if (block.type === 'text') {
+          const lines = context ? wrapText(context, block.text, contentWidth) : String(block.text || '').split(/\r?\n/);
+          contentHeight += Math.max(1, lines.length) * lineHeight;
+        } else if (block.type === 'image') {
+          const displayWidth = Math.max(24, Math.min(contentWidth, block.naturalWidth || contentWidth));
+          const displayHeight = block.naturalWidth > 0 && block.naturalHeight > 0
+            ? displayWidth * (block.naturalHeight / block.naturalWidth)
+            : Math.min(contentWidth * 0.75, 180);
+          contentHeight += displayHeight;
+        }
+        if (index < blocks.length - 1) {
+          contentHeight += RICH_TEXT_BLOCK_GAP;
+        }
+      });
+
+      if (context) {
+        context.restore();
+      }
+
+      const boxH = Math.max(MIN_TEXT_HEIGHT, Math.ceil((contentHeight || lineHeight) + TEXT_BOX_PADDING * 2));
+      return {
+        denorm,
+        fontSize,
+        lineHeight,
+        text: String(denorm.text || ''),
+        html: annotation.html,
+        lines: [],
+        boxW,
+        boxH,
+        pageBoxLeft,
+        pageBoxTop,
+        boxLeft: imageRect.left + pageBoxLeft,
+        boxTop: imageRect.top + pageBoxTop,
+        textX: imageRect.left + pageBoxLeft + TEXT_BOX_PADDING,
+        textY: imageRect.top + pageBoxTop + TEXT_BOX_PADDING + fontSize,
+      };
+    }
+
+    if (!context) return null;
+
     const text = String(denorm.text || '');
     context.save();
     context.font = `${fontSize}px Inter, system-ui, sans-serif`;
     const measuredWidth = Math.max(24, Math.ceil(Math.max(...text.split(/\r?\n/).map((line) => context.measureText(line).width), 0)));
-    const requestedWidth = denorm.width && denorm.width > 0 ? denorm.width : measuredWidth + TEXT_BOX_PADDING * 2;
-    const boxW = Math.max(MIN_TEXT_WIDTH, requestedWidth);
+    const boxW = Math.max(MIN_TEXT_WIDTH, requestedWidth || measuredWidth + TEXT_BOX_PADDING * 2);
     const contentWidth = Math.max(1, boxW - TEXT_BOX_PADDING * 2);
     const lines = wrapText(context, text, contentWidth);
     context.restore();
-    const naturalHeight = Math.max(MIN_TEXT_HEIGHT, lines.length * lineHeight + TEXT_BOX_PADDING * 2);
-    const boxH = naturalHeight;
-    const pageBoxLeft = denorm.x || 0;
-    const pageBoxTop = (denorm.y || 0) - TEXT_BOX_PADDING - fontSize;
+    const boxH = Math.max(MIN_TEXT_HEIGHT, lines.length * lineHeight + TEXT_BOX_PADDING * 2);
     return {
       denorm,
       fontSize,
@@ -4353,6 +4856,7 @@ function App() {
   }, [denormalizeAnnotationCoords, wrapText]);
 
   const drawTextAnnotation = useCallback((context, annotation, imageRect) => {
+    if (isRichTextAnnotation(annotation)) return;
     const box = getTextAnnotationBox(context, annotation, imageRect);
     if (!box) return;
     context.save();
@@ -4722,13 +5226,84 @@ function App() {
     el.style.height = `${Math.max(MIN_TEXT_HEIGHT, el.scrollHeight)}px`;
   }, []);
 
+  const readTextEditorContent = useCallback((el = textInputRef.current) => {
+    if (!el) {
+      return { html: '', plainText: '', hasRichContent: false };
+    }
+    const normalized = normalizeTextAnnotationContent(el);
+    return {
+      html: normalized.html,
+      plainText: normalized.plainText.trim(),
+      hasRichContent: normalized.hasRichContent,
+    };
+  }, []);
+
   const handleTextEditorInput = useCallback(() => {
     syncTextEditorHeight();
     const el = textInputRef.current;
     if (!el) return;
     const nextHeight = Math.max(MIN_TEXT_HEIGHT, el.scrollHeight);
-    setTextInputState((prev) => prev ? { ...prev, initialHeight: nextHeight } : prev);
-  }, [syncTextEditorHeight]);
+    const nextContent = readTextEditorContent(el);
+    setTextInputState((prev) => prev ? {
+      ...prev,
+      initialHeight: nextHeight,
+      plainText: nextContent.plainText,
+      hasRichContent: nextContent.hasRichContent,
+    } : prev);
+  }, [readTextEditorContent, syncTextEditorHeight]);
+
+  useLayoutEffect(() => {
+    if (!textInputState) return;
+    const el = textInputRef.current;
+    if (!el) return;
+    const sessionId = String(textInputState.sessionId || '');
+    if (el.dataset.editorSessionId !== sessionId) {
+      el.innerHTML = textInputState.initialHtml || '';
+      el.dataset.editorSessionId = sessionId;
+    }
+    syncTextEditorHeight();
+  }, [textInputState, syncTextEditorHeight]);
+
+  const handleTextEditorPaste = useCallback(async (event) => {
+    const items = Array.from(event.clipboardData?.items || []);
+    const imageItems = items.filter((item) => item.type.startsWith('image/'));
+    if (!imageItems.length) return;
+
+    event.preventDefault();
+
+    const selection = typeof window !== 'undefined' ? window.getSelection() : null;
+    const range = selection && selection.rangeCount > 0 ? selection.getRangeAt(0).cloneRange() : null;
+    const pastedImages = [];
+
+    for (const item of imageItems) {
+      const file = item.getAsFile();
+      if (!file) continue;
+      try {
+        pastedImages.push(await imageFileToPngDataUrl(file));
+      } catch (err) {
+        console.error('[text-annotation] paste image failed:', err);
+      }
+    }
+
+    if (!pastedImages.length) return;
+
+    const editor = textInputRef.current;
+    if (!editor) return;
+    editor.focus();
+
+    const html = pastedImages
+      .map(({ dataUrl, width, height }) => (
+        `<div><img src="${escapeHtml(dataUrl)}" data-natural-width="${width}" data-natural-height="${height}" alt=""></div>`
+      ))
+      .join('');
+
+    if (!insertHtmlAtSelection(html, range)) {
+      editor.insertAdjacentHTML('beforeend', html);
+    }
+
+    handleTextEditorInput();
+    requestAnimationFrame(() => handleTextEditorInput());
+  }, [handleTextEditorInput]);
 
   const getTextEditorBoxHeight = useCallback((el) => {
     if (!el) return MIN_TEXT_HEIGHT + TEXT_BOX_PADDING * 2;
@@ -4806,9 +5381,13 @@ function App() {
       existingLangId: annotation.langId || langId,
       existingRemark: annotation,
       initialText: annotation.text || '',
+      initialHtml: getAnnotationDisplayHtml(annotation),
+      plainText: annotation.text || '',
+      hasRichContent: isRichTextAnnotation(annotation),
       initialWidth: box.boxW + 4,
       initialHeight: box.boxH + 4,
       editBox: true,
+      sessionId: makeTextEditorSessionId(),
     });
     setTimeout(() => textInputRef.current?.focus(), 0);
   };
@@ -5544,8 +6123,9 @@ function App() {
       textInputCommittedRef.current = false;
       return;
     }
-    const text = el.value.trim();
-    if (!text) {
+    const { plainText, html, hasRichContent } = readTextEditorContent(el);
+    const text = plainText.trim();
+    if (!text && !hasRichContent) {
       if (state.existingCreatedAt) {
         deleteRemarkByCreatedAt(state.existingCreatedAt, state.existingLangId || state.langId, {
           pageIdOverride: state.page || selectedPage,
@@ -5578,6 +6158,7 @@ function App() {
       color: textColor,
       fontSize: state.fontSize,
       text,
+      ...(hasRichContent ? { textFormat: 'html', html } : {}),
       createdAt: hkNow()
     };
     const normalizedRemark = state.imageRect
@@ -5627,8 +6208,9 @@ function App() {
     if (!state?.editBox || !state.existingCreatedAt) return;
     const el = textInputRef.current;
     if (!el) return;
-    const text = el.value.trim();
-    if (!text) return;
+    const { plainText, html, hasRichContent } = readTextEditorContent(el);
+    const text = plainText.trim();
+    if (!text && !hasRichContent) return;
     // Delete the old annotation first (same as commitTextAnnotation)
     deleteRemarkByCreatedAt(state.existingCreatedAt, state.existingLangId || state.langId, {
       pageIdOverride: state.page || selectedPage,
@@ -5649,17 +6231,22 @@ function App() {
       color: textColor,
       fontSize: state.fontSize,
       text,
+      ...(hasRichContent ? { textFormat: 'html', html } : {}),
       createdAt: savedCreatedAt,
     };
     const normalizedRemark = state.imageRect
       ? normalizeAnnotationCoords(remark, state.imageRect)
       : remark;
     saveRemark(normalizedRemark);
-    selectedAnnotationRef.current = { annotation: normalizedRemark, langId: normalizedRemark.langId || state.langId };
+    selectedAnnotationRef.current = {
+      annotation: normalizedRemark,
+      langId: normalizedRemark.langId || state.langId,
+      role: normalizedRemark.role || state.role || annotationScopeRole,
+    };
     // Update textInputState so future commit/delete references the new createdAt
     setTextInputState((prev) => prev ? { ...prev, existingCreatedAt: savedCreatedAt, existingRemark: normalizedRemark } : prev);
     redrawAnnotationsNow();
-  }, [textColor]);
+  }, [annotationScopeRole, readTextEditorContent, textColor]);
 
   // Clear annotation selection when switching away from move/text tools
   useEffect(() => {
@@ -5731,7 +6318,7 @@ function App() {
     if (textInputState) return;
 
     // Don't scan if clicking on a UI element
-    if (event.target.closest('button, input, textarea, select, .annotation-textarea')) return;
+    if (event.target.closest('button, input, textarea, select, .annotation-textarea, .text-annotation-textarea, [contenteditable="true"]')) return;
 
     // ── Check contents.json qrcodes lookup (instant, no image processing) ──
     // qrcodes is an object { page: url } at either section level or language level:
@@ -6140,6 +6727,14 @@ function App() {
     setModalInfo({ url: url.href });
   };
 
+  const openTextEditorUrl = useCallback(() => {
+    const { plainText } = readTextEditorContent();
+    const value = plainText.trim();
+    if (!value) return;
+    processQrValue(value);
+    setTimeout(() => textInputRef.current?.focus(), 0);
+  }, [processQrValue, readTextEditorContent]);
+
   const handleCanvasClick = (event) => {
     // If a text input is already active, handle reposition or ignore
     if (textInputState) {
@@ -6222,6 +6817,10 @@ function App() {
         point: editPoint,
         imageRect: target.imageRect,
         fontSize: Math.max(1, Math.round(18 * (target.imageRect.width / 800))),
+        initialHtml: '',
+        plainText: '',
+        hasRichContent: false,
+        sessionId: makeTextEditorSessionId(),
       };
       if (existing && existing.type === 'text') {
         // Set the color picker to the annotation's color
@@ -6238,6 +6837,9 @@ function App() {
         newState.existingLangId = existing.langId || target.langId;
         newState.existingRemark = existing;
         newState.initialText = existing.text || '';
+        newState.initialHtml = getAnnotationDisplayHtml(existing);
+        newState.plainText = existing.text || '';
+        newState.hasRichContent = isRichTextAnnotation(existing);
         if (existingBox) {
           newState.canvasX = imageRectBox.left + existingBox.pageBoxLeft + TEXT_BOX_PADDING;
           newState.canvasY = imageRectBox.top + existingBox.pageBoxTop + TEXT_BOX_PADDING;
@@ -6510,6 +7112,7 @@ function App() {
   }, [isNarrowScreen]);
 
   const isBilingualView = visiblePanes.length > 1;
+  const isSingleLanguageSinglePane = selectedLanguage !== 'bilingual' && selectedRoleMode !== 'dual';
   // When the screen is portrait OR in the medium tablet-landscape range
   // (817px–1040px), use the stacked layout with bilingual-mid-header bar
   // between the two language panes instead of the floating pill badge.
@@ -6566,6 +7169,12 @@ function App() {
       return visibleLanguages[0] || current || 'en';
     });
   }, [selectedLanguage, visibleLanguages]);
+
+  useEffect(() => {
+    if (selectedLanguage === 'bilingual') return;
+    if (selectedRoleMode !== 'dual') return;
+    setSelectedRoleMode('student');
+  }, [selectedLanguage, selectedRoleMode]);
 
   const currentPageIndex = useMemo(
     () => pageOptions.findIndex((page) => Number(page) === Number(selectedPage)),
@@ -7126,7 +7735,7 @@ function App() {
   useEffect(() => {
     setSearchOffset(0);
     setSearchHasMore(false);
-  }, [searchQuery, searchScopePage, searchScopeSection, selectedBook, selectedChapter, selectedFile, selectedPage, wholeWord, searchSubjects]);
+  }, [searchQuery, searchScopePage, searchScopeSection, selectedBook, selectedChapter, selectedFile, selectedPage, wholeWord, searchSubjects, sidebarExcerptLanguage]);
 
   useEffect(() => {
     if (!searchQuery.trim()) {
@@ -7151,6 +7760,7 @@ function App() {
         const params = new URLSearchParams({ q: searchQuery.trim() });
         params.set('limit', '50');
         params.set('offset', String(searchOffset));
+        params.set('language', sidebarExcerptLanguage);
         if (searchScopePage || searchScopeSection) {
           if (selectedBook) params.set('subjectId', selectedBook);
           if (selectedChapter) params.set('bookId', selectedChapter);
@@ -7190,7 +7800,7 @@ function App() {
     }, isFirstPage ? 300 : 0); // debounce only for fresh searches; load-more is immediate
 
     return () => clearTimeout(timer);
-  }, [searchQuery, searchScopePage, searchScopeSection, selectedBook, selectedChapter, selectedFile, selectedPage, wholeWord, searchSubjects, searchOffset]);
+  }, [searchQuery, searchScopePage, searchScopeSection, selectedBook, selectedChapter, selectedFile, selectedPage, wholeWord, searchSubjects, searchOffset, sidebarExcerptLanguage]);
 
   // ── Load more when IntersectionObserver fires ────────────
   const loadMoreSentinelRef = useRef(null);
@@ -7337,6 +7947,44 @@ function App() {
   const handleBookmarkNavigate = useCallback((item) => {
     navigateToReaderLocation(item);
   }, [navigateToReaderLocation]);
+
+  const richTextOverlayItems = useMemo(() => {
+    void redrawTick;
+    const annotationsToRender = (displayMode === 'thumbnails' || displayMode === 'scrolling')
+      ? allSectionAnnotations
+      : pageAnnotations;
+    const activeEditId = textInputState?.editBox ? textInputState.existingCreatedAt : null;
+    const rects = displayMode === 'thumbnails' ? getAllThumbnailRects() : getPageImageRects();
+    const context = canvasRef.current?.getContext('2d') || null;
+
+    return annotationsToRender
+      .filter((annotation) => annotation.type === 'text' && isRichTextAnnotation(annotation) && annotation.createdAt !== activeEditId)
+      .map((annotation) => {
+        const langId = annotation.langId === 'tc' ? 'tc' : 'en';
+        const role = annotation.role || 'student';
+        const annotationPage = Number(annotation.page || selectedPage);
+        const paneKey = `${langId}:${role}`;
+        const rectKey = (displayMode === 'scrolling' || displayMode === 'thumbnails')
+          ? `${paneKey}-${annotationPage}`
+          : paneKey;
+        const imageRect = rects[rectKey];
+        if (!imageRect) return null;
+        const box = getTextAnnotationBox(context, annotation, imageRect);
+        if (!box) return null;
+        return {
+          key: `${annotation.createdAt || 'text'}-${paneKey}-${annotationPage}`,
+          left: box.boxLeft,
+          top: box.boxTop,
+          width: box.boxW,
+          height: box.boxH,
+          fontSize: box.fontSize,
+          lineHeight: box.lineHeight,
+          color: box.denorm.color,
+          html: annotation.html,
+        };
+      })
+      .filter(Boolean);
+  }, [allSectionAnnotations, displayMode, getAllThumbnailRects, getPageImageRects, getTextAnnotationBox, pageAnnotations, redrawTick, selectedPage, textInputState]);
 
   const restoreSidebarCollapsed = useCallback(() => {
     setSidebarCollapsed(true);
@@ -8329,9 +8977,9 @@ function App() {
       </aside>
   )}
 
-      <main className="reader">
+      <main className={`reader ${isRightDrawerOpen ? 'reader-with-right-drawer' : ''}`}>
         <div
-          className={`book-stage ${displayMode} ${isBilingualView ? 'bilingual-layout' : ''} ${useBilingualMidHeaderLayout ? 'bilingual-stacked' : ''} tool-${tool}`}
+          className={`book-stage ${displayMode} ${isBilingualView ? 'bilingual-layout' : ''} ${useBilingualMidHeaderLayout ? 'bilingual-stacked' : ''} ${isSingleLanguageSinglePane && isRightDrawerOpen ? 'single-pane-with-right-drawer' : ''} tool-${tool}`}
           ref={stageRef}
           onClick={(e) => { handleStageClick(e); if (tool === 'text') handleCanvasClick(e); }}
           onContextMenu={handleStageContextMenu}
@@ -8521,6 +9169,26 @@ function App() {
             );
           })
           )}
+          {richTextOverlayItems.length > 0 && (
+            <div className="text-annotation-display-layer" aria-hidden="true">
+              {richTextOverlayItems.map((item) => (
+                <div
+                  key={item.key}
+                  className="text-annotation-display text-annotation-rich"
+                  style={{
+                    left: item.left,
+                    top: item.top,
+                    width: item.width,
+                    minHeight: item.height,
+                    color: item.color,
+                    fontSize: `${item.fontSize}px`,
+                    lineHeight: `${item.lineHeight}px`,
+                  }}
+                  dangerouslySetInnerHTML={{ __html: item.html }}
+                />
+              ))}
+            </div>
+          )}
           {textInputState && (
             <>
               {textInputState.editBox && (
@@ -8629,6 +9297,24 @@ function App() {
                     <span className="text-annotation-color-dot active" style={{ background: textColor }} />
                   </button>
                 </div>
+                <div className="text-annotation-toolbar-group text-annotation-toolbar-actions">
+                  <button
+                    type="button"
+                    className="text-annotation-toolbar-icon-btn"
+                    aria-label={_('openLinkInViewer')}
+                    title={_('openLinkInViewer')}
+                    disabled={!textInputState.plainText?.trim()}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      openTextEditorUrl();
+                    }}
+                  >
+                    <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                      <path d="M4 5h16a2 2 0 0 1 2 2v9h-2V7H4v10h7v2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zm10 2h8v8h-2V10.41l-8.29 8.3-1.42-1.42 8.3-8.29H14V7z" />
+                    </svg>
+                  </button>
+                </div>
                 <div className="text-annotation-toolbar-group text-annotation-toolbar-actions text-annotation-toolbar-actions-right">
                   <button
                     type="button"
@@ -8692,7 +9378,7 @@ function App() {
                   </button>
                 </div>
               </div>
-              <textarea
+              <div
                 ref={textInputRef}
                 className={`text-annotation-textarea ${textInputState.editBox ? 'editing-selected-block' : 'creating-block'}`}
                 style={{
@@ -8704,10 +9390,11 @@ function App() {
                   lineHeight: textInputState.editBox ? '1.4' : undefined,
                   ...(textInputState.initialWidth ? { width: textInputState.initialWidth } : {}),
                 }}
-                placeholder={_('textPlaceholder')}
-                defaultValue={textInputState.initialText || ''}
-                rows={2}
-                autoFocus
+                data-placeholder={_('textPlaceholder')}
+                contentEditable
+                suppressContentEditableWarning
+                role="textbox"
+                aria-multiline="true"
                 onKeyDown={(e) => {
                   if (e.key === 'Escape') {
                     e.preventDefault();
@@ -8715,6 +9402,7 @@ function App() {
                   }
                 }}
                 onInput={handleTextEditorInput}
+                onPaste={handleTextEditorPaste}
                 onBlur={() => {
                   if ((resizeHandleRef.current || moveAnnotationRef.current || textEditDragRef.current)) {
                     setTimeout(() => textInputRef.current?.focus(), 0);
@@ -9314,41 +10002,45 @@ function App() {
                 <>
                   <div className="search-results-scroll">
                     <div className="search-results">
-                      {searchResults.map((result, idx) => (
-                      <button
-                        key={result._id || `${result.source}-${result.subjectId}-${result.bookId}-${result.sectionId}-${result.pageId}-${idx}`}
-                        className="search-result-item"
-                        onClick={() => {
-                          navigateToReaderLocation(result);
-                          // Keep drawer open so user can try another result
-                        }}
-                      >
-                        <div className="search-result-breadcrumb">
-                          <span>{getSubjectLabel(result.subjectId, selectedLanguage)}</span>
-                          <span className="breadcrumb-sep">›</span>
-                          <span>{String(result.bookId || '').toUpperCase()}</span>
-                          <span className="breadcrumb-sep">›</span>
-                          <span>§{result.sectionId}</span>
-                          {result.pageId != null && (
-                            <>
-                              <span className="breadcrumb-sep">›</span>
-                              <span>p.{result.pageId}</span>
-                            </>
+                      {searchResults.map((result, idx) => {
+                        const inlineText = result.inlineText || result.snippet || '';
+                        const fullText = result.fullText || inlineText;
+                        return (
+                        <button
+                          key={result._id || `${result.source}-${result.subjectId}-${result.bookId}-${result.sectionId}-${result.pageId}-${idx}`}
+                          className="search-result-item"
+                          onClick={() => {
+                            navigateToReaderLocation(result);
+                            // Keep drawer open so user can try another result
+                          }}
+                        >
+                          <div className="search-result-breadcrumb">
+                            <span>{getSubjectLabel(result.subjectId, selectedLanguage)}</span>
+                            <span className="breadcrumb-sep">›</span>
+                            <span>{String(result.bookId || '').toUpperCase()}</span>
+                            <span className="breadcrumb-sep">›</span>
+                            <span>§{result.sectionId}</span>
+                            {result.pageId != null && (
+                              <>
+                                <span className="breadcrumb-sep">›</span>
+                                <span>p.{result.pageId}</span>
+                              </>
+                            )}
+                            {result.source === 'annotation' && (
+                              <span className="search-result-badge">{_('searchAnnotationBadge')}</span>
+                            )}
+                          </div>
+                          {inlineText && (
+                            <p
+                              className="search-result-snippet"
+                              title={fullText || undefined}
+                              dangerouslySetInnerHTML={{
+                                __html: highlightMatches(inlineText, searchQuery, wholeWord)
+                              }}
+                            />
                           )}
-                          {result.source === 'annotation' && (
-                            <span className="search-result-badge">{_('searchAnnotationBadge')}</span>
-                          )}
-                        </div>
-                        {result.snippet && (
-                          <p
-                            className="search-result-snippet"
-                            dangerouslySetInnerHTML={{
-                              __html: highlightMatches(result.snippet, searchQuery, wholeWord)
-                            }}
-                          />
-                        )}
-                      </button>
-                    ))}
+                        </button>
+                      );})}
                     {/* Sentinel element for IntersectionObserver — triggers load-more */}
                     <div ref={loadMoreSentinelRef} className="search-sentinel" />
                     {searchLoadingMore && (

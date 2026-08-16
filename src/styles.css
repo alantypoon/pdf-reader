@@ -1375,6 +1375,12 @@ button, input, select {
   grid-template-rows: 1fr;
 }
 
+@media (min-width: 961px) {
+  .reader.reader-with-right-drawer {
+    padding-right: min(500px, 96vw);
+  }
+}
+
 .app-shell.scrolling-mode .reader {
   /* overflow: hidden; -- removed for free-zoom */
 }
@@ -1401,7 +1407,32 @@ button, input, select {
 .annotation-canvas {
   position: absolute;
   inset: 0;
-  z-index: 2;
+  z-index: 4;
+}
+
+.text-annotation-display-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.text-annotation-display {
+  position: absolute;
+  min-width: 40px;
+  padding: 6px;
+  box-sizing: border-box;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.text-annotation-rich img,
+.text-annotation-textarea img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 4px 0;
 }
 
 .text-annotation-textarea {
@@ -1427,6 +1458,12 @@ button, input, select {
   outline: none;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15), 0 1px 4px rgba(0, 0, 0, 0.08);
   transition: box-shadow 150ms ease;
+}
+
+.text-annotation-textarea[contenteditable="true"] {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .text-annotation-textarea.editing-selected-block {
@@ -1682,6 +1719,13 @@ button, input, select {
 .text-annotation-textarea::placeholder {
   color: #94a3b8;
   font-size: 0.85em;
+}
+
+.text-annotation-textarea[data-placeholder]:empty::before {
+  content: attr(data-placeholder);
+  color: #94a3b8;
+  font-size: 0.85em;
+  pointer-events: none;
 }
 
 .book-stage {
@@ -2141,6 +2185,27 @@ button, input, select {
   overscroll-behavior-y: contain;
   touch-action: pan-x pan-y;
   -webkit-overflow-scrolling: touch;
+}
+
+.book-stage.single-pane-with-right-drawer .pdf-single-page {
+  place-items: center;
+  place-items: safe center;
+}
+
+.book-stage.single-pane-with-right-drawer .pdf-scroll-pages {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.book-stage.single-pane-with-right-drawer .pdf-scroll-pages > * {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  flex: 0 0 auto;
+  margin-left: auto !important;
+  margin-right: auto !important;
 }
 
 .pdf-scroll {
@@ -3480,7 +3545,7 @@ button, input, select {
 }
 
 .resources-drawer {
-  width: 500px;
+  width: min(500px, 96vw);
   max-width: 96vw;
   height: 100%;
   overflow-y: auto;
@@ -3999,7 +4064,7 @@ button, input, select {
 }
 
 .ai-drawer {
-  width: 500px;
+  width: min(500px, 96vw);
   max-width: 96vw;
   height: 100%;
   overflow-y: auto;
@@ -5247,6 +5312,7 @@ button, input, select {
   font-size: 0.95em;
   color: #475569;
   line-height: 1.5;
+  cursor: help;
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 3;
@@ -5441,6 +5507,7 @@ button, input, select {
   color: #64748b;
   margin: 0;
   line-height: 1.4;
+  cursor: help;
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -5490,6 +5557,28 @@ button, input, select {
   background: #fee2e2;
 }
 
+.bookmark-share-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  color: #9ca3af;
+  border-radius: 4px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bookmark-share-btn:hover {
+  color: #3b82f6;
+  background: #eff6ff;
+}
+
+.bookmark-share-btn.copied {
+  color: #16a34a;
+}
+
 /* Dark mode */
 :root.dark .bookmarks-sort-btn {
   border-color: #374151;
@@ -5511,3 +5600,6 @@ button, input, select {
 :root.dark .bookmark-section-name { color: #cbd5e1; }
 :root.dark .bookmark-delete-btn { color: #6b7280; }
 :root.dark .bookmark-delete-btn:hover { color: #f87171; background: #450a0a; }
+:root.dark .bookmark-share-btn { color: #6b7280; }
+:root.dark .bookmark-share-btn:hover { color: #60a5fa; background: #1e3a5f; }
+:root.dark .bookmark-share-btn.copied { color: #4ade80; }

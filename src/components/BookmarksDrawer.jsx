@@ -35,16 +35,51 @@ function getSubjectShortName(subjectId, selectedLanguage = 'en') {
   return String(subjectId || '').slice(0, 6);
 }
 
-function extractSummaryText(aiContent, language) {
-  if (!aiContent) return '';
-  const langKey = language === 'tc' ? 'zh' : 'en';
-  const fallbackKey = language === 'tc' ? 'en' : 'zh';
-  const content = aiContent[langKey] || aiContent[language] || aiContent[fallbackKey] || null;
-  if (!content) return '';
-  if (Array.isArray(content.summary)) {
-    return content.summary.map((s) => (typeof s === 'string' ? s : s?.text || '')).join(' ').slice(0, 300);
+function normalizeExtractText(value, preserveLineBreaks = false) {
+  if (typeof value !== 'string') return '';
+  const normalized = value
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  if (!normalized) return '';
+  if (preserveLineBreaks) return normalized;
+  return normalized.replace(/\s+/g, ' ');
+}
+
+function buildInlineExtract(text, query = '', maxChars = 180) {
+  const safeText = normalizeExtractText(text);
+  if (!safeText) return '';
+  const safeQuery = normalizeExtractText(query);
+  if (safeQuery) {
+    const idx = safeText.toLowerCase().indexOf(safeQuery.toLowerCase());
+    if (idx >= 0) {
+      const contextRadius = Math.max(40, Math.floor((maxChars - safeQuery.length) / 2));
+      const start = Math.max(0, idx - contextRadius);
+      const end = Math.min(safeText.length, idx + safeQuery.length + contextRadius);
+      let snippet = safeText.slice(start, end);
+      if (start > 0) snippet = `…${snippet}`;
+      if (end < safeText.length) snippet = `${snippet}…`;
+      return snippet;
+    }
   }
-  return '';
+  if (safeText.length <= maxChars) return safeText;
+  return `${safeText.slice(0, maxChars).trimEnd()}…`;
+}
+
+function escapeRegExp(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildShareUrl(item) {
+  const base = `${window.location.origin}${window.location.pathname}`;
+  const params = new URLSearchParams({
+    subject: item.subjectId,
+    book: item.bookId,
+    section: String(item.sectionId),
+    page: String(item.pageId),
+  });
+  return `${base}?${params.toString()}`;
 }
 
 export default function BookmarksDrawer({ lang, userId, onClose, onNavigate, onKeyDown, structure, selectedLanguage, currentSubject, refreshToken, subjectOptions = [], selectedSubjects = [], onSelectedSubjectsChange, drawerFontSize, onDrawerFontSizeChange }) {
@@ -59,8 +94,9 @@ export default function BookmarksDrawer({ lang, userId, onClose, onNavigate, onK
   const [filter, setFilter] = useState('');
   const [sort, setSort] = useState('time');
   const [order, setOrder] = useState('desc');
-  const [summaries, setSummaries] = useState({});
+  const [textExtracts, setTextExtracts] = useState({});
   const [flashId, setFlashId] = useState(null);
+  const [copiedId, setCopiedId] = useState(null);
   const filterRef = useRef('');
   const sortRef = useRef('time');
   const orderRef = useRef('desc');
@@ -156,6 +192,23 @@ export default function BookmarksDrawer({ lang, userId, onClose, onNavigate, onK
     }
   }, [userId]);
 
+  const handleShare = useCallback(async (item) => {
+    const url = buildShareUrl(item);
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedId(String(item._id));
+      setTimeout(() => setCopiedId(null), 2000);
+    } catch {
+      // Fallback: use Swal if available, else prompt
+      const msg = `${_('bookmarkShareIconFailedHint')}\n${url}`;
+      if (window.Swal) {
+        window.Swal.fire({ title: _('bookmarkShareIconFailed'), text: msg, icon: 'info' });
+      } else {
+        window.prompt(_('bookmarkShareIconFailed'), url);
+      }
+    }
+  }, [_]);
+
   // Infinite scroll
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;
@@ -165,34 +218,34 @@ export default function BookmarksDrawer({ lang, userId, onClose, onNavigate, onK
     }
   }, [load, loadingMore, offset, total]);
 
-  // Fetch AI summaries for loaded items
-  const fetchSummaries = useCallback(async (bookmarkItems) => {
+  // Fetch stored page text extracts for loaded items
+  const fetchTextExtracts = useCallback(async (bookmarkItems) => {
     const toFetch = bookmarkItems.filter((item) => {
-      const key = `${item.subjectId}|${item.bookId}|${item.sectionId}|${item.pageId}`;
-      return !summaries[key];
+      const key = `${item.subjectId}|${item.bookId}|${item.sectionId}|${item.pageId}|${displayLang}`;
+      return !(key in textExtracts);
     });
     if (!toFetch.length) return;
     const results = {};
     await Promise.all(toFetch.map(async (item) => {
-      const key = `${item.subjectId}|${item.bookId}|${item.sectionId}|${item.pageId}`;
+      const key = `${item.subjectId}|${item.bookId}|${item.sectionId}|${item.pageId}|${displayLang}`;
       try {
         const res = await fetch(
-          `api/ai-content?subjectId=${encodeURIComponent(item.subjectId)}&bookId=${encodeURIComponent(item.bookId)}&sectionId=${item.sectionId}&pageId=${item.pageId}`
+          `api/ai-content?subjectId=${encodeURIComponent(item.subjectId)}&bookId=${encodeURIComponent(item.bookId)}&sectionId=${item.sectionId}&pageId=${item.pageId}&language=${displayLang}`
         );
         if (!res.ok) return;
         const data = await res.json();
-        if (data.content) results[key] = data.content;
+        results[key] = normalizeExtractText(data.textExtract || '', true);
       } catch { /* ignore */ }
     }));
     if (Object.keys(results).length) {
-      setSummaries((prev) => ({ ...prev, ...results }));
+      setTextExtracts((prev) => ({ ...prev, ...results }));
     }
-  }, [summaries]);
+  }, [displayLang, textExtracts]);
 
-  // Trigger summary fetch when items change
+  // Trigger text-extract fetch when items or display language change
   useEffect(() => {
-    if (items.length) fetchSummaries(items);
-  }, [items]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (items.length) fetchTextExtracts(items);
+  }, [items, displayLang]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!flashId || !scrollRef.current) return;
@@ -211,16 +264,15 @@ export default function BookmarksDrawer({ lang, userId, onClose, onNavigate, onK
     if (selectedSubjects.length && !selectedSubjects.includes(item.subjectId)) return false;
     if (!normalizedFilter) return true;
     const sectionName = getSectionNameFromStructure(structure, currentSubject, item.subjectId, item.bookId, item.sectionId, displayLang);
-    const aiKey = `${item.subjectId}|${item.bookId}|${item.sectionId}|${item.pageId}`;
-    const aiData = summaries[aiKey];
-    const summary = extractSummaryText(aiData, displayLang);
+    const extractKey = `${item.subjectId}|${item.bookId}|${item.sectionId}|${item.pageId}|${displayLang}`;
+    const pageExtract = normalizeExtractText(textExtracts[extractKey], true);
     const haystack = [
       item.subjectId,
       item.bookId,
       item.sectionId,
       item.pageId,
       sectionName,
-      summary,
+      pageExtract,
     ].filter(Boolean).join(' ').toLowerCase();
     return haystack.includes(normalizedFilter);
   });
@@ -303,9 +355,9 @@ export default function BookmarksDrawer({ lang, userId, onClose, onNavigate, onK
           )}
           {!loading && visibleItems.map((item) => {
             const sectionName = getSectionNameFromStructure(structure, currentSubject, item.subjectId, item.bookId, item.sectionId, displayLang);
-            const aiKey = `${item.subjectId}|${item.bookId}|${item.sectionId}|${item.pageId}`;
-            const aiData = summaries[aiKey];
-            const summary = extractSummaryText(aiData, displayLang);
+            const extractKey = `${item.subjectId}|${item.bookId}|${item.sectionId}|${item.pageId}|${displayLang}`;
+            const fullTextExtract = normalizeExtractText(textExtracts[extractKey], true);
+            const inlineExtract = buildInlineExtract(fullTextExtract, filter);
             return (
             <div
               key={String(item._id)}
@@ -329,13 +381,29 @@ export default function BookmarksDrawer({ lang, userId, onClose, onNavigate, onK
                   {sectionName && <span className="bookmark-badge bookmark-lang">{sectionName}</span>}
                   <span className="bookmark-date">{formatDate(item.updatedAt || item.createdAt)}</span>
                 </div>
-                {filter && summary ? (
-                  <p className="bookmark-summary bookmark-summary-filtered">
-                    {highlightMatch(summary, filter)}
+                {filter && inlineExtract ? (
+                  <p className="bookmark-summary bookmark-summary-filtered" title={fullTextExtract || undefined}>
+                    {highlightMatch(inlineExtract, filter)}
                   </p>
-                ) : summary ? (
-                  <p className="bookmark-summary">{summary}</p>
+                ) : inlineExtract ? (
+                  <p className="bookmark-summary" title={fullTextExtract || undefined}>{inlineExtract}</p>
                 ) : null}
+              </button>
+              <button
+                className={`bookmark-share-btn${copiedId === String(item._id) ? ' copied' : ''}`}
+                onClick={() => handleShare(item)}
+                aria-label={_('bookmarkShareIconTitle')}
+                title={copiedId === String(item._id) ? _('bookmarkShareIconCopied') : _('bookmarkShareIconTitle')}
+              >
+                {copiedId === String(item._id) ? (
+                  <svg viewBox="0 0 24 24" role="presentation" focusable="false" fill="currentColor" width="16" height="16">
+                    <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" role="presentation" focusable="false" fill="currentColor" width="16" height="16">
+                    <path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z" />
+                  </svg>
+                )}
               </button>
               <button
                 className="bookmark-delete-btn"
@@ -362,21 +430,15 @@ export default function BookmarksDrawer({ lang, userId, onClose, onNavigate, onK
 
 function highlightMatch(text, query) {
   if (!query) return text;
-  const idx = text.toLowerCase().indexOf(query.toLowerCase());
-  if (idx === -1) return text;
-  const before = text.slice(0, idx);
-  const match = text.slice(idx, idx + query.length);
-  const after = text.slice(idx + query.length);
-  // Show a snippet around the match
-  const start = Math.max(0, idx - 60);
-  const snippet = (start > 0 ? '…' : '') + before.slice(start) + match + after.slice(0, 120) + (after.length > 120 ? '…' : '');
-  return (
-    <>
-      {(start > 0 ? '…' : '') + before.slice(start)}
-      <mark className="bookmark-highlight">{match}</mark>
-      {after.slice(0, 120)}{after.length > 120 ? '…' : ''}
-    </>
-  );
+  const regex = new RegExp(`(${escapeRegExp(query)})`, 'ig');
+  const parts = String(text).split(regex);
+  if (parts.length === 1) return text;
+  const lowerQuery = String(query).toLowerCase();
+  return parts.map((part, index) => (
+    part.toLowerCase() === lowerQuery
+      ? <mark key={`${part}-${index}`} className="bookmark-highlight">{part}</mark>
+      : <React.Fragment key={`${part}-${index}`}>{part}</React.Fragment>
+  ));
 }
 
 function formatDate(iso) {

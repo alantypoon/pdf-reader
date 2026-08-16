@@ -447,3 +447,12 @@ add a bookmarks page on right sidebar:
 - implemented the required server side api for these features
 
 
+
+///
+
+
+1. i want to add a open in browser button (using an icon) on the text control, when it is clicked, the contents of the text will be acted as a url and it will be used to be open in a modal dialog like how a qr code does.
+
+2. i want to copy and paste an image to the text edit control by converting the image into <img with png data url.
+
+3. sometimes when i click a bookmark, it will go to the new section but not the new page. check why carefully and fix this.
