@@ -722,7 +722,7 @@ app.get('/api/page', asyncRoute(async (request, response) => {
       // Read image dimensions so the client can reserve correct space
       // before images load — scroll restoration works instantly.
       const images = await Promise.all(matched.map(async (f) => {
-        const adjustedUrl = `/pdf-reader/data/${requestedBook}/${chapter}/${language}/${roleDirName}/pages/${f}`;
+        const adjustedUrl = `/pdf-reader/data/textbooks/${requestedBook}/${chapter}/${language}/${roleDirName}/pages/${f}`;
         try {
           const meta = await sharp(path.join(pagesDir, f)).metadata();
           return { url: adjustedUrl, w: meta.width, h: meta.height };
@@ -748,13 +748,13 @@ app.get('/api/page', asyncRoute(async (request, response) => {
     const exactMatches = pageCandidates.map((candidate) => `${candidate}.pdf`);
     const exactMatch = exactMatches.find((candidate) => dirFiles.includes(candidate));
     if (dirFiles.includes(exactMatch)) {
-      pdfUrl = `/pdf-reader/data/${requestedBook}/${chapter}/${language}/${roleDirName}/${exactMatch}`;
+      pdfUrl = `/pdf-reader/data/textbooks/${requestedBook}/${chapter}/${language}/${roleDirName}/${exactMatch}`;
     } else {
       const prefixMatch = dirFiles.find(
         (f) => pageCandidates.some((candidate) => f.startsWith(`${candidate}-`)) && f.endsWith('.pdf')
       );
       if (prefixMatch) {
-        pdfUrl = `/pdf-reader/data/${requestedBook}/${chapter}/${language}/${roleDirName}/${prefixMatch}`;
+        pdfUrl = `/pdf-reader/data/textbooks/${requestedBook}/${chapter}/${language}/${roleDirName}/${prefixMatch}`;
       }
     }
   } catch { /* ignore */ }
@@ -1458,7 +1458,7 @@ const dataStatic = express.static(dataPath, {
   }
 });
 app.use('/data', dataStatic);
-app.use('/pdf-reader/data', dataStatic);
+app.use('/pdf-reader/data/textbooks', dataStatic);
 
 // ── AI Generation ─────────────────────────────────────────
 //

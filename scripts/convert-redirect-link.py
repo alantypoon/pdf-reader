@@ -126,7 +126,7 @@ def find_local_mp3(contents_json_dir: Path, lang: str, mp3_filename: str) -> str
         if f.is_file() and f.name.lower() == mp3_filename.lower():
             # Build path relative to the pdf-reader root
             # contents_json_dir is e.g. .../data/biology-oup/1a
-            # We need /pdf-reader/data/biology-oup/1a/<lang>/mp3s/<file>
+            # We need /pdf-reader/data/textbooks/biology-oup/1a/<lang>/mp3s/<file>
             try:
                 rel = f.relative_to(DATA_ROOT.parent.parent)  # goes up to pdf-reader
                 return "/pdf-reader/" + str(rel).replace("\\", "/")

@@ -271,10 +271,10 @@ carefully implement ontouch event on touchscreen device such as ipad and iphone,
 
 generate a script at /var/www/html/pdf-reader/scripts/copy-biology-oup-tn.py that copies the files in /var/www/html/pdf-reader/_ref/biology-oup-tn to: 
 
-/var/www/html/pdf-reader/data/biology-oup/<bookId>/en/contents.tn/<sectionId>.pdf
+/var/www/html/pdf-reader/data/textbooks/biology-oup/<bookId>/en/contents.tn/<sectionId>.pdf
 from ./<en/tc>/NSSBIO3E_SB<bookId>_Ch<sectionId>_e.pdf
 
-/var/www/html/pdf-reader/data/biology-oup/<bookId>/tc/contents.tn/<sectionId>.pdf
+/var/www/html/pdf-reader/data/textbooks/biology-oup/<bookId>/tc/contents.tn/<sectionId>.pdf
 from ./<en/tc>/NSSBIO3E_SB<bookId>_Ch<sectionId>_c.pdf
 
 extract the code for watermark removal from /var/www/html/pdf-reader/scripts/remove_watermark.py
@@ -292,14 +292,14 @@ generate the folders contents.tn when they do not exist
 
 generate a script at /var/www/html/pdf-reader/scripts/copy-math-oup.py that copies the files in /var/www/html/pdf-reader/_ref/math-oup-tn to: 
 
-/var/www/html/pdf-reader/data/math-oup/<bookId>/en/contents/<sectionId>.pdf
+/var/www/html/pdf-reader/data/textbooks/math-oup/<bookId>/en/contents/<sectionId>.pdf
 from ./<en/tc>/OSM_TBPDF_<bookId><sectionId>_e.pdf
-/var/www/html/pdf-reader/data/math-oup/<bookId>/en/contents.tn/<sectionId>.pdf
+/var/www/html/pdf-reader/data/textbooks/math-oup/<bookId>/en/contents.tn/<sectionId>.pdf
 from ./<en/tc>/OSM_TBPDF__TN_<bookId><sectionId>_e.pdf
 
-/var/www/html/pdf-reader/data/math-oup/<bookId>/tc/contents/<sectionId>.pdf
+/var/www/html/pdf-reader/data/textbooks/math-oup/<bookId>/tc/contents/<sectionId>.pdf
 from ./<en/tc>/OSM_TBPDF_<bookId><sectionId>_c.pdf
-/var/www/html/pdf-reader/data/math-oup/<bookId>/tc/contents.tn/<sectionId>.pdf
+/var/www/html/pdf-reader/data/textbooks/math-oup/<bookId>/tc/contents.tn/<sectionId>.pdf
 from ./<en/tc>/OSM_TBPDF__TN_<bookId><sectionId>_c.pdf
 
 extract the code for watermark removal from /var/www/html/pdf-reader/scripts/remove_watermark.py

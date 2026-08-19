@@ -189,7 +189,7 @@ function findContainingPage(mount, scrollTop) {
  *   1. Image mode:   "img:book:chapter:file:lang"
  *      → key: "scroll-{book}-{chapter}-{file}"  (e.g. "scroll-biology-oup-1a-2")
  *
- *   2. PDF mode:     URL like "/pdf-reader/data/book/chapter/lang/file.pdf"
+ *   2. PDF mode:     URL like "/pdf-reader/data/textbooks/book/chapter/lang/file.pdf"
  *      → key: "scroll-{book}-{chapter}-{file}"  (extracted from URL path segments)
  *
  * This namespaces scroll positions per subject+chapter+section so switching
@@ -211,9 +211,9 @@ function getScrollCacheKey(source) {
     return `scroll-${book}-${chapter}-${file}`;
   }
 
-  // PDF-mode format: URL like "/pdf-reader/data/book/chapter/lang/file.pdf"
+  // PDF-mode format: URL like "/pdf-reader/data/textbooks/book/chapter/lang/file.pdf"
   // Extract book + chapter + file from path segments.  Common patterns:
-  //   /pdf-reader/data/biology-oup/1a/en/1.pdf
+  //   /pdf-reader/data/textbooks/biology-oup/1a/en/1.pdf
   //   /data/biology-oup/1a/en/1.pdf
   try {
     const url = new URL(String(source), 'http://localhost');

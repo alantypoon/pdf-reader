@@ -50,8 +50,8 @@
 
 21:21:10.762 index-D2evtCse.js:380 [layout] firing fit refresh now
 
-<img alt="Page 5" data-page="5" data-src="/pdf-reader/data/chemistry-aristo/1a/en/contents/pages/1-5.png" class="page-img" style="width: 386px; height: auto; max-width: none; display: block; opacity: 1; position: absolute; top: 2184px; left: 0px;" src="/pdf-reader/data/chemistry-aristo/1a/en/contents/pages/1-5.png">
+<img alt="Page 5" data-page="5" data-src="/pdf-reader/data/textbooks/chemistry-aristo/1a/en/contents/pages/1-5.png" class="page-img" style="width: 386px; height: auto; max-width: none; display: block; opacity: 1; position: absolute; top: 2184px; left: 0px;" src="/pdf-reader/data/textbooks/chemistry-aristo/1a/en/contents/pages/1-5.png">
 
-<img alt="Page 5" data-page="5" data-src="/pdf-reader/data/chemistry-aristo/1a/tc/contents/pages/1-5.png" class="page-img" style="width: 386px; height: auto; max-width: none; display: block; opacity: 1; position: absolute; top: 2184px; left: 0px;" src="/pdf-reader/data/chemistry-aristo/1a/tc/contents/pages/1-5.png">
+<img alt="Page 5" data-page="5" data-src="/pdf-reader/data/textbooks/chemistry-aristo/1a/tc/contents/pages/1-5.png" class="page-img" style="width: 386px; height: auto; max-width: none; display: block; opacity: 1; position: absolute; top: 2184px; left: 0px;" src="/pdf-reader/data/textbooks/chemistry-aristo/1a/tc/contents/pages/1-5.png">
 
 https://www.edb.gov.hk/en/teacher/qualification-training-development/training/scholarship-for-eng-teacher/index.html

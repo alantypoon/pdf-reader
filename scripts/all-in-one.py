@@ -1190,7 +1190,7 @@ def download_mp3s(data_dir):
                 # Build relative path: biology-oup/1a
                 parts = os.path.normpath(data_dir).split(os.sep)
                 rel_book = os.sep.join(parts[-2:])  # e.g. "biology-oup/1a"
-                local_url = f"/pdf-reader/data/{rel_book}/{lang}/mp3s/{filename}"
+                local_url = f"/pdf-reader/data/textbooks/{rel_book}/{lang}/mp3s/{filename}"
                 res["url"] = local_url
 
     if total_downloaded or total_skipped or total_errors:
@@ -1419,7 +1419,7 @@ def download_htmls(data_dir, force=False):
                     # Rewrite the resource URL to local MP3 path (not HTML)
                     parts = os.path.normpath(data_dir).split(os.sep)
                     rel_book = os.sep.join(parts[-2:])
-                    local_url = f"/pdf-reader/data/{rel_book}/{lang}/mp3s/{mp3_filename}"
+                    local_url = f"/pdf-reader/data/textbooks/{rel_book}/{lang}/mp3s/{mp3_filename}"
                     if res.get("url") != local_url:
                         res["url"] = local_url
                         modified = True
@@ -1434,7 +1434,7 @@ def download_htmls(data_dir, force=False):
                     # No sub-resources to download — just rewrite the main URL
                     parts = os.path.normpath(data_dir).split(os.sep)
                     rel_book = os.sep.join(parts[-2:])
-                    local_url = f"/pdf-reader/data/{rel_book}/{lang}/htmls/{html_basename}"
+                    local_url = f"/pdf-reader/data/textbooks/{rel_book}/{lang}/htmls/{html_basename}"
                     if res.get("url") != local_url:
                         res["url"] = local_url
                         modified = True
@@ -1485,7 +1485,7 @@ def download_htmls(data_dir, force=False):
                 # Rewrite the resource URL in contents.json
                 parts = os.path.normpath(data_dir).split(os.sep)
                 rel_book = os.sep.join(parts[-2:])
-                local_url = f"/pdf-reader/data/{rel_book}/{lang}/htmls/{html_basename}"
+                local_url = f"/pdf-reader/data/textbooks/{rel_book}/{lang}/htmls/{html_basename}"
                 if res.get("url") != local_url:
                     res["url"] = local_url
                     modified = True

@@ -12,7 +12,7 @@ export default defineConfig({
         timeout: 180000,
         proxyTimeout: 180000
       },
-      '/pdf-reader/data': 'http://localhost:3007'
+      '/pdf-reader/data/textbooks': 'http://localhost:3007'
     }
   }
 });

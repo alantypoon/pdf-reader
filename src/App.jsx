@@ -1330,16 +1330,16 @@ function App() {
 
   useEffect(() => {
     if (selectedBook !== 'physics-oup' || physicsChapterCatalog) return;
-    const loadPhysicsChapters = async () => {
+    // const loadPhysicsChapters = async () => {
       // try {
-      //   const data = await fetchJson('/pdf-reader/data/physics-oup/physics-chapters.json');
+      //   const data = await fetchJson('/pdf-reader/data/textbooks/physics-oup/physics-chapters.json');
       //   setPhysicsChapterCatalog(data || {});
       // } catch (err) {
       //   console.error('[physics-chapters] failed to load:', err);
       //   setPhysicsChapterCatalog({});
       // }
-    };
-    loadPhysicsChapters();
+    // };
+    // loadPhysicsChapters();
   }, [selectedBook, physicsChapterCatalog]);
 
   useEffect(() => {
@@ -6689,7 +6689,7 @@ function App() {
       url = new URL(rewrittenUrl);
       host = url.hostname;
     } catch {
-      // Rewritten URL may be a relative path (e.g. /pdf-reader/data/...)
+      // Rewritten URL may be a relative path (e.g. /pdf-reader/data/textbooks/...)
       if (typeof rewrittenUrl === 'string' && rewrittenUrl.startsWith('/')) {
         try {
           url = new URL(rewrittenUrl, window.location.origin);
