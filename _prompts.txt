@@ -465,15 +465,6 @@ generate /var/www/html/pdf-reader/scripts/combine-biology-two-papers.py that
 /var/www/html/pdf-reader/data/past-papers/<subject>/by-topics/<lang>/<paper-id>/pages/*.png
 
 
-1. remove separated/combined toggle. set it always to be combined mode
-
-2. add  "textbook/pp by topics/pp by years" toggles below the subject toggle
-
-3. when pp by topics, choose the pages in 
-/var/www/html/pdf-reader/data/past-papers/<subject>/by-topics/<lang>/<paper-id>/pages/*.png
-
-4, when pp by years, choose 
-
 ////
 
 when running
@@ -498,3 +489,25 @@ generate pages and contents.json from /var/www/html/pdf-reader/data/past-papers
   from /var/www/html/pdf-reader/data/past-papers/<subject>/by-years/<lang>/<paper-id>*.pdf
   extract pages to /var/www/html/pdf-reader/data/past-papers/<subject>/by-years/<lang>/pages/*.pdf
 
+
+///
+
+Adding past-papers into the app,
+
+1. remove separated/combined toggle. set it always to be combined mode.
+
+2. add "textbook / papers(topics) / papers(years)" toggles below the subject toggle, just replacing the above separated/combined toggle.
+
+3. when pp by topics, if there are paper types, papers 1 or 2, choose from selectdropdown
+
+  choose the pages in autocompletedropdown in 
+    /var/www/html/pdf-reader/data/past-papers/<subject>/by-topics/<lang>/<paper-type>/<paper-id>/pages/*.png
+  or
+    /var/www/html/pdf-reader/data/past-papers/<subject>/by-topics/<lang>/pages/*.png
+
+4. when papers(years), choose the years in autocompletedropdown for the available years, 
+then the 4 types dropdownlist:
+- p1
+- p2
+- ans
+- per

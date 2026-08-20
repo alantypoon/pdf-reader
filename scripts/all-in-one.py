@@ -40,10 +40,11 @@ Output:
 
 
      4. Extracts each English section name from the first page image of that
-         section and fills contents[].en.name in contents.json.
+         section, then translates it to Traditional Chinese and fills
+         contents[].en.name and contents[].tc.name in contents.json.
 
-                data/biology-oup/1a/en/contents/pages/1-1.png
-                data/math-oup/4a/en/contents/pages/01-1.png
+            data/biology-oup/1a/en/contents/pages/1-1.png
+            data/math-oup/4a/en/contents/pages/01-1.png
 
         The script uses the AI Gateway ETT flow, following the same
         request pattern as /var/www/html/aigateway/scripts/test-ett.py.
@@ -83,6 +84,7 @@ import mimetypes
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -91,6 +93,7 @@ from urllib.request import urlretrieve
 
 import fitz  # PyMuPDF
 import requests
+from PIL import Image
 
 
 BIOLOGY_ELECTIVE_BOOK_NAMES = {
@@ -130,6 +133,8 @@ PHYSICS_BOOK_NAMES = {
     "e3": ("Energy and Use of Energy", "能量和能源的使用"),
     "e4": ("Medical Physics", "醫學物理學"),
 }
+
+MATH_ROOT_BOOK_NAME = ("Math", "數學")
 
 
 def _natural_id_sort_key(value):
@@ -328,20 +333,20 @@ def _split_one_pdf_dir(pdf_dir, pages_dir, args):
     print(f"  → {img_count} images in {pages_dir}/")
 
 
-def split_pdfs(data_dir, args):
+def split_pdfs(TEXTBOOKS_DIR, args):
     """Split multi-page PDFs into individual PNG (or JPG) images.
 
     Processes both {lang}/contents/ (main textbook) and
     {lang}/contents.tn/ (teacher's notes) directories.
     """
     langs_available = [lang for lang in ("en", "tc")
-                       if os.path.isdir(os.path.join(data_dir, lang))]
+                       if os.path.isdir(os.path.join(TEXTBOOKS_DIR, lang))]
     if not langs_available:
-        print(f"  [skip] No language directories (en/, tc/) found in {data_dir}")
+        print(f"  [skip] No language directories (en/, tc/) found in {TEXTBOOKS_DIR}")
         return
 
     for language in langs_available:
-        lang_dir = os.path.join(data_dir, language)
+        lang_dir = os.path.join(TEXTBOOKS_DIR, language)
 
         # Process both "contents" and "contents.tn" if they exist
         for subdir_name in ("contents", "contents.tn"):
@@ -354,12 +359,12 @@ def split_pdfs(data_dir, args):
 #  Step 2 — Fill resources into contents.json
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _create_skeleton_from_pdfs(data_dir):
+def _create_skeleton_from_pdfs(TEXTBOOKS_DIR):
     """Create a skeleton contents.json from PDF files found in
     {en,tc}/contents/ directories."""
     sections = set()
     for lang in ("en", "tc"):
-        contents_dir = os.path.join(data_dir, lang, "contents")
+        contents_dir = os.path.join(TEXTBOOKS_DIR, lang, "contents")
         if not os.path.isdir(contents_dir):
             continue
         for f in os.listdir(contents_dir):
@@ -383,7 +388,7 @@ def _create_skeleton_from_pdfs(data_dir):
         except ValueError:
             return (1, 0, s)
 
-    chapter_name = os.path.basename(data_dir)
+    chapter_name = os.path.basename(TEXTBOOKS_DIR)
     skeleton = {
         "chapter": chapter_name,
         "contents": []
@@ -406,10 +411,10 @@ def _create_skeleton_from_pdfs(data_dir):
     return skeleton
 
 
-def fill_resources(data_dir):
+def fill_resources(TEXTBOOKS_DIR):
     """Read resource-*.json files and merge them into contents.json."""
-    contents_path = os.path.join(data_dir, "contents.json")
-    book_section_id = os.path.basename(os.path.normpath(data_dir))
+    contents_path = os.path.join(TEXTBOOKS_DIR, "contents.json")
+    book_section_id = os.path.basename(os.path.normpath(TEXTBOOKS_DIR))
 
     if os.path.exists(contents_path):
         try:
@@ -424,7 +429,7 @@ def fill_resources(data_dir):
 
     if contents is None:
         # Create skeleton from PDF files so we have sections to fill into
-        contents = _create_skeleton_from_pdfs(data_dir)
+        contents = _create_skeleton_from_pdfs(TEXTBOOKS_DIR)
         if not contents:
             print(f"  [skip] No PDFs found to create {contents_path}")
             return
@@ -448,7 +453,7 @@ def fill_resources(data_dir):
 
     # Merge in any newly discovered sections from PDFs that aren't in
     # contents.json yet (e.g. "1.1" alongside existing "1").
-    skeleton = _create_skeleton_from_pdfs(data_dir)
+    skeleton = _create_skeleton_from_pdfs(TEXTBOOKS_DIR)
     if skeleton:
         for item in skeleton.get("contents", []):
             sec = item.get("section")
@@ -460,10 +465,10 @@ def fill_resources(data_dir):
                 contents["contents"].append(item)
                 print(f"  Added new section {sec} from PDFs")
 
-    # Read resource files from {data_dir}/{lang}/resources/resource*.json
+    # Read resource files from {TEXTBOOKS_DIR}/{lang}/resources/resource*.json
     any_resources_found = False
     for lang in ("en", "tc"):
-        resources_dir = os.path.join(data_dir, lang, "resources")
+        resources_dir = os.path.join(TEXTBOOKS_DIR, lang, "resources")
         if not os.path.isdir(resources_dir):
             # Not an error — many books simply have no resource folder yet
             continue
@@ -556,8 +561,8 @@ def fill_resources(data_dir):
     if not any_resources_found and total_en == 0 and total_tc == 0:
         print(f"  [info] No resource files found for this book.")
         print(f"  [info] To add resources, place resource*.json files in:")
-        print(f"  [info]   {os.path.join(data_dir, 'en', 'resources')}/")
-        print(f"  [info]   {os.path.join(data_dir, 'tc', 'resources')}/")
+        print(f"  [info]   {os.path.join(TEXTBOOKS_DIR, 'en', 'resources')}/")
+        print(f"  [info]   {os.path.join(TEXTBOOKS_DIR, 'tc', 'resources')}/")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -596,9 +601,9 @@ def fix_urls_in_resources(resources):
     return count
 
 
-def fix_urls(data_dir):
+def fix_urls(TEXTBOOKS_DIR):
     """Fix resource URLs in contents.json that are missing /isolution-web/."""
-    contents_path = os.path.join(data_dir, "contents.json")
+    contents_path = os.path.join(TEXTBOOKS_DIR, "contents.json")
     if not os.path.exists(contents_path):
         print(f"  [skip] {contents_path} — not found")
         return
@@ -694,23 +699,37 @@ def get_ai_gateway_config(base_dir):
     }
 
 
-def send_ett_request(url, api_key, model, file_path, prompt, provider="ett-vllm"):
+def get_text_generation_config(base_dir):
+    env_values = load_env_file(os.path.join(base_dir, ".env"))
+    return {
+        "url": os.environ.get("VLLM_API_URL") or env_values.get("VLLM_API_URL") or "https://aigateway.aied.hku.hk/api/generate",
+        "model": os.environ.get("OLLAMA_MODEL") or env_values.get("OLLAMA_MODEL") or "gpt-oss:120b",
+        "api_key": os.environ.get("OLLAMA_APIKEY") or env_values.get("OLLAMA_APIKEY") or "",
+        "provider": os.environ.get("OLLAMA_PROVIDER") or env_values.get("OLLAMA_PROVIDER") or "ollama",
+    }
+
+
+def send_ett_request(url, api_key, model, file_path, prompt, provider="ett-vllm", extra_fields=None):
     """Send a single image + prompt to the AI gateway using requests (same as
     the proven test-aigateway-long-request-prompt.py pattern)."""
     mime_type, _ = mimetypes.guess_type(str(file_path))
     if mime_type is None:
         mime_type = "application/octet-stream"
 
+    form_fields = {
+        "provider": (None, provider),
+        "apiKey": (None, api_key),
+        "model": (None, model),
+        "prompt": (None, prompt),
+        "files": (Path(file_path).name, open(file_path, "rb"), mime_type),
+    }
+    for key, value in (extra_fields or {}).items():
+        form_fields[key] = (None, str(value))
+
     try:
         resp = requests.post(
             url,
-            files={
-                "provider": (None, provider),
-                "apiKey": (None, api_key),
-                "model": (None, model),
-                "prompt": (None, prompt),
-                "files": (Path(file_path).name, open(file_path, "rb"), mime_type),
-            },
+            files=form_fields,
             headers={"Accept": "application/json"},
             timeout=120,
         )
@@ -725,16 +744,38 @@ def send_ett_request(url, api_key, model, file_path, prompt, provider="ett-vllm"
         return {"error": True, "reason": str(err)}
 
 
+def send_text_generation_request(url, api_key, model, prompt, provider="ollama"):
+    """Send a text-only generation request to the AI gateway."""
+    form_fields = [
+        ("provider", (None, provider)),
+        ("apiKey", (None, api_key)),
+        ("model", (None, model)),
+        ("prompt", (None, prompt)),
+    ]
+
+    try:
+        resp = requests.post(
+            url,
+            files=form_fields,
+            headers={"Accept": "text/event-stream"},
+            timeout=180,
+        )
+        if resp.status_code != 200:
+            return "", f"HTTP {resp.status_code}: {resp.text[:500]}"
+        return resp.text, None
+    except requests.Timeout:
+        return "", "timeout after 180s"
+    except requests.ConnectionError as err:
+        return "", str(err)
+    except requests.RequestException as err:
+        return "", str(err)
+
+
 def extract_text_from_ett_result(result):
     if not isinstance(result, dict) or result.get("error"):
         return ""
 
     text = result.get("response", "") or result.get("text", "") or result.get("output", "") or ""
-    master = result.get("masterSummary", "")
-    if isinstance(master, str) and master.strip():
-        text = master
-    elif isinstance(master, dict):
-        text = master.get("text", "") or master.get("summary", "") or text
 
     if not text:
         parts = []
@@ -750,7 +791,101 @@ def extract_text_from_ett_result(result):
     elif not text and isinstance(generation, dict):
         text = generation.get("text", "") or generation.get("response", "") or ""
 
+    if not text:
+        content = result.get("content", "")
+        if isinstance(content, str) and content.strip():
+            text = content
+
     return text.strip() if isinstance(text, str) else ""
+
+
+def extract_text_from_generation_result(raw_text):
+    """Extract plain text from a text-generation gateway response."""
+    if not isinstance(raw_text, str):
+        return ""
+
+    try:
+        parsed = json.loads(raw_text)
+    except (json.JSONDecodeError, TypeError):
+        parsed = None
+
+    if isinstance(parsed, dict):
+        text = parsed.get("response", "") or parsed.get("text", "") or parsed.get("output", "") or ""
+        if not text:
+            generation = parsed.get("generation", "")
+            if isinstance(generation, str) and generation.strip():
+                text = generation
+            elif isinstance(generation, dict):
+                text = generation.get("text", "") or generation.get("response", "") or ""
+        if not text:
+            content = parsed.get("content", "")
+            if isinstance(content, str) and content.strip():
+                text = content
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+
+    collected = ""
+    for line in raw_text.splitlines():
+        if not line.startswith("data: "):
+            continue
+        chunk = line[6:].strip()
+        if not chunk or chunk == "[DONE]":
+            continue
+        try:
+            parsed_chunk = json.loads(chunk)
+        except json.JSONDecodeError:
+            collected += chunk
+            continue
+        choices = parsed_chunk.get("choices")
+        if isinstance(choices, list) and choices:
+            collected += choices[0].get("delta", {}).get("content", "")
+        elif isinstance(parsed_chunk.get("content"), str):
+            collected += parsed_chunk["content"]
+
+    return collected.strip() or raw_text.strip()
+
+
+def _clean_translated_section_title(raw_text):
+    """Normalize a translated section title to one plain Traditional Chinese line."""
+    if not raw_text:
+        return ""
+
+    lines = [" ".join(line.strip().split()) for line in str(raw_text).splitlines()]
+    lines = [line for line in lines if line]
+    if not lines:
+        return ""
+
+    title = lines[0]
+    title = re.sub(r"^```(?:text)?\s*", "", title, flags=re.IGNORECASE).strip()
+    title = re.sub(r"\s*```$", "", title).strip()
+    title = re.sub(r"^[#>*\-•\s]+", "", title).strip()
+    title = re.sub(r"^[\"'“”‘’«»]+|[\"'“”‘’«»]+$", "", title).strip()
+    title = title.strip("*_` ")
+    title = re.sub(r"^(?:translation|translated title|traditional chinese|title)\s*[:：]\s*", "", title, flags=re.IGNORECASE).strip()
+    return title
+
+
+def translate_section_title_to_tc(title_en, text_config):
+    """Translate an English section title to Traditional Chinese."""
+    prompt = (
+        "Translate this mathematics textbook section title into Traditional Chinese (繁體中文). "
+        "Return ONLY the translated title. Do NOT add explanation, punctuation, bullets, quotes, or extra text.\n\n"
+        f"{title_en}"
+    )
+    raw_text, error = send_text_generation_request(
+        text_config["url"],
+        text_config["api_key"],
+        text_config["model"],
+        prompt,
+        provider=text_config["provider"],
+    )
+    if error:
+        raise RuntimeError(error)
+
+    title_tc = _clean_translated_section_title(extract_text_from_generation_result(raw_text))
+    if not title_tc:
+        raise RuntimeError("empty translation result")
+    return title_tc
 
 
 
@@ -801,13 +936,13 @@ def _section_sort_key(value):
         return (1, 0, text)
 
 
-def _find_first_section_page_image(data_dir, section):
+def _find_first_section_page_image(TEXTBOOKS_DIR, section):
     """Find the first English page image for *section*.
 
     Accepts exact section IDs (``1-1.png``), zero-padded IDs
     (``01-1.png``), and generated image formats supported by the reader.
     """
-    pages_dir = os.path.join(data_dir, "en", "contents", "pages")
+    pages_dir = os.path.join(TEXTBOOKS_DIR, "en", "contents", "pages")
     if not os.path.isdir(pages_dir):
         return None
 
@@ -833,6 +968,23 @@ def _find_first_section_page_image(data_dir, section):
     return candidates[0]
 
 
+def _create_section_title_crop(image_path):
+    """Crop the upper title band from a section opener page for more reliable OCR."""
+    with Image.open(image_path) as image:
+        width, height = image.size
+        crop_box = (
+            int(width * 0.24),
+            int(height * 0.06),
+            int(width * 0.80),
+            int(height * 0.19),
+        )
+        cropped = image.crop(crop_box)
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_file:
+        cropped.save(temp_file.name, format="PNG")
+        return temp_file.name
+
+
 def _clean_extracted_section_title(raw_text, section):
     """Normalize an ETT response to one plain English section title."""
     if not raw_text:
@@ -843,33 +995,175 @@ def _clean_extracted_section_title(raw_text, section):
     if not lines:
         return ""
 
-    title = lines[0]
-    title = re.sub(r"^```(?:text)?\s*", "", title, flags=re.IGNORECASE).strip()
-    title = re.sub(r"\s*```$", "", title).strip()
-    title = re.sub(r"^[\"'“”‘’«»]+|[\"'“”‘’«»]+$", "", title).strip()
-    title = re.sub(r"^(?:section|chapter|unit)\s+", "", title, flags=re.IGNORECASE).strip()
-    title = re.sub(r"^(?:title|section\s+title|section\s+name)\s*[:：]\s*", "", title, flags=re.IGNORECASE).strip()
-
     section_text = str(section).strip()
-    escaped_section = re.escape(section_text)
-    title = re.sub(rf"^{escaped_section}\s*[-–—.:：]?\s*", "", title).strip()
     normalized_section = _normalize_section_id(section_text)
-    if normalized_section != section_text:
-        title = re.sub(rf"^{re.escape(normalized_section)}\s*[-–—.:：]?\s*", "", title).strip()
+    section_prefixes = []
+    for value in (section_text, normalized_section):
+        if value and value not in section_prefixes:
+            section_prefixes.append(value)
+    numeric_section = normalized_section
+    if re.fullmatch(r"\d+(?:\.0+)?", normalized_section):
+        numeric_section = str(int(float(normalized_section)))
+        if numeric_section not in section_prefixes:
+            section_prefixes.append(numeric_section)
 
-    if title.upper() in {"UNKNOWN", "N/A", "NA", "NONE"}:
-        return ""
-    return title
+    def _normalize_title_candidate(value):
+        title = value
+        title = re.sub(r"^```(?:text)?\s*", "", title, flags=re.IGNORECASE).strip()
+        title = re.sub(r"\s*```$", "", title).strip()
+        title = re.sub(r"^[#>*\-•\s]+", "", title).strip()
+        title = re.sub(r"^[\"'“”‘’«»]+|[\"'“”‘’«»]+$", "", title).strip()
+        title = title.strip("*_` ")
+        title = re.sub(r"^(?:section|chapter|unit)\s+", "", title, flags=re.IGNORECASE).strip()
+        title = re.sub(r"^(?:title|section\s+title|section\s+name)\s*[:：]\s*", "", title, flags=re.IGNORECASE).strip()
+        title = re.sub(rf"^{re.escape(section_text)}(?:(?:\.(?!\d)|[-–—:：])\s*|\s+)", "", title).strip()
+        if normalized_section != section_text:
+            title = re.sub(rf"^{re.escape(normalized_section)}(?:(?:\.(?!\d)|[-–—:：])\s*|\s+)", "", title).strip()
+        return title
+
+    def _is_bad_title(value):
+        if not value:
+            return True
+        lowered = value.lower()
+        if lowered in {"unknown", "n/a", "na", "none"}:
+            return True
+        if lowered in {"number and algebra", "measures, shape and space"}:
+            return True
+        if re.search(r"\(\s*(?:p\.|page)\s*\d", value, re.IGNORECASE):
+            return True
+        bad_prefixes = (
+            "the content",
+            "the section",
+            "the problem",
+            "the page",
+            "this page",
+            "the text",
+            "text extracted",
+            "extracted text",
+            "the image",
+            "here is",
+            "in this",
+        )
+        if any(lowered.startswith(prefix) for prefix in bad_prefixes):
+            return True
+        bad_fragments = (
+            "includes the following",
+            "includes:",
+            "focused on",
+            "discusses",
+            "involves",
+            "summary",
+            "is titled",
+            "shown is",
+            "reads:",
+        )
+        if any(fragment in lowered for fragment in bad_fragments):
+            return True
+        if lowered in {"review", "text extracted"}:
+            return True
+        if len(value.split()) > 12:
+            return True
+        return False
+
+    def _cleanup_pattern_candidate(value):
+        candidate = _normalize_title_candidate(value)
+        candidate = re.sub(r"[\s.,:;!?]+$", "", candidate).strip()
+        return "" if _is_bad_title(candidate) else candidate
+
+    def _looks_like_section_prefix(line):
+        for prefix in section_prefixes:
+            if re.match(rf"^{re.escape(prefix)}(?:(?:\.(?!\d)|[-–—:：])\s*|\s+)", line):
+                return True
+        return False
+
+    def _combine_with_next(index):
+        candidate = _normalize_title_candidate(lines[index])
+        if _is_bad_title(candidate):
+            return ""
+        if index + 1 >= len(lines):
+            return candidate
+        next_candidate = _normalize_title_candidate(lines[index + 1])
+        if _is_bad_title(next_candidate):
+            return candidate
+        if _looks_like_section_prefix(lines[index + 1]) or re.search(r"\(\s*(?:p\.|page)\s*\d", next_candidate, re.IGNORECASE):
+            return candidate
+        combined = f"{candidate} {next_candidate}".strip()
+        return combined if not _is_bad_title(combined) else candidate
+
+    early_text = raw_text[:1200]
+    for prefix in section_prefixes:
+        pattern = re.compile(rf"\*{{1,3}}\s*{re.escape(prefix)}(?:(?:\.(?!\d)|[-–—:：])\s*|\s+)([^*\n]+?)\s*\*{{1,3}}", re.IGNORECASE)
+        match = pattern.search(early_text)
+        if match:
+            candidate = _cleanup_pattern_candidate(match.group(1))
+            if candidate:
+                return candidate
+
+    chapter_match = re.search(r"chapter\s+\d+(?:\.\d+)?\s*:\s*([^\n*]+)", early_text, re.IGNORECASE)
+    if chapter_match:
+        candidate = _cleanup_pattern_candidate(chapter_match.group(1))
+        if candidate:
+            return candidate
+
+    quoted_block_match = re.search(r"[\"“]([^\"”]+)[\"”]", early_text, re.DOTALL)
+    if quoted_block_match:
+        quoted_lines = [" ".join(line.strip().split()) for line in quoted_block_match.group(1).splitlines()]
+        for quoted_line in quoted_lines:
+            if not quoted_line:
+                continue
+            candidate = _cleanup_pattern_candidate(quoted_line)
+            if candidate:
+                return candidate
+
+    titled_match = re.search(r"titled\s+[\"“]([^\"”]+)[\"”]", early_text, re.IGNORECASE)
+    if titled_match:
+        candidate = _cleanup_pattern_candidate(titled_match.group(1))
+        if candidate:
+            return candidate
+
+    for match in re.finditer(r"(?:topic|discussing|about)\s+[\"“]([^\"”]+)[\"”]", early_text, re.IGNORECASE):
+        candidate = _cleanup_pattern_candidate(match.group(1))
+        if candidate:
+            return candidate
+
+    about_match = re.search(r"about\s+([a-z][a-z\s]+?)(?:\.|,|\s+with|\s+that|\s+which|\s+it\b)", early_text, re.IGNORECASE)
+    if about_match:
+        candidate = _cleanup_pattern_candidate(about_match.group(1))
+        if candidate and candidate == candidate.lower():
+            candidate = candidate.title()
+        if candidate:
+            return candidate
+
+    section_markers = {section_text, normalized_section}
+    for index, line in enumerate(lines):
+        if line.strip() in section_markers:
+            for next_index in range(index + 1, min(index + 4, len(lines))):
+                candidate = _combine_with_next(next_index)
+                if candidate:
+                    return candidate
+
+        candidate = _combine_with_next(index)
+        raw_stripped = line.strip()
+        if _looks_like_section_prefix(raw_stripped):
+            if candidate:
+                return candidate
+
+    for index, _line in enumerate(lines):
+        candidate = _combine_with_next(index)
+        if candidate:
+            return candidate
+
+    return ""
 
 
-def fill_section_names_from_first_pages(data_dir, base_dir):
-    contents_path = os.path.join(data_dir, "contents.json")
+def fill_section_names_from_first_pages(TEXTBOOKS_DIR, base_dir):
+    contents_path = os.path.join(TEXTBOOKS_DIR, "contents.json")
 
     if os.path.exists(contents_path):
         with open(contents_path, "r", encoding="utf-8") as f:
             contents = json.load(f)
     else:
-        contents = _create_skeleton_from_pdfs(data_dir)
+        contents = _create_skeleton_from_pdfs(TEXTBOOKS_DIR)
         if not contents:
             print(f"  [skip] No PDFs found to create {contents_path}")
             return
@@ -878,10 +1172,15 @@ def fill_section_names_from_first_pages(data_dir, base_dir):
     if not config["api_key"]:
         print("  [skip] VLLM_APIKEY not configured; cannot extract section names")
         return
+    text_config = get_text_generation_config(base_dir)
 
     print(f"  Gateway: {config['url']}")
     print(f"  Provider: {config['provider']}  |  Model: {config['model']}")
     print(f"  API key: {config['api_key'][:8]}...{config['api_key'][-4:]} ({len(config['api_key'])} chars)")
+    if text_config["api_key"]:
+        print(f"  Translation: {text_config['provider']}  |  Model: {text_config['model']}")
+    else:
+        print("  Translation: disabled (OLLAMA_APIKEY not configured)")
     updates = 0
     missing = []
     failed = []
@@ -891,43 +1190,93 @@ def fill_section_names_from_first_pages(data_dir, base_dir):
         if not section:
             continue
 
-        image_path = _find_first_section_page_image(data_dir, section)
+        image_path = _find_first_section_page_image(TEXTBOOKS_DIR, section)
         if not image_path:
             missing.append(section)
             continue
 
         prompt = (
-            "This image is the first page of one textbook section. "
-            "Extract the English section title/name for this section only. "
-            "Return ONLY the section title as plain text. "
-            "Do not include the section number, book title, page number, labels, explanations, or Markdown. "
-            "If no English section title is visible, return UNKNOWN."
+            "OCR TASK ONLY. This cropped image contains the heading area of one textbook section opener page. "
+            "Return ONLY the main section title shown in the largest heading. "
+            "If the title spans multiple lines, join them with spaces. "
+            "Do NOT describe the page. Do NOT summarize the page. Do NOT explain the page. "
+            "Do NOT return subsection titles such as 1.1, 2.1, or review labels. "
+            "Do NOT include the large section number, book title, strand header, page numbers, or Markdown. "
+            "Output only the main section title text, or UNKNOWN if you cannot find one."
         )
-        result = send_ett_request(config["url"], config["api_key"], config["model"], image_path, prompt, provider=config["provider"])
-        raw_text = extract_text_from_ett_result(result)
+        crop_path = None
+        try:
+            crop_path = _create_section_title_crop(image_path)
+            result = send_ett_request(
+                config["url"],
+                config["api_key"],
+                config["model"],
+                crop_path,
+                prompt,
+                provider=config["provider"],
+                extra_fields={"extractOnly": "true", "stream": "false", "wordCount": "400"},
+            )
+            raw_text = extract_text_from_ett_result(result)
+            title = _clean_extracted_section_title(raw_text, section)
+            if not title:
+                result = send_ett_request(
+                    config["url"],
+                    config["api_key"],
+                    config["model"],
+                    image_path,
+                    prompt,
+                    provider=config["provider"],
+                    extra_fields={"extractOnly": "true", "stream": "false", "wordCount": "400"},
+                )
+                raw_text = extract_text_from_ett_result(result)
+                title = _clean_extracted_section_title(raw_text, section)
+        finally:
+            if crop_path and os.path.exists(crop_path):
+                os.unlink(crop_path)
         # Surface gateway errors instead of silently treating them as empty titles
         if isinstance(result, dict) and result.get("error"):
             error_detail = result.get("body", "") or result.get("reason", "") or json.dumps(result)
             print(f"    ⚠  Section {section}: gateway error — {str(error_detail)[:200]}")
-        title = _clean_extracted_section_title(raw_text, section)
         if not title:
             failed.append(section)
             continue
 
         item.setdefault("en", {})
+        item.setdefault("tc", {})
+        title_tc = ""
+        if text_config["api_key"]:
+            try:
+                title_tc = translate_section_title_to_tc(title, text_config)
+            except Exception as err:
+                print(f"    ⚠  Section {section}: tc translation failed — {err}")
+
+        changed = False
         old_value = item["en"].get("name", "")
         if old_value != title:
             item["en"]["name"] = title
+            changed = True
+        old_value_tc = item["tc"].get("name", "")
+        if title_tc and old_value_tc != title_tc:
+            item["tc"]["name"] = title_tc
+            changed = True
+        if changed:
             updates += 1
-        extracted[section] = title
-        print(f"  Section {section}: {Path(image_path).name} → {title}")
+        extracted[section] = {"en": title, "tc": title_tc}
+        if title_tc:
+            print(f"  Section {section}: {Path(image_path).name} → {title} / {title_tc}")
+        else:
+            print(f"  Section {section}: {Path(image_path).name} → {title}")
 
     with open(contents_path, "w", encoding="utf-8") as f:
         json.dump(contents, f, ensure_ascii=False, indent=4)
 
-    print(f"\n  Updated English section names in {contents_path}")
+    print(f"\n  Updated bilingual section names in {contents_path}")
     for section in sorted(extracted.keys(), key=_section_sort_key):
-        print(f"    Section {section}: {extracted[section]}")
+        entry = extracted[section]
+        if entry["tc"]:
+            print(f"    Section {section}: {entry['en']} / {entry['tc']}")
+        else:
+            print(f"    Section {section}: {entry['en']}")
     print(f"    Changed: {updates}")
     if missing:
         print(f"    Missing first-page images: {', '.join(missing)}")
@@ -939,10 +1288,12 @@ def fill_section_names_from_first_pages(data_dir, base_dir):
 #  Step 5 — Add root-level book/topic names
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _resolve_root_book_names(data_dir):
-    subject_id = os.path.basename(os.path.dirname(os.path.normpath(data_dir))).lower()
-    book_id = os.path.basename(os.path.normpath(data_dir)).lower()
+def _resolve_root_book_names(TEXTBOOKS_DIR):
+    subject_id = os.path.basename(os.path.dirname(os.path.normpath(TEXTBOOKS_DIR))).lower()
+    book_id = os.path.basename(os.path.normpath(TEXTBOOKS_DIR)).lower()
 
+    if subject_id == "math-oup":
+        return MATH_ROOT_BOOK_NAME
     if subject_id == "chemistry-winter":
         return CHEMISTRY_BOOK_NAMES.get(book_id)
     if subject_id == "physics-oup":
@@ -952,11 +1303,11 @@ def _resolve_root_book_names(data_dir):
     return None
 
 
-def add_root_book_name(data_dir):
+def add_root_book_name(TEXTBOOKS_DIR):
     """Add root-level English/Chinese book names when known."""
-    contents_path = os.path.join(data_dir, "contents.json")
-    chapter_code = os.path.basename(os.path.normpath(data_dir)).lower()
-    resolved = _resolve_root_book_names(data_dir)
+    contents_path = os.path.join(TEXTBOOKS_DIR, "contents.json")
+    chapter_code = os.path.basename(os.path.normpath(TEXTBOOKS_DIR)).lower()
+    resolved = _resolve_root_book_names(TEXTBOOKS_DIR)
 
     if not resolved:
         print(f"  [skip] {chapter_code} — no configured root book/topic name")
@@ -968,7 +1319,7 @@ def add_root_book_name(data_dir):
         with open(contents_path, "r", encoding="utf-8") as f:
             data = json.load(f)
     else:
-        data = _create_skeleton_from_pdfs(data_dir)
+        data = _create_skeleton_from_pdfs(TEXTBOOKS_DIR)
         if not data:
             print(f"  [skip] No PDFs found to create {contents_path}")
             return
@@ -1056,12 +1407,12 @@ def _send_ett_with_images(url, api_key, model, image_paths, prompt, provider="et
         return {"error": True, "reason": str(err)}
 
 
-def capture_book_title(data_dir, page_count, base_dir):
+def capture_book_title(TEXTBOOKS_DIR, page_count, base_dir):
     """Use ETT/vLLM to extract the book title from the first *page_count*
     page images and write it as ``nameEn`` in contents.json."""
 
-    contents_path = os.path.join(data_dir, "contents.json")
-    pages_dir = os.path.join(data_dir, "en", "contents", "pages")
+    contents_path = os.path.join(TEXTBOOKS_DIR, "contents.json")
+    pages_dir = os.path.join(TEXTBOOKS_DIR, "en", "contents", "pages")
 
     images = _collect_first_page_images(pages_dir, page_count)
     if not images:
@@ -1076,12 +1427,13 @@ def capture_book_title(data_dir, page_count, base_dir):
         with open(contents_path, "r", encoding="utf-8") as f:
             data = json.load(f)
     else:
-        data = _create_skeleton_from_pdfs(data_dir)
+        data = _create_skeleton_from_pdfs(TEXTBOOKS_DIR)
         if not data:
             print(f"  [skip] No PDFs found to create {contents_path}")
             return
 
     existing_name = data.get("nameEn") or data.get("name") or ""
+    resolved_names = _resolve_root_book_names(TEXTBOOKS_DIR)
 
     prompt = (
         "Look at these textbook page images and tell me the full book title. "
@@ -1101,6 +1453,15 @@ def capture_book_title(data_dir, page_count, base_dir):
     raw_text = extract_text_from_ett_result(result)
 
     if not raw_text or raw_text.upper() == "UNKNOWN":
+        if resolved_names:
+            name_en, name_zh = resolved_names
+            data["name"] = name_en
+            data["nameEn"] = name_en
+            data["nameZh"] = name_zh
+            with open(contents_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+            print(f"  [fallback] Using configured root name: {name_en} / {name_zh}")
+            return
         print("  [skip] ETT/vLLM could not determine a title")
         if existing_name:
             print(f"  Keeping existing nameEn: {existing_name}")
@@ -1110,9 +1471,47 @@ def capture_book_title(data_dir, page_count, base_dir):
     title = raw_text.strip().split("\n")[0].strip()
     title = re.sub(r'^["\'«‹„]|["\'»›”]$', '', title).strip()
     # Remove common prefixes like "Title: " or "Book Title: "
-    title = re.sub(r'^(?i)(book\s+)?title\s*[:：]\s*', '', title).strip()
+    title = re.sub(r'^(book\s+)?title\s*[:：]\s*', '', title, flags=re.IGNORECASE).strip()
+
+    lowered = title.lower()
+    bad_prefixes = (
+        "the text",
+        "the text on the image",
+        "the text in the image",
+        "the text extracted",
+        "the extracted text",
+        "the image",
+        "this image",
+        "the page",
+        "this page",
+        "the textbook page",
+        "here is",
+    )
+    if any(lowered.startswith(prefix) for prefix in bad_prefixes):
+        if resolved_names:
+            name_en, name_zh = resolved_names
+            data["name"] = name_en
+            data["nameEn"] = name_en
+            data["nameZh"] = name_zh
+            with open(contents_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+            print(f"  [fallback] Using configured root name: {name_en} / {name_zh}")
+            return
+        print("  [skip] Extracted title looked like page-description boilerplate")
+        if existing_name:
+            print(f"  Keeping existing nameEn: {existing_name}")
+        return
 
     if not title or len(title) < 2:
+        if resolved_names:
+            name_en, name_zh = resolved_names
+            data["name"] = name_en
+            data["nameEn"] = name_en
+            data["nameZh"] = name_zh
+            with open(contents_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+            print(f"  [fallback] Using configured root name: {name_en} / {name_zh}")
+            return
         print("  [skip] Extracted title too short")
         return
 
@@ -1133,11 +1532,11 @@ def capture_book_title(data_dir, page_count, base_dir):
 #  Step 6 — Download MP3 resources
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def download_mp3s(data_dir):
+def download_mp3s(TEXTBOOKS_DIR):
     """Download all MP3 resources referenced in contents.json to local mp3s/
     folders and rewrite URLs to local paths."""
 
-    contents_path = os.path.join(data_dir, "contents.json")
+    contents_path = os.path.join(TEXTBOOKS_DIR, "contents.json")
     if not os.path.exists(contents_path):
         print(f"  [skip] {contents_path} — not found")
         return
@@ -1145,7 +1544,7 @@ def download_mp3s(data_dir):
     with open(contents_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    book = data.get("chapter", os.path.basename(data_dir))
+    book = data.get("chapter", os.path.basename(TEXTBOOKS_DIR))
     total_downloaded = 0
     total_skipped = 0
     total_errors = 0
@@ -1168,7 +1567,7 @@ def download_mp3s(data_dir):
                     filename = f"audio_{abs(hash(url))}.mp3"
 
                 # Local directory: data/{book}/{lang}/mp3s/
-                mp3_dir = os.path.join(data_dir, lang, "mp3s")
+                mp3_dir = os.path.join(TEXTBOOKS_DIR, lang, "mp3s")
                 os.makedirs(mp3_dir, exist_ok=True)
                 local_path = os.path.join(mp3_dir, filename)
 
@@ -1186,9 +1585,9 @@ def download_mp3s(data_dir):
                         continue
 
                 # Rewrite URL to local path.
-                # data_dir is e.g. .../data/biology-oup/1a
+                # TEXTBOOKS_DIR is e.g. .../data/biology-oup/1a
                 # Build relative path: biology-oup/1a
-                parts = os.path.normpath(data_dir).split(os.sep)
+                parts = os.path.normpath(TEXTBOOKS_DIR).split(os.sep)
                 rel_book = os.sep.join(parts[-2:])  # e.g. "biology-oup/1a"
                 local_url = f"/pdf-reader/data/textbooks/{rel_book}/{lang}/mp3s/{filename}"
                 res["url"] = local_url
@@ -1300,7 +1699,7 @@ def _download_file(url, dest_path, timeout=30):
         return False
 
 
-def download_htmls(data_dir, force=False):
+def download_htmls(TEXTBOOKS_DIR, force=False):
     """Download all HTML resources referenced in contents.json to local htmls/
     folders. Also download all files referenced within each HTML (images, CSS,
     JS, etc.) and rewrite URLs to local paths.
@@ -1308,7 +1707,7 @@ def download_htmls(data_dir, force=False):
     If *force* is False, HTML files that already exist on disk are skipped
     entirely (no download and no sub-resource processing)."""
 
-    contents_path = os.path.join(data_dir, "contents.json")
+    contents_path = os.path.join(TEXTBOOKS_DIR, "contents.json")
     if not os.path.exists(contents_path):
         print(f"  [skip] {contents_path} — not found")
         return
@@ -1316,7 +1715,7 @@ def download_htmls(data_dir, force=False):
     with open(contents_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    book = data.get("chapter", os.path.basename(data_dir))
+    book = data.get("chapter", os.path.basename(TEXTBOOKS_DIR))
     total_html = 0
     total_assets = 0
     total_skipped = 0
@@ -1341,7 +1740,7 @@ def download_htmls(data_dir, force=False):
                     html_basename = f"{abs(hash(url)):x}.html"
 
                 # Local directory: data/{book}/{lang}/htmls/
-                html_dir = os.path.join(data_dir, lang, "htmls")
+                html_dir = os.path.join(TEXTBOOKS_DIR, lang, "htmls")
                 os.makedirs(html_dir, exist_ok=True)
 
                 # If name collision, add the section prefix
@@ -1402,7 +1801,7 @@ def download_htmls(data_dir, force=False):
                     mp3_filename = os.path.basename(urlparse(mp3_url).path)
                     if not mp3_filename:
                         mp3_filename = f"audio_{abs(hash(mp3_url))}.mp3"
-                    mp3_dir = os.path.join(data_dir, lang, "mp3s")
+                    mp3_dir = os.path.join(TEXTBOOKS_DIR, lang, "mp3s")
                     os.makedirs(mp3_dir, exist_ok=True)
                     mp3_local_path = os.path.join(mp3_dir, mp3_filename)
 
@@ -1417,7 +1816,7 @@ def download_htmls(data_dir, force=False):
                             continue
 
                     # Rewrite the resource URL to local MP3 path (not HTML)
-                    parts = os.path.normpath(data_dir).split(os.sep)
+                    parts = os.path.normpath(TEXTBOOKS_DIR).split(os.sep)
                     rel_book = os.sep.join(parts[-2:])
                     local_url = f"/pdf-reader/data/textbooks/{rel_book}/{lang}/mp3s/{mp3_filename}"
                     if res.get("url") != local_url:
@@ -1432,7 +1831,7 @@ def download_htmls(data_dir, force=False):
                 resource_urls = _extract_resource_urls(html_content, url)
                 if not resource_urls:
                     # No sub-resources to download — just rewrite the main URL
-                    parts = os.path.normpath(data_dir).split(os.sep)
+                    parts = os.path.normpath(TEXTBOOKS_DIR).split(os.sep)
                     rel_book = os.sep.join(parts[-2:])
                     local_url = f"/pdf-reader/data/textbooks/{rel_book}/{lang}/htmls/{html_basename}"
                     if res.get("url") != local_url:
@@ -1483,7 +1882,7 @@ def download_htmls(data_dir, force=False):
                     rewritten = True
 
                 # Rewrite the resource URL in contents.json
-                parts = os.path.normpath(data_dir).split(os.sep)
+                parts = os.path.normpath(TEXTBOOKS_DIR).split(os.sep)
                 rel_book = os.sep.join(parts[-2:])
                 local_url = f"/pdf-reader/data/textbooks/{rel_book}/{lang}/htmls/{html_basename}"
                 if res.get("url") != local_url:
@@ -1577,11 +1976,11 @@ def main():
     data_root = os.path.join(base_dir, "data")
 
     if args.chapter_path:
-        data_dir = os.path.join(data_root, args.chapter_path)
-        if not os.path.isdir(data_dir):
-            print(f"ERROR: directory not found: {data_dir}", file=sys.stderr)
+        TEXTBOOKS_DIR = os.path.join(data_root, args.chapter_path)
+        if not os.path.isdir(TEXTBOOKS_DIR):
+            print(f"ERROR: directory not found: {TEXTBOOKS_DIR}", file=sys.stderr)
             sys.exit(1)
-        _process_scope(data_dir, args.chapter_path, args, base_dir)
+        _process_scope(TEXTBOOKS_DIR, args.chapter_path, args, base_dir)
         print("\nDone.")
         return
 

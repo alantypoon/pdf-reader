@@ -684,6 +684,79 @@ app.get('/api/catalog', asyncRoute(async (request, response) => {
   });
 }));
 
+// ── Past-papers catalog & page listing ───────────────────
+app.get('/api/past-papers/catalog', asyncRoute(async (request, response) => {
+  const subject = String(request.query.subject || '').trim();
+  if (!subject) {
+    response.status(400).json({ error: 'subject is required' });
+    return;
+  }
+  const baseDir = path.resolve(__dirname, '../data/past-papers', subject);
+  const result = { byTopics: null, byYears: null };
+  // by-topics
+  const byTopicsFile = path.join(baseDir, 'by-topics', 'contents.json');
+  try {
+    const raw = await fs.readFile(byTopicsFile, 'utf8');
+    result.byTopics = JSON.parse(raw);
+  } catch { /* no by-topics */ }
+  // by-years
+  const byYearsFile = path.join(baseDir, 'by-years', 'contents.json');
+  try {
+    const raw = await fs.readFile(byYearsFile, 'utf8');
+    result.byYears = JSON.parse(raw);
+  } catch { /* no by-years */ }
+  response.json(result);
+}));
+
+app.get('/api/past-papers/pages', asyncRoute(async (request, response) => {
+  const { subject, mode, lang, paper, topic } = request.query;
+  if (!subject || !mode || !lang) {
+    response.status(400).json({ error: 'subject, mode, lang are required' });
+    return;
+  }
+  const safeSubject = String(subject).replace(/\.\./g, '').replace(/[^a-zA-Z0-9_-]/g, '');
+  const safeLang = String(lang).replace(/\.\./g, '').replace(/[^a-zA-Z0-9_-]/g, '');
+
+  if (mode === 'by-topics') {
+    const safePaper = String(paper || '').replace(/\.\./g, '').replace(/[^a-zA-Z0-9_-]/g, '');
+    const safeTopic = String(topic || '').replace(/\.\./g, '').replace(/[^a-zA-Z0-9_-]/g, '');
+    // Directory names use "paper-1", "paper-2" but data field may be "1", "2"
+    const paperDir = safePaper ? `paper-${safePaper}` : '';
+    const relativeDir = paperDir
+      ? `${safeSubject}/by-topics/${safeLang}/${paperDir}/${safeTopic}/pages`
+      : `${safeSubject}/by-topics/${safeLang}/${safeTopic}/pages`;
+    const pagesDir = path.resolve(__dirname, '../data/past-papers', relativeDir);
+    try {
+      const files = await fs.readdir(pagesDir);
+      const images = files
+        .filter(f => /\.(png|jpg|jpeg|webp)$/i.test(f))
+        .sort((a, b) => {
+          const na = parseInt(a.split('-')[1]?.split('.')[0] || a, 10);
+          const nb = parseInt(b.split('-')[1]?.split('.')[0] || b, 10);
+          return na - nb;
+        })
+        .map(f => `/pdf-reader/data/past-papers/${safeSubject}/by-topics/${safeLang}${paperDir ? '/' + paperDir : ''}/${safeTopic}/pages/${f}`);
+      response.json({ images });
+    } catch {
+      response.json({ images: [] });
+    }
+  } else if (mode === 'by-years') {
+    const safeYear = String(request.query.year || '').replace(/\.\./g, '').replace(/[^a-zA-Z0-9_-]/g, '');
+    const safeType = String(request.query.type || 'p1').replace(/\.\./g, '').replace(/[^a-zA-Z0-9_-]/g, '');
+    const pdfPath = path.resolve(__dirname, `../data/past-papers/${safeSubject}/by-years/${safeLang}/${safeYear}/${safeType}.pdf`);
+    try {
+      await fs.access(pdfPath);
+      const url = `/pdf-reader/data/past-papers/${safeSubject}/by-years/${safeLang}/${safeYear}/${safeType}.pdf`;
+      response.json({ url });
+    } catch {
+      response.status(404).json({ error: 'PDF not found' });
+    }
+  } else {
+    response.status(400).json({ error: 'mode must be by-topics or by-years' });
+    return;
+  }
+}));
+
 app.get('/api/page', asyncRoute(async (request, response) => {
   const requestedBook = request.query.book || DEFAULT_BOOK;
   const dataRoot = getDataRoot(requestedBook);
@@ -1459,6 +1532,7 @@ const dataStatic = express.static(dataPath, {
 });
 app.use('/data', dataStatic);
 app.use('/pdf-reader/data/textbooks', dataStatic);
+app.use('/pdf-reader/data/past-papers', dataStatic);
 
 // ── AI Generation ─────────────────────────────────────────
 //

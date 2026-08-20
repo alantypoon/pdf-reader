@@ -728,7 +728,17 @@ function App() {
   const selectedLanguageRef = useRef(selectedLanguage);
   const [selectedRoleMode, setSelectedRoleMode] = useState(savedPrefs.selectedRoleMode || savedPrefs.selectedAudienceMode || 'student');
   const selectedRoleModeRef = useRef(selectedRoleMode);
-  const [bookSectionListMode, setBookSectionListMode] = useState(savedPrefs.bookSectionListMode === 'separated' ? 'separated' : 'combined');
+  const [readerMode, setReaderMode] = useState('textbook');
+  // Past-papers data
+  const [pastPaperCatalog, setPastPaperCatalog] = useState(null);
+  const [pastPaperPaperType, setPastPaperPaperType] = useState('');
+  const [pastPaperTopic, setPastPaperTopic] = useState('');
+  const [pastPaperYear, setPastPaperYear] = useState('');
+  const [pastPaperYearType, setPastPaperYearType] = useState('p1');
+  const [pastPaperImages, setPastPaperImages] = useState([]);
+  const [pastPaperLoaded, setPastPaperLoaded] = useState(false);
+  const lastReaderModeRef = useRef('textbook');
+  const lastPastPaperSubjectRef = useRef('');
 
   // Auto-fallback to English if the selected language isn't available for the current book.
   // 'bilingual' is a UI mode combining en+tc — only skip fallback when both languages exist.
@@ -1813,6 +1823,149 @@ function App() {
     return `${bookId}. ${label}`;
   }, [selectedChapter, selectedFile, currentSection, selectedLanguage]);
 
+  // ── Past-papers computed values ─────────────────────────
+  const pastPaperByTopicsEntries = useMemo(() => {
+    if (!pastPaperCatalog?.byTopics?.contents) return [];
+    return pastPaperCatalog.byTopics.contents;
+  }, [pastPaperCatalog]);
+
+  const pastPaperHasPapers = useMemo(() => {
+    return pastPaperByTopicsEntries.some(e => e.paper);
+  }, [pastPaperByTopicsEntries]);
+
+  // Unique paper types for this subject
+  const pastPaperPaperTypes = useMemo(() => {
+    const s = new Set();
+    pastPaperByTopicsEntries.forEach(e => { if (e.paper) s.add(String(e.paper)); });
+    return [...s].sort();
+  }, [pastPaperByTopicsEntries]);
+
+  // Topic options for by-topics, filtered by paper type if applicable
+  const pastPaperTopicOptions = useMemo(() => {
+    let entries = pastPaperByTopicsEntries;
+    if (pastPaperHasPapers && pastPaperPaperType) {
+      entries = entries.filter(e => String(e.paper) === pastPaperPaperType.replace('paper-', ''));
+    }
+    return entries.map(e => ({
+      id: e.section,
+      label: selectedLanguage === 'tc'
+        ? (e.tc?.name || e.en?.name || `Topic ${e.section}`)
+        : (e.en?.name || e.tc?.name || `Topic ${e.section}`),
+      searchText: [e.section, e.en?.name, e.tc?.name].filter(Boolean).join('\n'),
+    }));
+  }, [pastPaperByTopicsEntries, pastPaperHasPapers, pastPaperPaperType, selectedLanguage]);
+
+  // Year options for by-years
+  const pastPaperYearOptions = useMemo(() => {
+    if (!pastPaperCatalog?.byYears?.contents) return [];
+    const years = [...new Set(pastPaperCatalog.byYears.contents.map(e => e.year))].sort();
+    return years.map(y => ({ id: y, label: y, searchText: y }));
+  }, [pastPaperCatalog]);
+
+  // Load past-paper catalog when subject changes
+  useEffect(() => {
+    if (!selectedBook) return;
+    setPastPaperCatalog(null);
+    setPastPaperImages([]);
+    setPastPaperLoaded(false);
+    setPastPaperTopic('');
+    setPastPaperYear('');
+    setPastPaperPaperType('');
+    (async () => {
+      try {
+        const data = await fetchJson(`api/past-papers/catalog?subject=${encodeURIComponent(selectedBook)}`);
+        if (data.byTopics || data.byYears) {
+          setPastPaperCatalog(data);
+          // Auto-select first paper type for subjects that have papers
+          const entries = data.byTopics?.contents || [];
+          if (entries.some(e => e.paper)) {
+            setPastPaperPaperType('paper-1');
+          }
+        }
+      } catch (err) {
+        console.warn('[past-papers] catalog error:', err);
+      }
+    })();
+  }, [selectedBook]);
+
+  // Load past-paper pages when selection changes
+  useEffect(() => {
+    if (readerMode === 'textbook') return;
+    // Auto-set paper type default when entering by-topics
+    if (readerMode === 'by-topics' && pastPaperCatalog?.byTopics) {
+      const entries = pastPaperCatalog.byTopics.contents || [];
+      if (entries.some(e => e.paper) && !pastPaperPaperType) {
+        setPastPaperPaperType('paper-1');
+        return;
+      }
+    }
+    if (!selectedBook || !pastPaperCatalog) { setPastPaperImages([]); setPastPaperLoaded(false); return; }
+
+    if (readerMode === 'by-topics') {
+      if (!pastPaperTopic) { setPastPaperImages([]); setPastPaperLoaded(false); return; }
+      const paper = pastPaperPaperType ? pastPaperPaperType.replace('paper-', '') : '';
+      const params = new URLSearchParams({
+        subject: selectedBook, mode: 'by-topics', lang: 'en',
+        paper, topic: pastPaperTopic,
+      });
+      (async () => {
+        try {
+          const data = await fetchJson(`api/past-papers/pages?${params}`);
+          setPastPaperImages(data.images || []);
+        } catch { setPastPaperImages([]); }
+        setPastPaperLoaded(true);
+      })();
+    } else if (readerMode === 'by-years') {
+      if (!pastPaperYear || !pastPaperYearType) { setPastPaperImages([]); setPastPaperLoaded(false); return; }
+      const params = new URLSearchParams({
+        subject: selectedBook, mode: 'by-years', lang: 'en',
+        year: pastPaperYear, type: pastPaperYearType,
+      });
+      (async () => {
+        try {
+          const data = await fetchJson(`api/past-papers/pages?${params}`);
+          if (data.url) {
+            // by-years returns a single PDF URL
+            setPastPaperImages([data.url]);
+          } else {
+            setPastPaperImages(data.images || []);
+          }
+        } catch { setPastPaperImages([]); }
+        setPastPaperLoaded(true);
+      })();
+    }
+  }, [readerMode, selectedBook, pastPaperCatalog, pastPaperPaperType, pastPaperTopic, pastPaperYear, pastPaperYearType]);
+
+  // Compute pageSources from pastPaperImages when in past-papers mode
+  useEffect(() => {
+    if (readerMode !== 'textbook' && pastPaperLoaded) {
+      if (pastPaperImages.length > 0) {
+        setPageSources({ 'en:student': pastPaperImages });
+        setPageCounts((current) => {
+          if (Array.isArray(pastPaperImages)) {
+            return { ...current, 'en:student': pastPaperImages.length };
+          }
+          return current;
+        });
+        setSelectedPage(1);
+      } else {
+        setPageSources({});
+      }
+    }
+  }, [readerMode, pastPaperLoaded, pastPaperImages]);
+
+  // Track reader mode changes to restore textbook sources when switching back
+  useEffect(() => {
+    if (readerMode === 'textbook' && lastReaderModeRef.current !== 'textbook') {
+      // Force re-load of textbook pages
+      if (selectedChapter) {
+        setPageSources({});
+        // The loadPages effect will pick this up
+      }
+    }
+    lastReaderModeRef.current = readerMode;
+  }, [readerMode, selectedChapter]);
+
   const getSectionHeaderNameForLang = useCallback((lang) => {
     if (!currentSection) return String(selectedFile || '');
     if (lang === 'tc') {
@@ -2183,10 +2336,10 @@ function App() {
       }
     };
 
-    if (selectedChapter) {
+    if (selectedChapter && readerMode === 'textbook') {
       loadPages();
     }
-  }, [selectedChapter, selectedFile, selectedLanguage, selectedBook, selectedRoleMode]);
+  }, [selectedChapter, selectedFile, selectedLanguage, selectedBook, selectedRoleMode, readerMode]);
 
   useEffect(() => {
     if (!displayModeInitializedRef.current) {
@@ -2327,7 +2480,6 @@ function App() {
         displayMode: displayModeRef.current,
         selectedLanguage: selectedLanguageRef.current,
         selectedRoleMode: selectedRoleModeRef.current,
-        bookSectionListMode,
         sidebarCollapsed,
         sidebarHidden,
         tool,
@@ -2375,7 +2527,6 @@ function App() {
     displayMode,
     selectedLanguage,
     selectedRoleMode,
-    bookSectionListMode,
     sidebarCollapsed,
     sidebarHidden,
     tool,
@@ -8477,51 +8628,35 @@ function App() {
           </button>
         )}
         {!sidebarCollapsed && (
-          <div className="book-section-mode-toggle" role="group" aria-label={_('bookSectionListMode')}>
+          <div className="book-section-mode-toggle" role="group" aria-label="Reader mode">
             <button
               type="button"
-              className={`toggle-btn ${bookSectionListMode === 'separated' ? 'active' : ''}`}
-              onClick={() => setBookSectionListMode('separated')}
-              aria-pressed={bookSectionListMode === 'separated'}
+              className={`toggle-btn ${readerMode === 'textbook' ? 'active' : ''}`}
+              onClick={() => setReaderMode('textbook')}
+              aria-pressed={readerMode === 'textbook'}
             >
-              {_('separated')}
+              {_('textbook')}
             </button>
             <button
               type="button"
-              className={`toggle-btn ${bookSectionListMode === 'combined' ? 'active' : ''}`}
-              onClick={() => setBookSectionListMode('combined')}
-              aria-pressed={bookSectionListMode === 'combined'}
+              className={`toggle-btn ${readerMode === 'by-topics' ? 'active' : ''}`}
+              onClick={() => setReaderMode('by-topics')}
+              aria-pressed={readerMode === 'by-topics'}
             >
-              {_('combined')}
+              {_('papersByTopics')}
+            </button>
+            <button
+              type="button"
+              className={`toggle-btn ${readerMode === 'by-years' ? 'active' : ''}`}
+              onClick={() => setReaderMode('by-years')}
+              aria-pressed={readerMode === 'by-years'}
+            >
+              {_('papersByYears')}
             </button>
           </div>
         )}
 
-        {bookSectionListMode !== 'combined' && (
-        <label>
-          <span className="sidebar-label-icon">
-            <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-              <path d="M3 4h18v2H3V4zm0 7h18v2H3v-2zm0 7h18v2H3v-2z" />
-            </svg>
-            {_('book')}
-          </span>
-          <div className="selector-stepper-row" data-autocomplete-id="book">
-            <button type="button" className="selector-stepper-btn" onClick={() => stepBook(-1)} disabled={currentBookIndex <= 0}>-</button>
-            <BookAutocomplete
-              books={bookAutocompleteOptions}
-              currentBook={currentChapter}
-              language={selectedLanguage}
-              subjectId={selectedBook}
-              onSelect={handleBookSelect}
-              placeholder={_('searchBookTopic')}
-              emptyText={_('noMatchingBooks')}
-            />
-            <button type="button" className="selector-stepper-btn" onClick={() => stepBook(1)} disabled={currentBookIndex < 0 || currentBookIndex >= bookAutocompleteOptions.length - 1}>+</button>
-          </div>
-        </label>
-        )}
-
-        {!sidebarCollapsed && bookSectionListMode === 'combined' && sectionOptionsCount > 0 && !(selectedBook === 'physics-oup' && physicsChapterOptions.length > 0) && (
+        {!sidebarCollapsed && readerMode === 'textbook' && sectionOptionsCount > 0 && !(selectedBook === 'physics-oup' && physicsChapterOptions.length > 0) && (
           <label>
             <span className="sidebar-label-icon">
               <svg viewBox="0 0 24 24" role="presentation" focusable="false">
@@ -8559,7 +8694,7 @@ function App() {
           </label>
         )}
 
-        {!sidebarCollapsed && selectedBook === 'physics-oup' && physicsChapterOptions.length > 0 && (
+        {!sidebarCollapsed && readerMode === 'textbook' && selectedBook === 'physics-oup' && physicsChapterOptions.length > 0 && (
           <label>
             <span className="sidebar-label-icon">
               <svg viewBox="0 0 24 24" role="presentation" focusable="false">
@@ -8583,26 +8718,115 @@ function App() {
           </label>
         )}
 
-        {!sidebarCollapsed && bookSectionListMode !== 'combined' && sectionOptionsCount > 1 && !(selectedBook === 'physics-oup' && physicsChapterOptions.length > 0) && (
-          <label>
-            <span className="sidebar-label-icon">
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <path d="M3 4h18v2H3V4zm0 7h18v2H3v-2zm0 7h18v2H3v-2z" />
-              </svg>
-              {_('section')}
-            </span>
-            <div className="selector-stepper-row" data-autocomplete-id="section">
-              <button type="button" className="selector-stepper-btn" onClick={() => { const idx = currentSectionIndex; if (idx > 0) { handleSectionSelect(sectionSelectOptions[idx - 1].id); } else { moveBook(-1); } }}>-</button>
-              <SectionAutocomplete
-                sections={currentChapter?.contents || []}
-                currentSection={currentSection}
-                language={selectedLanguage}
-                getSectionName={getSectionName}
-                onSelect={handleSectionSelect}
-              />
-              <button type="button" className="selector-stepper-btn" onClick={() => { const idx = currentSectionIndex; const len = sectionSelectOptions.length; if (idx >= 0 && idx < len - 1) { handleSectionSelect(sectionSelectOptions[idx + 1].id); } else { moveBook(1); } }}>+</button>
-            </div>
-          </label>
+        {/* ── Past-papers: by-topics ───────────────────────────── */}
+        {!sidebarCollapsed && readerMode === 'by-topics' && pastPaperCatalog?.byTopics && (
+          <>
+            {/* Paper type selector (shown only for subjects that have paper field) */}
+            {pastPaperHasPapers && (
+              <label>
+                <span className="sidebar-label-icon">
+                  <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                    <path d="M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h10v2H4v-2z" />
+                  </svg>
+                  {_('paperType')}
+                </span>
+                <div className="toggle-group">
+                  <button
+                    type="button"
+                    className={`toggle-btn ${pastPaperPaperType === 'paper-1' ? 'active' : ''}`}
+                    onClick={() => { setPastPaperPaperType('paper-1'); setPastPaperTopic(''); }}
+                    aria-pressed={pastPaperPaperType === 'paper-1'}
+                  >{_('paperType1')}</button>
+                  <button
+                    type="button"
+                    className={`toggle-btn ${pastPaperPaperType === 'paper-2' ? 'active' : ''}`}
+                    onClick={() => { setPastPaperPaperType('paper-2'); setPastPaperTopic(''); }}
+                    aria-pressed={pastPaperPaperType === 'paper-2'}
+                  >{_('paperType2')}</button>
+                </div>
+              </label>
+            )}
+            {/* Topic selector */}
+            {(!pastPaperHasPapers || pastPaperPaperType) && (
+              <label>
+                <span className="sidebar-label-icon">
+                  <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                    <path d="M4 5h16v2H4V5zm0 6h16v2H4v-2zm0 6h16v2H4v-2z" />
+                  </svg>
+                  {_('section')}
+                </span>
+                <div className="selector-stepper-row" data-autocomplete-id="pastpaper-topic">
+                  <button type="button" className="selector-stepper-btn" onClick={() => {
+                    const idx = pastPaperTopicOptions.findIndex(o => o.id === pastPaperTopic);
+                    if (idx > 0) setPastPaperTopic(pastPaperTopicOptions[idx - 1].id);
+                  }} disabled={pastPaperTopicOptions.findIndex(o => o.id === pastPaperTopic) <= 0}>-</button>
+                  <SectionAutocomplete
+                    sections={pastPaperTopicOptions}
+                    currentSection={pastPaperTopicOptions.find(o => o.id === pastPaperTopic) || null}
+                    language={selectedLanguage}
+                    getSectionName={(item) => item?.label || item?.id || ''}
+                    onSelect={(id) => { setPastPaperTopic(id); }}
+                  />
+                  <button type="button" className="selector-stepper-btn" onClick={() => {
+                    const idx = pastPaperTopicOptions.findIndex(o => o.id === pastPaperTopic);
+                    if (idx >= 0 && idx < pastPaperTopicOptions.length - 1) setPastPaperTopic(pastPaperTopicOptions[idx + 1].id);
+                  }} disabled={pastPaperTopicOptions.findIndex(o => o.id === pastPaperTopic) < 0 || pastPaperTopicOptions.findIndex(o => o.id === pastPaperTopic) >= pastPaperTopicOptions.length - 1}>+</button>
+                </div>
+              </label>
+            )}
+          </>
+        )}
+
+        {/* ── Past-papers: by-years ────────────────────────────── */}
+        {!sidebarCollapsed && readerMode === 'by-years' && pastPaperCatalog?.byYears && (
+          <>
+            {/* Year selector */}
+            <label>
+              <span className="sidebar-label-icon">
+                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                  <path d="M19 4h-2V2h-2v2H9V2H7v2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V10h14v10z" />
+                </svg>
+                {_('selectYear')}
+              </span>
+              <div className="selector-stepper-row" data-autocomplete-id="pastpaper-year">
+                <button type="button" className="selector-stepper-btn" onClick={() => {
+                  const idx = pastPaperYearOptions.findIndex(o => o.id === pastPaperYear);
+                  if (idx > 0) setPastPaperYear(pastPaperYearOptions[idx - 1].id);
+                }} disabled={pastPaperYearOptions.findIndex(o => o.id === pastPaperYear) <= 0}>-</button>
+                <SectionAutocomplete
+                  sections={pastPaperYearOptions}
+                  currentSection={pastPaperYearOptions.find(o => o.id === pastPaperYear) || null}
+                  language={selectedLanguage}
+                  getSectionName={(item) => item?.label || ''}
+                  onSelect={(id) => { setPastPaperYear(id); }}
+                />
+                <button type="button" className="selector-stepper-btn" onClick={() => {
+                  const idx = pastPaperYearOptions.findIndex(o => o.id === pastPaperYear);
+                  if (idx >= 0 && idx < pastPaperYearOptions.length - 1) setPastPaperYear(pastPaperYearOptions[idx + 1].id);
+                }} disabled={pastPaperYearOptions.findIndex(o => o.id === pastPaperYear) < 0 || pastPaperYearOptions.findIndex(o => o.id === pastPaperYear) >= pastPaperYearOptions.length - 1}>+</button>
+              </div>
+            </label>
+            {/* Type selector (p1 / p2 / ans / per) */}
+            <label>
+              <span className="sidebar-label-icon">
+                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                  <path d="M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h10v2H4v-2z" />
+                </svg>
+                {_('paperType')}
+              </span>
+              <div className="toggle-group">
+                {['p1', 'p2', 'ans', 'per'].map((type) => (
+                  <button
+                    key={type}
+                    type="button"
+                    className={`toggle-btn ${pastPaperYearType === type ? 'active' : ''}`}
+                    onClick={() => setPastPaperYearType(type)}
+                    aria-pressed={pastPaperYearType === type}
+                  >{_(type === 'p1' ? 'typeP1' : type === 'p2' ? 'typeP2' : type === 'ans' ? 'typeAns' : 'typePer')}</button>
+                ))}
+              </div>
+            </label>
+          </>
         )}
 
         {!sidebarCollapsed && (
@@ -8820,8 +9044,8 @@ function App() {
               data-tooltip={_('selectSubject')}
               aria-label={_('selectSubject')}
             ><span className="sidebar-icon-btn-text" ref={subjectBtnTextRef}>{getSubjectAbbreviation(selectedBook, selectedLanguage)}</span></button>
-            {/* Book + Section selector – collapsed (combined mode) */}
-            {bookSectionListMode === 'combined' ? (
+            {/* Book + Section selector – collapsed (textbook mode) */}
+            {readerMode === 'textbook' ? (
               <button
                 className={`sidebar-icon-btn combined-stepper${pressedAutocompleteBtn === 'combined' ? ' pressed' : ''}`}
                 ref={(el) => { collapsedBtnRefs.current.combined = el; }}
@@ -8829,26 +9053,7 @@ function App() {
                 data-tooltip={_('bookSection')}
                 aria-label={_('bookSection')}
               ><span className="sidebar-icon-btn-text">{collapsedCombinedDisplay}</span></button>
-            ) : (
-            <>
-            {/* Book selector – collapsed */}
-            <button
-              className={`sidebar-icon-btn book-stepper${pressedAutocompleteBtn === 'book' ? ' pressed' : ''}`}
-              ref={(el) => { collapsedBtnRefs.current.book = el; }}
-              onClick={() => openSidebarAutocomplete('book')}
-              data-tooltip={_('selectBook')}
-              aria-label={_('selectBook')}
-            ><span className="sidebar-icon-btn-text">{collapsedBookDisplay}</span></button>
-            {/* Section selector – collapsed */}
-            <button
-              className={`sidebar-icon-btn section-stepper${pressedAutocompleteBtn === 'section' ? ' pressed' : ''}`}
-              ref={(el) => { collapsedBtnRefs.current.section = el; }}
-              onClick={() => openSidebarAutocomplete('section')}
-              data-tooltip={_('selectSection')}
-              aria-label={_('selectSection')}
-            ><span className="sidebar-icon-btn-text">{collapsedSectionDisplay}</span></button>
-            </>
-            )}
+            ) : null}
             {/* Page selector – collapsed */}
             {maxNavigablePage > 1 && (
               <button
