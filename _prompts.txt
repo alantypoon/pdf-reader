@@ -456,3 +456,48 @@ add a bookmarks page on right sidebar:
 2. i want to copy and paste an image to the text edit control by converting the image into <img with png data url.
 
 3. sometimes when i click a bookmark, it will go to the new section but not the new page. check why carefully and fix this.
+
+////
+
+generate /var/www/html/pdf-reader/scripts/combine-biology-two-papers.py that 
+
+////
+
+1. in generate-pages-and-contents.py, generate pages and contents.json from
+/var/www/html/pdf-reader/data/past-papers/<subject>/by-topics/<lang>/<paper-id>*.pdf
+/var/www/html/pdf-reader/data/past-papers/<subject>/by-topics/<lang>/<paper-id>/pages/*.png
+
+
+1. remove separated/combined toggle. set it always to be combined mode
+
+2. add  "textbook/pp by topics/pp by years" toggles below the subject toggle
+
+3. when pp by topics, choose the pages in 
+/var/www/html/pdf-reader/data/past-papers/<subject>/by-topics/<lang>/<paper-id>/pages/*.png
+
+4, when pp by years, choose 
+
+////
+
+when running
+
+  generate-pages-and-contents.py --past-papers
+
+generate pages and contents.json from /var/www/html/pdf-reader/data/past-papers
+
+1. for subjects by-topics with paper-1 and paper-2 folders:
+  from /var/www/html/pdf-reader/data/past-papers/<subject>/by-topics/<lang>/<paper-id>*.pdf
+  extract pages to /var/www/html/pdf-reader/data/past-papers/<subject>/by-topics/<lang>/<paper-id>/pages/*.png
+  and generate /var/www/html/pdf-reader/data/past-papers/<subject>/by-topics/<lang>/<paper-id>/contents.json
+  and use ett-vllm to extract the titles on the first page of the pdf to the contents.json like how we did it in /var/www/html/pdf-reader/data/textbooks/biology-oup/1a/contents.json
+
+2. for subjects by-topics without paper-1 and paper-2 folders:
+  from /var/www/html/pdf-reader/data/past-papers/<subject>/by-topics/<lang>/*.pdf
+  extract pages to /var/www/html/pdf-reader/data/past-papers/<subject>/by-topics/<lang>/pages/*.png
+  and generate /var/www/html/pdf-reader/data/past-papers/<subject>/by-topics/<lang>/contents.json
+  and use ett-vllm to extract the titles on the first page of the pdf to the contents.json like how we did it in /var/www/html/pdf-reader/data/textbooks/biology-oup/1a/contents.json
+
+3. for subjects by-years
+  from /var/www/html/pdf-reader/data/past-papers/<subject>/by-years/<lang>/<paper-id>*.pdf
+  extract pages to /var/www/html/pdf-reader/data/past-papers/<subject>/by-years/<lang>/pages/*.pdf
+
