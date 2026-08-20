@@ -405,9 +405,6 @@ so that we can keep the same subjectId, bookId, sectionId, page and scrolling po
 
 i have asked you to correct these many times, but it misses sometimes alwasys. please in this time, correct everything at this time.
 
-
-
-
 the pinch effect should also be down on every device with a touch screen, e.g. macbook pro's trackboard, not just on ipad.
 
 

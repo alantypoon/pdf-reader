@@ -91,6 +91,9 @@ from urllib.request import urlretrieve
 
 import fitz  # PyMuPDF
 import requests
+import urllib3
+# Suppress SSL verification warnings (internal CA / self-signed certs)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 BIOLOGY_ELECTIVE_BOOK_NAMES = {
@@ -130,6 +133,253 @@ PHYSICS_BOOK_NAMES = {
     "e3": ("Energy and Use of Energy", "能量和能源的使用"),
     "e4": ("Medical Physics", "醫學物理學"),
 }
+
+
+# ── Past-paper by-topic section title mappings ─────────────────────────────
+# Extracted from https://passpaper-unstoppable.github.io/dse.life/ppindex/
+# These replace the ETT/vLLM extraction for by-topics section titles.
+PAST_PAPER_BY_TOPIC_TITLES = {
+    "math": {
+        "p1": {
+            "en": {
+                "1":  "Estimation",
+                "2":  "Percentages",
+                "3":  "Indices and Logarithms",
+                "4":  "Polynomials",
+                "5":  "Formulas",
+                "6":  "Identities, Equations and the Number System",
+                "7":  "Functions and Graphs",
+                "8":  "Rate, Ratio and Variation",
+                "9":  "Arithmetic and Geometric Sequences",
+                "10": "Inequalities and Linear Programming",
+                "11": "Geometry of Rectilinear Figure",
+                "12": "Geometry of Circles",
+                "13": "Basic Trigonometry",
+                "14": "Applications of Trigonometry",
+                "15": "Mensuration",
+                "16": "Coordinate Geometry",
+                "17": "Counting Principles and Probability",
+                "18": "Statistics",
+                "bk1": "Book 1 Topic 1-18",
+            },
+            "tc": {},
+        },
+        "p2": {
+            "en": {
+                "0":  "Number System",
+                "1":  "Percentages",
+                "2":  "Functions and Graphs",
+                "3":  "Exponential and Logarithmic Functions",
+                "4":  "More about Polynomials",
+                "5":  "More about Equations",
+                "6":  "Rate, Ratio and Variations",
+                "7":  "Sequences",
+                "8":  "Inequalities and Linear Programming",
+                "9":  "Mensuration",
+                "10": "Plane Geometry",
+                "11": "Locus",
+                "12": "Coordinates Geometry",
+                "13": "Trigonometry",
+                "14": "Permutation and Combination",
+                "15": "More about Probability",
+                "16": "Measures of Dispersion",
+                "bk1": "Book 1 Topic 0-16",
+            },
+            "tc": {},
+        },
+    },
+    "biology": {
+        "p1": {
+            "en": {
+                "1":  "Cell and membrane transport",
+                "2":  "Enzymes",
+                "3":  "Nutrition in humans",
+                "4":  "Gas exchange in humans",
+                "5":  "Transport in humans",
+                "6":  "Nutrition and gas exchange in plants",
+                "7":  "Transpiration, transport and support in plants",
+                "8":  "Cell division and reproduction",
+                "9":  "Growth and development",
+                "10": "Growth responses of plants",
+                "11": "Coordination in humans",
+                "12": "Movement in humans",
+                "13": "Homeostasis",
+                "14": "Biodiversity",
+                "15": "Ecosystems",
+                "16": "Photosynthesis",
+                "17": "Respiration",
+                "18": "Health and diseases",
+                "19": "Basic genetics, Molecular and applied genetics",
+                "20": "Evolution",
+                "all": "All Topic 1-20",
+            },
+            "tc": {},
+        },
+        "p2": {
+            "en": {
+                "1":  "Body defence",
+                "2":  "Cell activities",
+                "3":  "Cell division",
+                "4":  "Diversity of organisms and classifications",
+                "5":  "Detection of environmental conditions in mammals",
+                "6":  "Ecosystems",
+                "7":  "Evolution",
+                "8":  "Excretion and osmoregulation",
+                "9":  "Food and humans",
+                "10": "Gaseous exchange in humans",
+                "11": "Genetic engineering",
+                "12": "Genetics",
+                "13": "Growth and development",
+                "14": "Growth response of plant",
+                "15": "Hormonal co-ordination",
+                "16": "Man and microorganisms",
+                "17": "Man's effect on his environment",
+                "18": "Nervous co-ordination",
+                "19": "Nutrition and gaseous exchange in plants",
+                "20": "Nutrition in mammals",
+                "21": "Photosynthesis",
+                "22": "Reproduction",
+                "23": "Respiration",
+                "24": "Support and movement",
+                "25": "Temperature regulation in mammals",
+                "26": "Transport in human",
+                "27": "Water and organisms",
+                "28": "Elective — Human Physiology",
+                "29": "Elective — Applied Ecology",
+                "30": "Elective — Biotechnology",
+                "all": "All (excluding electives)",
+            },
+            "tc": {},
+        },
+    },
+    "chemistry": {
+        "flat": {
+            "en": {
+                "1":  "Laboratory Safety and Precautions",
+                "2":  "Planet Earth",
+                "3":  "Microscopic World",
+                "4":  "Metals",
+                "5":  "Acid and Bases",
+                "6":  "Fossil fuels and Carbon Compounds",
+                "7":  "Microscopic World II",
+                "8":  "Redox Reactions, Chemical Cells and Electrolysis",
+                "9":  "Chemical Reactions and Energy",
+                "10": "Rate of Reaction",
+                "11": "Chemical Equilibrium",
+                "12": "Chemistry of Carbon Compounds",
+                "13": "Patterns in the Chemical World",
+                "14": "Industrial Chemistry (E1)",
+                "15": "Analytical Chemistry (E2)",
+                "bk1": "Book 1 Topic 1-6",
+                "bk2": "Book 2 Topic 7-13",
+                "bk3": "Book 3 E1+E2",
+            },
+            "tc": {
+                "1":  "地球",
+                "2":  "微觀世界 I",
+                "3":  "金屬",
+                "4":  "酸和鹽",
+                "5":  "化石燃料和碳化合物",
+                "6":  "微觀世界 II",
+                "7":  "化學電池",
+                "8":  "化學反應與能量",
+                "9":  "氧化還原反應",
+                "10": "電解",
+                "11": "反應速率",
+                "12": "氣體的摩爾數",
+                "13": "平衡常數",
+                "14": "同系列和同分異構",
+                "15": "碳化合物的化學",
+                "16": "重要有機物質",
+                "17": "化學世界中的規律",
+                "18": "MC Answers",
+                "19": "CE LQ Answers",
+                "20": "DSE LQ Answers",
+                "21": "E1 工業化學",
+                "22": "E2 分析化學",
+                "all": "All (excluding E1, E2)",
+            },
+        },
+    },
+    "physics": {
+        "flat": {
+            "en": {
+                "1":  "Temperature, Heat and Internal energy",
+                "2":  "Transfer Processes",
+                "3":  "Change of State",
+                "4":  "General Gas Law",
+                "5":  "Kinetic Theory",
+                "6":  "Position and Movement",
+                "7":  "Newton's Laws",
+                "8":  "Moment of Force",
+                "9":  "Work, Energy and Power",
+                "10": "Momentum",
+                "11": "Projectile Motion",
+                "12": "Circular Motion",
+                "13": "Gravitation",
+                "14": "Wave Propagation",
+                "15": "Wave Phenomena",
+                "16": "Reflection and Refraction of Light",
+                "17": "Lenses",
+                "18": "Wave Nature of Light",
+                "19": "Sound",
+                "20": "Electrostatics",
+                "21": "Electric Circuits",
+                "22": "Domestic Electricity",
+                "23": "Magnetic Field",
+                "24": "Electromagnetic Induction",
+                "25": "Alternating Current",
+                "26": "Radiation and Radioactivity",
+                "27": "Atomic Model",
+                "28": "Nuclear Energy",
+                "e1": "Astronomy and Space Science",
+                "e2": "Atomic World",
+                "e3": "Energy and Use of Energy",
+                "bk1": "Book 1 Topic 1-5",
+                "bk2": "Book 2 Topic 6-13",
+                "bk3": "Book 3 Topic 14-19",
+                "bk4": "Book 4 Topic 20-25",
+                "bk5": "Book 5 Topic 26-28",
+            },
+            "tc": {
+                "1":  "熱和氣體",
+                "2":  "力和運動",
+                "3":  "波動",
+                "4":  "電和磁",
+                "5":  "放射現象和核能",
+                "6":  "天文學和航天科學",
+                "7":  "原子世界",
+                "8":  "能量和能源的使用",
+                "9":  "醫學物理學",
+                "10": "MC Answers",
+                "11": "CE LQ Answers",
+                "12": "DSE Answers",
+                "13": "2018-2021 By Topic",
+                "14": "2018-2021 Answer",
+                "bk1": "Book 1 Topic 1-5",
+                "bk2": "Book 2 Topic 6-9",
+            },
+        },
+    },
+}
+
+
+def _lookup_section_title(subject_id, section, paper, lang):
+    """Look up a by-topics section title from the static reference mapping.
+
+    Returns the title string, or empty string if not found.
+    """
+    subject_map = PAST_PAPER_BY_TOPIC_TITLES.get(subject_id)
+    if not subject_map:
+        return ""
+    paper_key = f"p{paper}" if paper else "flat"
+    paper_map = subject_map.get(paper_key)
+    if not paper_map:
+        return ""
+    lang_map = paper_map.get(lang)
+    if not lang_map:
+        return ""
+    return lang_map.get(section, "")
 
 
 def _natural_id_sort_key(value):
@@ -687,7 +937,7 @@ def load_env_file(env_path):
 def get_ai_gateway_config(base_dir):
     env_values = load_env_file(os.path.join(base_dir, ".env"))
     return {
-        "url": os.environ.get("VLLM_API_URL") or env_values.get("VLLM_API_URL") or "https://aigateway.aied.hku.hk/api/generate",
+        "url": os.environ.get("VLLM_API_URL") or env_values.get("VLLM_API_URL") or "https://gentle.aied.hku.hk/api/generate",
         "model": os.environ.get("VLLM_MODEL") or env_values.get("VLLM_MODEL") or "OpenGVLab/InternVL3_5-38B",
         "api_key": os.environ.get("VLLM_APIKEY") or env_values.get("VLLM_APIKEY") or "",
         "provider": os.environ.get("VLLM_PROVIDER") or env_values.get("VLLM_PROVIDER") or "ett-vllm",
@@ -713,6 +963,7 @@ def send_ett_request(url, api_key, model, file_path, prompt, provider="ett-vllm"
             },
             headers={"Accept": "application/json"},
             timeout=120,
+            verify=False,
         )
         if resp.status_code != 200:
             return {"error": True, "status": resp.status_code, "body": resp.text[:500]}
@@ -1044,6 +1295,7 @@ def _send_ett_with_images(url, api_key, model, image_paths, prompt, provider="et
             files=files,
             headers={"Accept": "application/json"},
             timeout=180,
+            verify=False,
         )
         if resp.status_code != 200:
             return {"error": True, "status": resp.status_code, "body": resp.text[:500]}
@@ -1499,6 +1751,629 @@ def download_htmls(data_dir, force=False):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  Past Papers Processing
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _split_pdf_to_pages(pdf_path, pages_dir, prefix, dpi=200, fmt="png"):
+    """Split a single multi-page PDF into individual images.
+    Returns a list of (page_number, output_filename) tuples."""
+    os.makedirs(pages_dir, exist_ok=True)
+    doc = fitz.open(pdf_path)
+    results = []
+    for page_idx in range(doc.page_count):
+        page_num = page_idx + 1
+        out_name = f"{prefix}-{page_num}.{fmt}"
+        out_path = os.path.join(pages_dir, out_name)
+        if not os.path.exists(out_path):
+            page = doc[page_idx]
+            mat = fitz.Matrix(dpi / 72, dpi / 72)
+            pix = page.get_pixmap(matrix=mat)
+            if fmt == "jpg":
+                pix.pil_save(out_path, optimize=True, quality=85)
+            else:
+                pix.save(out_path)
+        results.append((page_num, out_name))
+    doc.close()
+    return results
+
+
+def _split_pdf_to_single_page_pdfs(pdf_path, pages_dir, prefix):
+    """Split a multi-page PDF into individual single-page PDFs.
+    Returns a list of (page_number, output_filename) tuples."""
+    os.makedirs(pages_dir, exist_ok=True)
+    doc = fitz.open(pdf_path)
+    results = []
+    for page_idx in range(doc.page_count):
+        page_num = page_idx + 1
+        out_name = f"{prefix}-{page_num}.pdf"
+        out_path = os.path.join(pages_dir, out_name)
+        if not os.path.exists(out_path):
+            new_doc = fitz.open()
+            new_doc.insert_pdf(doc, from_page=page_idx, to_page=page_idx)
+            new_doc.save(out_path)
+            new_doc.close()
+        results.append((page_num, out_name))
+    doc.close()
+    return results
+
+
+def _create_contents_skeleton(papers_dir, paper_id):
+    """Create a minimal contents.json for a past-paper directory."""
+    chapter = paper_id if paper_id else os.path.basename(papers_dir)
+    skeleton = {
+        "chapter": chapter,
+        "contents": []
+    }
+    if os.path.isdir(papers_dir):
+        for f in sorted(os.listdir(papers_dir)):
+            if not f.endswith(".pdf"):
+                continue
+            stem = f[:-4]
+            # Derive section: part before first "-" if any, else whole stem
+            if "-" in stem:
+                sec = stem.split("-")[0]
+            else:
+                sec = stem
+            try:
+                page_num = int(sec)
+            except ValueError:
+                try:
+                    page_num = float(sec)
+                except ValueError:
+                    page_num = sec
+            skeleton["contents"].append({
+                "section": sec,
+                "page": page_num,
+                "en": {"name": "", "resources": []},
+                "tc": {"name": "", "resources": []},
+            })
+    return skeleton
+
+
+def _extract_title_from_pdf_first_page(pdf_path, section, base_dir):
+    """Render the first page of a PDF to a temp PNG and extract its title via ETT.
+
+    Returns the cleaned title string, or empty string on failure.
+    """
+    config = get_ai_gateway_config(base_dir)
+    if not config["api_key"]:
+        print("    [skip] VLLM_APIKEY not configured; cannot extract titles")
+        return ""
+
+    # Render first page to temp image
+    temp_dir = os.path.join(base_dir, "_tmp_tpage")
+    os.makedirs(temp_dir, exist_ok=True)
+    temp_img = os.path.join(temp_dir, f"_ett_{os.path.basename(pdf_path)}_{section}_page1.png")
+
+    try:
+        doc = fitz.open(pdf_path)
+        if doc.page_count == 0:
+            doc.close()
+            return ""
+        page = doc[0]
+        mat = fitz.Matrix(150 / 72, 150 / 72)  # 150 DPI for extraction
+        pix = page.get_pixmap(matrix=mat)
+        pix.save(temp_img)
+        doc.close()
+    except Exception as e:
+        print(f"    ⚠  {Path(pdf_path).name}: error rendering first page — {e}")
+        return ""
+
+    prompt = (
+        "This image is the first page of one past-paper section/topic. "
+        "Extract the English topic title/name for this section only. "
+        "Return ONLY the topic title as plain text. "
+        "Do not include the section number, book title, page number, labels, explanations, or Markdown. "
+        "If no English title is visible, return UNKNOWN."
+    )
+    result = send_ett_request(
+        config["url"], config["api_key"], config["model"],
+        temp_img, prompt, provider=config["provider"],
+    )
+    raw_text = extract_text_from_ett_result(result)
+    if isinstance(result, dict) and result.get("error"):
+        error_detail = result.get("body", "") or result.get("reason", "") or json.dumps(result)
+        print(f"    ⚠  Section {section}: gateway error — {str(error_detail)[:200]}")
+    else:
+        print(f"    Raw ETT response: {raw_text[:100]}")
+    title = _clean_extracted_section_title(raw_text, section)
+
+    # Clean up temp image
+    try:
+        os.remove(temp_img)
+    except OSError:
+        pass
+
+    return title
+
+
+def _extract_past_paper_titles_via_ett(contents, pages_dir, base_dir):
+    """Use ETT/vLLM to extract section titles from the first page image of each
+    past paper section/PDF.  Updates contents entries in-place."""
+    config = get_ai_gateway_config(base_dir)
+    if not config["api_key"]:
+        print("    [skip] VLLM_APIKEY not configured; cannot extract titles")
+        return
+
+    print(f"    Gateway: {config['url']}")
+    print(f"    Provider: {config['provider']}  |  Model: {config['model']}")
+
+    for item in contents.get("contents", []):
+        section = str(item.get("section", "")).strip()
+        if not section:
+            continue
+
+        # Find the first page image for this section
+        image_path = None
+        if os.path.isdir(pages_dir):
+            for fname in os.listdir(pages_dir):
+                match = re.match(rf"^{re.escape(section)}-1\.(png|jpg|jpeg|webp)$", fname, re.IGNORECASE)
+                if match:
+                    image_path = os.path.join(pages_dir, fname)
+                    break
+
+        if not image_path:
+            print(f"    ⚠  Section {section}: no first-page image found")
+            continue
+
+        prompt = (
+            "This image is the first page of one past-paper section/topic. "
+            "Extract the English topic title/name for this section only. "
+            "Return ONLY the topic title as plain text. "
+            "Do not include the section number, book title, page number, labels, explanations, or Markdown. "
+            "If no English title is visible, return UNKNOWN."
+        )
+        result = send_ett_request(
+            config["url"], config["api_key"], config["model"],
+            image_path, prompt, provider=config["provider"],
+        )
+        raw_text = extract_text_from_ett_result(result)
+        if isinstance(result, dict) and result.get("error"):
+            error_detail = result.get("body", "") or result.get("reason", "") or json.dumps(result)
+            print(f"    ⚠  Section {section}: gateway error — {str(error_detail)[:200]}")
+        title = _clean_extracted_section_title(raw_text, section)
+        if title:
+            item.setdefault("en", {})
+            item["en"]["name"] = title
+            print(f"    Section {section}: {Path(image_path).name} → {title}")
+        else:
+            print(f"    Section {section}: {Path(image_path).name} → (no title extracted)")
+
+
+def _process_past_papers(data_root, args, base_dir):
+    """Main orchestrator for processing past-papers."""
+    past_papers_root = os.path.join(data_root, "past-papers")
+    if not os.path.isdir(past_papers_root):
+        print(f"ERROR: past-papers directory not found: {past_papers_root}", file=sys.stderr)
+        sys.exit(1)
+
+    subjects = sorted(
+        (entry.name for entry in os.scandir(past_papers_root) if entry.is_dir()),
+        key=_natural_id_sort_key,
+    )
+
+    for subject_idx, subject_id in enumerate(subjects):
+        if subject_idx > 0:
+            print("\n\n")
+        print("=" * 70)
+        print(f"  Subject: {subject_id}")
+        print("=" * 70)
+
+        subject_dir = os.path.join(past_papers_root, subject_id)
+
+        # ── Process by-topics ─────────────────────────────────────
+        by_topics_dir = os.path.join(subject_dir, "by-topics")
+        if os.path.isdir(by_topics_dir):
+            print("\n" + "-" * 60)
+            print("  by-topics")
+            print("-" * 60)
+            if args.contents_json_only:
+                _process_by_topics_contents_json_only(by_topics_dir, args, base_dir, subject_id)
+            else:
+                _process_by_topics(by_topics_dir, args, base_dir, subject_id)
+
+        # ── Process by-years ──────────────────────────────────────
+        by_years_dir = os.path.join(subject_dir, "by-years")
+        if os.path.isdir(by_years_dir):
+            print("\n" + "-" * 60)
+            print("  by-years")
+            print("-" * 60)
+            if args.contents_json_only:
+                _process_by_years_contents_json_only(by_years_dir, args, base_dir)
+            else:
+                _process_by_years(by_years_dir, args, base_dir)
+
+    print("\nDone.")
+
+
+def _process_by_topics(by_topics_dir, args, base_dir, subject_id):
+    """Process by-topics directory.  Handles both structures:
+    Case 1 — with paper-1/ and paper-2/ subdirectories
+    Case 2 — flat (PDFs directly in <lang>/)
+    """
+    langs = sorted(
+        (entry.name for entry in os.scandir(by_topics_dir) if entry.is_dir()),
+    )
+
+    for lang_idx, lang in enumerate(langs):
+        if lang_idx > 0:
+            print()
+        lang_dir = os.path.join(by_topics_dir, lang)
+        print(f"  Language: {lang}")
+
+        # Detect structure: check for paper-1/, paper-2/ subdirs
+        has_paper_dirs = (
+            os.path.isdir(os.path.join(lang_dir, "paper-1"))
+            or os.path.isdir(os.path.join(lang_dir, "paper-2"))
+        )
+
+        if has_paper_dirs:
+            _process_by_topics_with_papers(lang_dir, lang, args, base_dir, subject_id)
+        else:
+            _process_by_topics_flat(lang_dir, lang, args, base_dir, subject_id)
+
+
+def _process_by_topics_with_papers(lang_dir, lang, args, base_dir, subject_id):
+    """Case 1: by-topics with paper-1 and paper-2 subdirectories.
+    
+    For each PDF in paper-1/ and paper-2/:
+      - Extract pages to <paper>/<paper-id>/pages/*.png
+      - Generate <paper>/<paper-id>/contents.json
+      - Extract title from static reference mapping
+    """
+    for paper_dir_name in ("paper-1", "paper-2"):
+        paper_dir = os.path.join(lang_dir, paper_dir_name)
+        if not os.path.isdir(paper_dir):
+            continue
+
+        print(f"    {paper_dir_name}/")
+        paper_num = paper_dir_name.split("-")[-1]
+
+        # Collect PDFs in this paper directory
+        pdf_files = sorted(
+            f for f in os.listdir(paper_dir) if f.endswith(".pdf")
+        )
+        if not pdf_files:
+            print(f"      (no PDFs)")
+            continue
+
+        for pdf_name in pdf_files:
+            pdf_path = os.path.join(paper_dir, pdf_name)
+            paper_id = pdf_name[:-4]  # Remove ".pdf" extension
+
+            # Directory for this paper-id
+            paper_id_dir = os.path.join(paper_dir, paper_id)
+            pages_dir = os.path.join(paper_id_dir, "pages")
+            contents_path = os.path.join(paper_id_dir, "contents.json")
+
+            print(f"      {pdf_name} → {paper_id}/")
+
+            # Extract pages
+            if not args.skip_pdfs:
+                results = _split_pdf_to_pages(
+                    pdf_path, pages_dir, paper_id,
+                    dpi=args.dpi, fmt=args.format,
+                )
+                print(f"        → {len(results)} pages to {pages_dir}/")
+            else:
+                print(f"        [skip] PDF splitting")
+
+            # Ensure paper_id_dir exists
+            os.makedirs(paper_id_dir, exist_ok=True)
+
+            # Look up title from static mapping
+            title = ""
+            if not args.skip_section_names:
+                title = _lookup_section_title(subject_id, paper_id, paper_num, lang)
+
+            # Generate contents.json — single entry from the PDF itself
+            if not os.path.exists(contents_path):
+                try:
+                    page_num = int(paper_id)
+                except ValueError:
+                    try:
+                        page_num = float(paper_id)
+                    except ValueError:
+                        page_num = paper_id
+                contents = {
+                    "chapter": paper_id,
+                    "contents": [{
+                        "section": paper_id,
+                        "page": page_num,
+                        "en": {"name": title if lang == "en" else "", "resources": []},
+                        "tc": {"name": title if lang == "tc" else "", "resources": []},
+                    }],
+                }
+                # Also set the other language name if available
+                other_lang = "tc" if lang == "en" else "en"
+                other_title = _lookup_section_title(subject_id, paper_id, paper_num, other_lang)
+                if other_title:
+                    contents["contents"][0][other_lang]["name"] = other_title
+                with open(contents_path, "w", encoding="utf-8") as f:
+                    json.dump(contents, f, ensure_ascii=False, indent=4)
+                print(f"        Created {contents_path}  ({title or 'no title'})")
+            else:
+                # Update existing contents.json with title
+                with open(contents_path, "r", encoding="utf-8") as f:
+                    contents = json.load(f)
+                if contents["contents"]:
+                    contents["contents"][0][lang]["name"] = title
+                    other_lang = "tc" if lang == "en" else "en"
+                    other_title = _lookup_section_title(subject_id, paper_id, paper_num, other_lang)
+                    if other_title:
+                        contents["contents"][0][other_lang]["name"] = other_title
+                with open(contents_path, "w", encoding="utf-8") as f:
+                    json.dump(contents, f, ensure_ascii=False, indent=4)
+                print(f"        Updated {contents_path}  ({title or 'no title'})")
+
+
+def _process_by_topics_flat(lang_dir, lang, args, base_dir, subject_id):
+    """Case 2: by-topics without paper-1/paper-2 — PDFs directly in <lang>/.
+    
+      - Extract pages to <lang>/pages/*.png
+      - Generate <lang>/contents.json
+      - Extract title from static reference mapping
+    """
+    pages_dir = os.path.join(lang_dir, "pages")
+    contents_path = os.path.join(lang_dir, "contents.json")
+
+    # Collect PDFs
+    pdf_files = sorted(f for f in os.listdir(lang_dir) if f.endswith(".pdf"))
+    if not pdf_files:
+        print(f"      (no PDFs)")
+        return
+
+    # Extract pages from each PDF into shared pages/ directory
+    if not args.skip_pdfs:
+        for pdf_name in pdf_files:
+            pdf_path = os.path.join(lang_dir, pdf_name)
+            stem = pdf_name[:-4]
+            print(f"      {pdf_name}")
+            results = _split_pdf_to_pages(
+                pdf_path, pages_dir, stem,
+                dpi=args.dpi, fmt=args.format,
+            )
+            print(f"        → {len(results)} pages to {pages_dir}/")
+    else:
+        print(f"      [skip] PDF splitting")
+
+    # Generate contents.json skeleton from PDFs
+    if not os.path.exists(contents_path) or args.force:
+        contents = _create_contents_skeleton(lang_dir, None)
+        with open(contents_path, "w", encoding="utf-8") as f:
+            json.dump(contents, f, ensure_ascii=False, indent=4)
+        print(f"      Created {contents_path}")
+    else:
+        with open(contents_path, "r", encoding="utf-8") as f:
+            contents = json.load(f)
+
+    # Fill titles from static mapping
+    if not args.skip_section_names:
+        for item in contents.get("contents", []):
+            section = str(item.get("section", ""))
+            title = _lookup_section_title(subject_id, section, "", lang)
+            if title:
+                item[lang]["name"] = title
+                # Also fill other language if available
+                other_lang = "tc" if lang == "en" else "en"
+                other_title = _lookup_section_title(subject_id, section, "", other_lang)
+                if other_title:
+                    item[other_lang]["name"] = other_title
+                print(f"        Section {section}: {title}")
+        with open(contents_path, "w", encoding="utf-8") as f:
+            json.dump(contents, f, ensure_ascii=False, indent=4)
+
+
+def _process_by_years(by_years_dir, args, base_dir):
+    """Case 3: by-years processing.
+    
+    From /by-years/<lang>/<year>/<paper-id>*.pdf
+    Extract pages to /by-years/<lang>/<year>/pages/*.pdf (single-page PDFs)
+    """
+    langs = sorted(
+        (entry.name for entry in os.scandir(by_years_dir) if entry.is_dir()),
+    )
+
+    for lang in langs:
+        lang_dir = os.path.join(by_years_dir, lang)
+        print(f"  Language: {lang}")
+
+        year_dirs = sorted(
+            (entry.name for entry in os.scandir(lang_dir) if entry.is_dir()),
+            key=_natural_id_sort_key,
+        )
+
+        for year in year_dirs:
+            year_dir = os.path.join(lang_dir, year)
+            pages_dir = os.path.join(year_dir, "pages")
+
+            pdf_files = sorted(f for f in os.listdir(year_dir) if f.endswith(".pdf"))
+            if not pdf_files:
+                continue
+
+            if not args.skip_pdfs:
+                total_pages = 0
+                for pdf_name in pdf_files:
+                    pdf_path = os.path.join(year_dir, pdf_name)
+                    stem = pdf_name[:-4]
+                    results = _split_pdf_to_single_page_pdfs(pdf_path, pages_dir, stem)
+                    total_pages += len(results)
+                print(f"    {year}: {len(pdf_files)} PDFs → {total_pages} page PDFs in {pages_dir}/")
+            else:
+                print(f"    {year}: [skip] PDF splitting")
+
+
+def _process_by_topics_contents_json_only(by_topics_dir, args, base_dir, subject_id):
+    """Generate a single unified contents.json for the whole by-topics directory.
+
+    Scans all languages, both paper-1/paper-2 subdirectories (if present),
+    and flat PDF directories.  Produces one contents.json at:
+        <by_topics_dir>/contents.json
+
+    Each entry in contents[] corresponds to one PDF with:
+      - section: the PDF's stem (e.g. "1", "p1a")
+      - paper: "1" or "2" (if under paper-*/ subdirs), else ""
+      - lang: the language code (e.g. "en", "tc")
+      - en.name / tc.name: title from static reference mapping
+    """
+    contents_entries = []
+    langs = sorted(
+        (entry.name for entry in os.scandir(by_topics_dir) if entry.is_dir()),
+    )
+
+    for lang in langs:
+        lang_dir = os.path.join(by_topics_dir, lang)
+        has_paper_dirs = (
+            os.path.isdir(os.path.join(lang_dir, "paper-1"))
+            or os.path.isdir(os.path.join(lang_dir, "paper-2"))
+        )
+
+        if has_paper_dirs:
+            for paper_dir_name in ("paper-1", "paper-2"):
+                paper_dir = os.path.join(lang_dir, paper_dir_name)
+                if not os.path.isdir(paper_dir):
+                    continue
+                paper_num = paper_dir_name.split("-")[-1]  # "1" or "2"
+                pdf_files = sorted(f for f in os.listdir(paper_dir) if f.endswith(".pdf"))
+                for pdf_name in pdf_files:
+                    stem = pdf_name[:-4]
+                    title = ""
+                    if not args.skip_section_names:
+                        title = _lookup_section_title(subject_id, stem, paper_num, lang)
+                    entry = {
+                        "section": stem,
+                        "paper": paper_num,
+                        "lang": lang,
+                        "page": _parse_numeric(stem),
+                        "en": {"name": title if lang == "en" else "", "resources": []},
+                        "tc": {"name": title if lang == "tc" else "", "resources": []},
+                    }
+                    # Also set the name for the other language if available
+                    other_lang = "tc" if lang == "en" else "en"
+                    other_title = _lookup_section_title(subject_id, stem, paper_num, other_lang)
+                    if other_title:
+                        entry[other_lang]["name"] = other_title
+                    contents_entries.append(entry)
+                    print(f"      [{lang}/{paper_dir_name}] {pdf_name} → {title or '(no title)'}")
+        else:
+            # Flat: PDFs directly in lang_dir
+            pdf_files = sorted(f for f in os.listdir(lang_dir) if f.endswith(".pdf"))
+            for pdf_name in pdf_files:
+                stem = pdf_name[:-4]
+                title = ""
+                if not args.skip_section_names:
+                    title = _lookup_section_title(subject_id, stem, "", lang)
+                entry = {
+                    "section": stem,
+                    "paper": "",
+                    "lang": lang,
+                    "page": _parse_numeric(stem),
+                    "en": {"name": title if lang == "en" else "", "resources": []},
+                    "tc": {"name": title if lang == "tc" else "", "resources": []},
+                }
+                # Also set the name for the other language if available
+                other_lang = "tc" if lang == "en" else "en"
+                other_title = _lookup_section_title(subject_id, stem, "", other_lang)
+                if other_title:
+                    entry[other_lang]["name"] = other_title
+                contents_entries.append(entry)
+                print(f"      [{lang}] {pdf_name} → {title or '(no title)'}")
+
+    # Sort: by paper ("" < "1" < "2"), then by section numerically, then by lang
+    def _sort_key(e):
+        p = e.get("paper", "")
+        sec = e.get("section", "")
+        try:
+            sec_key = (0, float(sec))
+        except ValueError:
+            sec_key = (1, sec)
+        return (0 if not p else 1, p if p else "", sec_key, e.get("lang", ""))
+
+    contents_entries.sort(key=_sort_key)
+
+    contents = {
+        "chapter": os.path.basename(by_topics_dir),
+        "contents": contents_entries,
+    }
+    contents_path = os.path.join(by_topics_dir, "contents.json")
+    with open(contents_path, "w", encoding="utf-8") as f:
+        json.dump(contents, f, ensure_ascii=False, indent=4)
+    print(f"    Wrote {contents_path}")
+
+
+def _process_by_years_contents_json_only(by_years_dir, args, base_dir):
+    """Generate a single unified contents.json for the whole by-years directory.
+
+    Produces one contents.json at:
+        <by_years_dir>/contents.json
+
+    Each entry in contents[] corresponds to one PDF with:
+      - section: the PDF's stem (e.g. "p1a", "p1")
+      - year: the year directory name (e.g. "2012")
+      - lang: the language code (e.g. "en", "tc")
+    """
+    contents_entries = []
+    langs = sorted(
+        (entry.name for entry in os.scandir(by_years_dir) if entry.is_dir()),
+    )
+
+    for lang in langs:
+        lang_dir = os.path.join(by_years_dir, lang)
+        year_dirs = sorted(
+            (entry.name for entry in os.scandir(lang_dir) if entry.is_dir()),
+            key=_natural_id_sort_key,
+        )
+
+        for year in year_dirs:
+            year_dir = os.path.join(lang_dir, year)
+            pdf_files = sorted(f for f in os.listdir(year_dir) if f.endswith(".pdf"))
+            for pdf_name in pdf_files:
+                stem = pdf_name[:-4]
+                entry = {
+                    "section": stem,
+                    "year": year,
+                    "lang": lang,
+                    "page": _parse_numeric(stem),
+                    "en": {"name": "", "resources": []},
+                    "tc": {"name": "", "resources": []},
+                }
+                contents_entries.append(entry)
+                print(f"      [{lang}/{year}] {pdf_name}")
+
+    # Sort by year, then by lang, then by section
+    def _sort_key(e):
+        yr = e.get("year", "")
+        sec = e.get("section", "")
+        try:
+            sec_key = (0, float(sec))
+        except ValueError:
+            sec_key = (1, sec)
+        return (yr, e.get("lang", ""), sec_key)
+
+    contents_entries.sort(key=_sort_key)
+
+    contents = {
+        "chapter": os.path.basename(by_years_dir),
+        "contents": contents_entries,
+    }
+    contents_path = os.path.join(by_years_dir, "contents.json")
+    with open(contents_path, "w", encoding="utf-8") as f:
+        json.dump(contents, f, ensure_ascii=False, indent=4)
+    print(f"    Wrote {contents_path}")
+
+
+def _parse_numeric(value):
+    """Try to convert a string to numeric (int or float), return as-is on failure."""
+    try:
+        return int(value)
+    except ValueError:
+        try:
+            return float(value)
+        except ValueError:
+            return value
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  Main
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1570,11 +2445,29 @@ def main():
         metavar="N",
         help="Capture book title from first N page images via ETT/vLLM (step 8). 0 = disabled.",
     )
+    parser.add_argument(
+        "--past-papers",
+        action="store_true",
+        help="Process past-papers in data/past-papers/ instead of textbooks in data/",
+    )
+    parser.add_argument(
+        "--contents-json-only",
+        action="store_true",
+        help="[past-papers only] Generate only contents.json with ETT-extracted titles from the first page of each PDF. Does NOT extract page images.",
+    )
     args = parser.parse_args()
+
+    # --contents-json-only implies --skip-pdfs (no page extraction needed)
+    if args.contents_json_only:
+        args.skip_pdfs = True
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     base_dir = os.path.dirname(script_dir)
     data_root = os.path.join(base_dir, "data")
+
+    if args.past_papers:
+        _process_past_papers(data_root, args, base_dir)
+        return
 
     if args.chapter_path:
         data_dir = os.path.join(data_root, args.chapter_path)
