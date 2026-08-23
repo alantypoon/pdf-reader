@@ -15,6 +15,7 @@ stop_process() {
 }
 
 
-
 stop_process 3007
 stop_process 3002
+stop_process 5173
+stop_process 5174

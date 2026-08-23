@@ -16,6 +16,7 @@ const STORAGE_KEY = 'pdfReaderAnnotationQueue';
 const MAX_BATCH = 20;
 const IDLE_MS = 300;
 const MAX_RETRIES = 3;
+const INITIAL_RETRY_DELAY_MS = 5000;
 
 /** Return an ISO-8601 timestamp in Hong Kong time (UTC+8) */
 function hkNow() {
@@ -133,7 +134,7 @@ async function sendBatchWithRetry(batch, attempt) {
     return data;
   } catch (err) {
     if (attempt < MAX_RETRIES) {
-      const delay = 1000 * Math.pow(2, attempt); // 1s, 2s, 4s
+      const delay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt); // 5s, 10s, 20s
       await new Promise((r) => setTimeout(r, delay));
       return sendBatchWithRetry(batch, attempt);
     }

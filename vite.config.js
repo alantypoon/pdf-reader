@@ -3,8 +3,10 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
-  base: './',
+  base: '/pdf-reader/',
   server: {
+    port: 5174,
+    allowedHosts: ['ai-edu.dedyn.io'],
     proxy: {
       '/api': {
         target: 'http://localhost:3007',

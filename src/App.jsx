@@ -19,6 +19,7 @@ import { loadScrollPos, deleteScrollKeys } from './myLocalStorage';
 import { initQueue, enqueue, updateScope, getPendingCount } from './annotationQueue';
 
 const PREFERENCES_KEY = 'pdfReaderPreferences';
+const COPY_DIALOG_DEFAULTS_KEY = 'pdfReaderCopyDialogDefaults';
 const DRAWER_FONT_SIZE_KEY = 'pdfReaderDrawerFontSize';
 const AI_THEME_KEY = 'pdfReaderAiTheme';
 const DEFAULT_ANNOTATION_COLOR = '#9acd32';
@@ -325,6 +326,32 @@ function loadPreferences() {
   }
 }
 
+function loadCopyDialogDefaults() {
+  if (typeof window === 'undefined') {
+    return { includeAnnotations: false };
+  }
+  try {
+    const raw = window.localStorage.getItem(COPY_DIALOG_DEFAULTS_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return {
+      includeAnnotations: Boolean(parsed?.includeAnnotations),
+    };
+  } catch {
+    return { includeAnnotations: false };
+  }
+}
+
+function saveCopyDialogDefaults(defaults) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(COPY_DIALOG_DEFAULTS_KEY, JSON.stringify({
+      includeAnnotations: Boolean(defaults?.includeAnnotations),
+    }));
+  } catch {
+    // ignore localStorage write failures
+  }
+}
+
 function getSectionName(section, language) {
   const value = section?.[language];
   if (!value) return '';
@@ -377,6 +404,125 @@ function hasRenderableSource(source) {
 
 function getPageSourceKey(language, role = 'student') {
   return `${language}:${role}`;
+}
+
+const MATERIAL_TEXTBOOK = 'textbook';
+const MATERIAL_PP_TOPICS = 'by-topics';
+const MATERIAL_PP_YEARS = 'by-years';
+
+const VIEW_EN_STUDENT = 'en-student';
+const VIEW_TC_STUDENT = 'tc-student';
+const VIEW_EN_TEACHER = 'en-teacher';
+const VIEW_TC_TEACHER = 'tc-teacher';
+const VIEW_PAST_PAPER = 'past-paper';
+const VIEW_MY_PAPER = 'my-paper';
+const VIEW_PP_RELATED = 'pp-related';
+
+const ALL_VIEW_IDS = [
+  VIEW_EN_STUDENT,
+  VIEW_TC_STUDENT,
+  VIEW_EN_TEACHER,
+  VIEW_TC_TEACHER,
+  VIEW_PAST_PAPER,
+  VIEW_PP_RELATED,
+  VIEW_MY_PAPER,
+];
+
+function mapMaterialToLegacyReaderMode(material) {
+  if (material === MATERIAL_PP_TOPICS) return 'by-topics';
+  if (material === MATERIAL_PP_YEARS) return 'by-years';
+  return 'textbook';
+}
+
+function getDefaultViewsForMaterial(material) {
+  if (material === MATERIAL_PP_TOPICS || material === MATERIAL_PP_YEARS) {
+    return [VIEW_PAST_PAPER];
+  }
+  return [VIEW_EN_STUDENT];
+}
+
+function normalizeSelectedViewsForMaterial(material, views) {
+  const next = Array.isArray(views) ? views.filter((view) => ALL_VIEW_IDS.includes(view)) : [];
+  // Always return views in the canonical ALL_VIEW_IDS order, regardless of selection order.
+  const sortByCanonical = (arr) => [...arr].sort((a, b) => ALL_VIEW_IDS.indexOf(a) - ALL_VIEW_IDS.indexOf(b));
+  if (material === MATERIAL_PP_TOPICS || material === MATERIAL_PP_YEARS) {
+    // Past-paper materials can be shown alongside textbook English student and My Paper.
+    // Only exclude views that are inherently textbook-alternative/special-purpose.
+    const filtered = next.filter((view) => (
+      view === VIEW_PAST_PAPER
+      || view === VIEW_MY_PAPER
+      || view === VIEW_EN_STUDENT
+    ));
+    const ensured = filtered.includes(VIEW_PAST_PAPER)
+      ? filtered
+      : [VIEW_PAST_PAPER, ...filtered];
+    return sortByCanonical(ensured);
+  }
+  // In textbook mode: allow textbook views, My Paper, and PP-related; exclude past-paper only
+  const filtered = next.filter((view) => view !== VIEW_PAST_PAPER);
+  // Only force a default if every view (including My Paper) was removed — avoids a blank stage.
+  if (!filtered.length) filtered.unshift(VIEW_EN_STUDENT);
+  return sortByCanonical(filtered);
+}
+
+function getLegacyLanguageRoleFromViews(views) {
+  const selected = new Set(Array.isArray(views) ? views : []);
+  const hasEnStudent = selected.has(VIEW_EN_STUDENT);
+  const hasTcStudent = selected.has(VIEW_TC_STUDENT);
+  const hasEnTeacher = selected.has(VIEW_EN_TEACHER);
+  const hasTcTeacher = selected.has(VIEW_TC_TEACHER);
+
+  if ((hasEnStudent || hasEnTeacher) && (hasTcStudent || hasTcTeacher)) {
+    return { language: 'bilingual', roleMode: 'student' };
+  }
+  if (hasTcStudent || hasTcTeacher) {
+    if (hasTcStudent && hasTcTeacher) return { language: 'tc', roleMode: 'dual' };
+    return { language: 'tc', roleMode: hasTcTeacher ? 'teacher' : 'student' };
+  }
+  if (hasEnStudent && hasEnTeacher) return { language: 'en', roleMode: 'dual' };
+  if (hasEnTeacher) return { language: 'en', roleMode: 'teacher' };
+  return { language: 'en', roleMode: 'student' };
+}
+
+function mergePastPaperTopicEntries(entries, selectedLanguage) {
+  const grouped = new Map();
+  (Array.isArray(entries) ? entries : []).forEach((entry) => {
+    const section = String(entry?.section || '').trim();
+    if (!section) return;
+    const paper = String(entry?.paper || '').trim();
+    const key = `${paper}::${section}`;
+    const existing = grouped.get(key) || {
+      section,
+      paper,
+      enName: '',
+      tcName: '',
+    };
+    const enName = String(entry?.en?.name || '').trim();
+    const tcName = String(entry?.tc?.name || '').trim();
+    if (enName && !existing.enName) existing.enName = enName;
+    if (tcName && !existing.tcName) existing.tcName = tcName;
+    grouped.set(key, existing);
+  });
+
+  return [...grouped.values()].map((entry) => ({
+    id: entry.section,
+    paper: entry.paper,
+    label: selectedLanguage === 'tc'
+      ? (entry.tcName || entry.enName || `Topic ${entry.section}`)
+      : (entry.enName || entry.tcName || `Topic ${entry.section}`),
+    searchText: [entry.section, entry.enName, entry.tcName].filter(Boolean).join('\n'),
+  }));
+}
+
+function getViewLabelKey(viewId) {
+  if (viewId === VIEW_EN_STUDENT) return 'viewEnglishStudent';
+  if (viewId === VIEW_TC_STUDENT) return 'viewChineseStudent';
+  if (viewId === VIEW_EN_TEACHER) return 'viewEnglishTeacher';
+  if (viewId === VIEW_TC_TEACHER) return 'viewChineseTeacher';
+  if (viewId === VIEW_PAST_PAPER) return 'viewPastPaper';
+  if (viewId === VIEW_MY_PAPER) return 'viewMyPaper';
+  if (viewId === VIEW_PP_RELATED) return 'viewPpRelated';
+  return viewId;
 }
 
 function getScrollCacheKeyForSource(source) {
@@ -712,7 +858,20 @@ function App() {
   const displayModeRef = useRef(displayMode);
   const selectedPageRef = useRef(selectedPage);
   const selectedFileRef = useRef(selectedFile);
-  const zoomLevelRef = useRef(null);   // synced via useEffect below
+  const zoomLevelRef = useRef(null);   // synced via useEffect — always reflects active material zoom
+  const zoomSettingsRef = useRef(null);
+  const activeZoomBucketRef = useRef('textbook');
+  const gestureZoomBucketRef = useRef('textbook'); // bucket of the pane being pinched/wheeled
+  const setZoomForBucketRef = useRef((bucket, valueOrUpdater) => setZoomSettings((prev) => {
+    const old = prev[bucket].zoom;
+    const next = typeof valueOrUpdater === 'function' ? valueOrUpdater(old) : valueOrUpdater;
+    if (next === old) return prev;
+    return { ...prev, [bucket]: { ...prev[bucket], zoom: next } };
+  }));
+  const setFitModeForBucketRef = useRef((bucket, value) => setZoomSettings((prev) => {
+    if (prev[bucket].fitMode === value) return prev;
+    return { ...prev, [bucket]: { ...prev[bucket], fitMode: value } };
+  }));
   const zoomAnchorTokenRef = useRef(0);
   const currentChapterRef = useRef(null);  // synced via useEffect below
   const selectedChapterRef = useRef(selectedChapter);
@@ -728,17 +887,175 @@ function App() {
   const selectedLanguageRef = useRef(selectedLanguage);
   const [selectedRoleMode, setSelectedRoleMode] = useState(savedPrefs.selectedRoleMode || savedPrefs.selectedAudienceMode || 'student');
   const selectedRoleModeRef = useRef(selectedRoleMode);
-  const [readerMode, setReaderMode] = useState('textbook');
+  const [materialMode, setMaterialMode] = useState(savedPrefs.materialMode || MATERIAL_TEXTBOOK);
+  const [selectedViews, setSelectedViews] = useState(() => normalizeSelectedViewsForMaterial(
+    savedPrefs.materialMode || MATERIAL_TEXTBOOK,
+    savedPrefs.selectedViews || getDefaultViewsForMaterial(savedPrefs.materialMode || MATERIAL_TEXTBOOK)
+  ));
+  const [readerMode, setReaderMode] = useState(mapMaterialToLegacyReaderMode(savedPrefs.materialMode || MATERIAL_TEXTBOOK));
   // Past-papers data
   const [pastPaperCatalog, setPastPaperCatalog] = useState(null);
-  const [pastPaperPaperType, setPastPaperPaperType] = useState('');
-  const [pastPaperTopic, setPastPaperTopic] = useState('');
-  const [pastPaperYear, setPastPaperYear] = useState('');
-  const [pastPaperYearType, setPastPaperYearType] = useState('p1');
+  const [pastPaperPaperType, setPastPaperPaperType] = useState(savedPrefs.pastPaperPaperType || '');
+  const [pastPaperTopic, setPastPaperTopic] = useState(savedPrefs.pastPaperTopic || '');
+  const [pastPaperYear, setPastPaperYear] = useState(savedPrefs.pastPaperYear || '');
+  const [pastPaperYearType, setPastPaperYearType] = useState(savedPrefs.pastPaperYearType || 'p1');
+  const [pastPaperLanguage, setPastPaperLanguage] = useState(savedPrefs.pastPaperLanguage || 'en');
   const [pastPaperImages, setPastPaperImages] = useState([]);
   const [pastPaperLoaded, setPastPaperLoaded] = useState(false);
+  // PP-related view: section → topic mapping + loaded images
+  const [sectionTopicMap, setSectionTopicMap] = useState(null); // {chapter: {section: [{topicId, topicName, paper, score}]}}
+  const [ppRelatedImages, setPpRelatedImages] = useState([]);
+  const [ppRelatedLoaded, setPpRelatedLoaded] = useState(false);
+  const [ppRelatedLanguage, setPpRelatedLanguage] = useState(savedPrefs.ppRelatedLanguage || 'en');
   const lastReaderModeRef = useRef('textbook');
   const lastPastPaperSubjectRef = useRef('');
+
+  // My Paper: blank annotation pages; count persisted in localStorage
+  const MY_PAPER_PAGE_COUNT_KEY = 'pdfReaderMyPaperPageCount';
+  const [myPaperPageCount, setMyPaperPageCount] = useState(() => {
+    try { return Math.max(1, parseInt(window.localStorage.getItem(MY_PAPER_PAGE_COUNT_KEY) || '1', 10) || 1); } catch { return 1; }
+  });
+  const MY_PAPER_ORDER_KEY = 'pdfReaderMyPaperOrder';
+  const [myPaperOrder, setMyPaperOrder] = useState(() => {
+    try {
+      const raw = window.localStorage.getItem(MY_PAPER_ORDER_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      const count = Math.max(1, parseInt(window.localStorage.getItem(MY_PAPER_PAGE_COUNT_KEY) || '1', 10) || 1);
+      if (Array.isArray(parsed) && parsed.length === count) return parsed;
+      return Array.from({ length: count }, (_, i) => i + 1);
+    } catch { return [1]; }
+  });
+  const [myPaperPage, setMyPaperPage] = useState(1);
+  const [myPaperContextMenu, setMyPaperContextMenu] = useState(null); // { page, x, y }
+  const myPaperHistoryRef = useRef([]); // undo stack of { count, order } snapshots
+  const myPaperRedoStackRef = useRef([]); // redo stack
+  const myPaperPageCountRef = useRef(myPaperPageCount);
+  const myPaperScopeRef = useRef(null); // kept in sync below for use in callbacks
+  const [ppRelatedPage, setPpRelatedPage] = useState(1);
+  // Blank images array — stable identity as long as count doesn't change; no DOM rebuild on reorder/delete
+  const myPaperImages = useMemo(() => Array(myPaperPageCount).fill(null), [myPaperPageCount]);
+  myPaperPageCountRef.current = myPaperPageCount;
+  // Keep order in sync when page count changes externally (e.g. auto-add via scroll)
+  const myPaperOrderRef = useRef(myPaperOrder);
+  myPaperOrderRef.current = myPaperOrder;
+  // My Paper is always "selected" when the view is toggled on
+  const myPaperSelectedId = 'my-paper';
+
+  const handleMyPaperAdd = useCallback(() => {
+    setMyPaperPageCount((prev) => {
+      const next = prev + 1;
+      try { window.localStorage.setItem(MY_PAPER_PAGE_COUNT_KEY, String(next)); } catch {}
+      // Append new slot at the end of the order
+      const nextOrder = [...myPaperOrderRef.current, next];
+      setMyPaperOrder(nextOrder);
+      try { window.localStorage.setItem(MY_PAPER_ORDER_KEY, JSON.stringify(nextOrder)); } catch {}
+      return next;
+    });
+  }, []);
+
+  const handleMyPaperDeletePage = useCallback(() => {
+    setMyPaperPageCount((prev) => {
+      if (prev <= 1) return prev;
+      const next = prev - 1;
+      try { window.localStorage.setItem(MY_PAPER_PAGE_COUNT_KEY, String(next)); } catch {}
+      return next;
+    });
+    setMyPaperPage((prev) => prev > 1 ? prev - 1 : 1);
+  }, []);
+
+  // Persist a new { count, order } snapshot to both state and localStorage
+  const applyMyPaperState = useCallback((count, order) => {
+    setMyPaperPageCount(count);
+    setMyPaperOrder(order);
+    try {
+      window.localStorage.setItem(MY_PAPER_PAGE_COUNT_KEY, String(count));
+      window.localStorage.setItem(MY_PAPER_ORDER_KEY, JSON.stringify(order));
+    } catch {}
+  }, []);
+
+  const handleMyPaperDeletePageAt = useCallback((displayPos) => {
+    const currentCount = myPaperPageCountRef.current;
+    const currentOrder = myPaperOrderRef.current;
+    myPaperHistoryRef.current = [...myPaperHistoryRef.current.slice(-19), { count: currentCount, order: currentOrder }];
+    myPaperRedoStackRef.current = [];
+    // Rotate the deleted slot to the end — count stays same so scroll position is preserved
+    const deletedSlot = currentOrder[displayPos - 1];
+    const newSlot = Math.max(...currentOrder) + 1;
+    const nextOrder = [...currentOrder.filter((_, i) => i !== displayPos - 1), newSlot];
+    applyMyPaperState(currentCount, nextOrder);
+    setMyPaperPage((prev) => Math.min(prev, currentCount));
+    // Clear annotations for the deleted slot on the server
+    const scope = myPaperScopeRef.current;
+    if (scope && deletedSlot != null && userId) {
+      const pageId = deletedSlot;
+      // Optimistically remove from local state
+      setRemarks((prev) => prev.filter((r) => !(r.langId === 'my-paper' && Number(r.page) === pageId)));
+      fetchJson(
+        `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(scope.bookId)}&sectionId=${scope.sectionId}&pageId=${pageId}`,
+        { method: 'DELETE' }
+      ).catch(() => {});
+    }
+  }, [applyMyPaperState, userId, selectedBook]);
+
+  const handleMyPaperReorderPage = useCallback((fromPos, toPos) => {
+    if (fromPos === toPos) return;
+    const currentOrder = myPaperOrderRef.current;
+    if (toPos < 1 || toPos > currentOrder.length) return;
+    const nextOrder = [...currentOrder];
+    const [moved] = nextOrder.splice(fromPos - 1, 1);
+    nextOrder.splice(toPos - 1, 0, moved);
+    myPaperHistoryRef.current = [...myPaperHistoryRef.current.slice(-19), { count: myPaperPageCountRef.current, order: currentOrder }];
+    myPaperRedoStackRef.current = [];
+    applyMyPaperState(myPaperPageCountRef.current, nextOrder);
+    setMyPaperPage(toPos);
+  }, [applyMyPaperState]);
+
+  const handleMyPaperUndo = useCallback(() => {
+    const stack = myPaperHistoryRef.current;
+    if (!stack.length) return;
+    const snapshot = stack[stack.length - 1];
+    myPaperHistoryRef.current = stack.slice(0, -1);
+    myPaperRedoStackRef.current = [...myPaperRedoStackRef.current, { count: myPaperPageCountRef.current, order: myPaperOrderRef.current }];
+    applyMyPaperState(snapshot.count, snapshot.order);
+    setMyPaperPage((prev) => Math.min(prev, snapshot.count));
+  }, [applyMyPaperState]);
+
+  const handleMyPaperRedo = useCallback(() => {
+    const stack = myPaperRedoStackRef.current;
+    if (!stack.length) return;
+    const snapshot = stack[stack.length - 1];
+    myPaperRedoStackRef.current = stack.slice(0, -1);
+    myPaperHistoryRef.current = [...myPaperHistoryRef.current, { count: myPaperPageCountRef.current, order: myPaperOrderRef.current }];
+    applyMyPaperState(snapshot.count, snapshot.order);
+    setMyPaperPage((prev) => Math.min(prev, snapshot.count));
+  }, [applyMyPaperState]);
+
+  // Scope for My Paper annotations: priority 1=past-paper, 2=textbook, 3=general
+  const myPaperScope = useMemo(() => {
+    if (materialMode === MATERIAL_PP_TOPICS || materialMode === MATERIAL_PP_YEARS) {
+      const ppKey = materialMode === MATERIAL_PP_TOPICS ? pastPaperTopic : pastPaperYear;
+      return { bookId: ppKey || selectedBook, sectionId: 0, version: 'past-paper' };
+    }
+    if (selectedChapter) {
+      return { bookId: selectedChapter, sectionId: selectedFile, version: 'textbook' };
+    }
+    return { bookId: selectedBook, sectionId: 0, version: 'general' };
+  }, [materialMode, pastPaperTopic, pastPaperYear, selectedBook, selectedChapter, selectedFile]);
+  myPaperScopeRef.current = myPaperScope;
+
+  // My Paper page is independent — not synced with the textbook page
+
+  useEffect(() => {
+    const normalized = normalizeSelectedViewsForMaterial(materialMode, selectedViews);
+    if (normalized.length !== selectedViews.length || normalized.some((view, index) => view !== selectedViews[index])) {
+      setSelectedViews(normalized);
+      return;
+    }
+    const nextReaderMode = mapMaterialToLegacyReaderMode(materialMode);
+    if (readerMode !== nextReaderMode) {
+      setReaderMode(nextReaderMode);
+    }
+  }, [materialMode, selectedViews, readerMode]);
 
   // Auto-fallback to English if the selected language isn't available for the current book.
   // 'bilingual' is a UI mode combining en+tc — only skip fallback when both languages exist.
@@ -757,6 +1074,7 @@ function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(Boolean(savedPrefs.sidebarCollapsed));
   const [sidebarHidden, setSidebarHidden] = useState(Boolean(savedPrefs.sidebarHidden));
   const [pageSources, setPageSources] = useState({});
+  const pageSourcesRef = useRef({});
   const [pageLoading, setPageLoading] = useState(false);
   const [remarks, setRemarks] = useState([]);
   const [pageAnnotations, setPageAnnotations] = useState([]);
@@ -860,14 +1178,19 @@ function App() {
     });
     fetchJson('api/annotations-redo?userId=' + encodeURIComponent(uid) + '&subjectId=' + encodeURIComponent(subj) + '&bookId=' + encodeURIComponent(bk) + '&sectionId=' + sec + '&pageId=' + pg, { method: 'DELETE' }).catch(() => {});
   };
-  const [zoomLevel, setZoomLevel] = useState(Number(savedPrefs.zoomLevel || 1));
-  const [fitMode, setFitMode] = useState(
-    savedPrefs.fitMode === 'height' ? 'height' : savedPrefs.fitMode === 'none' ? 'none' : 'width'
-  );
+  const parseSavedFitMode = (v) => (v === 'height' ? 'height' : v === 'none' ? 'none' : 'width');
+  const [zoomSettings, setZoomSettings] = useState(() => {
+    const saved = savedPrefs.zoomSettings || {};
+    return {
+      textbook: { zoom: Number(saved.textbook?.zoom || savedPrefs.zoomLevel || 1), fitMode: parseSavedFitMode(saved.textbook?.fitMode ?? savedPrefs.fitMode) },
+      'past-paper': { zoom: Number(saved['past-paper']?.zoom || 1), fitMode: parseSavedFitMode(saved['past-paper']?.fitMode) },
+      'my-paper': { zoom: Number(saved['my-paper']?.zoom || 1), fitMode: parseSavedFitMode(saved['my-paper']?.fitMode) },
+    };
+  });
   // Log zoom/fit restoration exactly once on mount (not on every re-render).
   useEffect(() => {
     if (isDebugScrollingPersistence()) {
-      console.log('[zoom-restore] loaded from localStorage:', { zoomLevel: savedPrefs.zoomLevel, fitMode: savedPrefs.fitMode });
+      console.log('[zoom-restore] loaded from localStorage:', { zoomSettings: savedPrefs.zoomSettings, legacy: { zoomLevel: savedPrefs.zoomLevel, fitMode: savedPrefs.fitMode } });
     }
     // savedPrefs is stable — only run on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -976,7 +1299,7 @@ function App() {
   const [singleRowToolbar, setSingleRowToolbar] = useState(false);
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [studyMenuOpen, setStudyMenuOpen] = useState(false);
-  const [zoomMenuOpen, setZoomMenuOpen] = useState(false);
+  const [zoomMenuOpen, setZoomMenuOpen] = useState(null); // null | bucket key
   const [lastStudyAction, setLastStudyAction] = useState('ai'); // 'ai' | 'resources' | 'search'
   const [thumbCols, setThumbCols] = useState(4);
   const [panelPos, setPanelPos] = useState(() => {
@@ -1076,6 +1399,41 @@ function App() {
   }, []);
   const regenerateConfirmMessage = _('confirmRegenerate');
   const fitDisabled = displayMode === 'thumbnails';
+
+  // Stable setters for use inside effect closures (avoid stale captures)
+  const setZoomLevelStable = useCallback((valueOrUpdater) => {
+    setZoomSettings((prev) => {
+      const bucket = activeZoomBucketRef.current;
+      const old = prev[bucket].zoom;
+      const next = typeof valueOrUpdater === 'function' ? valueOrUpdater(old) : valueOrUpdater;
+      if (next === old) return prev;
+      return { ...prev, [bucket]: { ...prev[bucket], zoom: next } };
+    });
+  }, []);
+  const setFitModeStable = useCallback((value) => {
+    setZoomSettings((prev) => {
+      const bucket = activeZoomBucketRef.current;
+      if (prev[bucket].fitMode === value) return prev;
+      return { ...prev, [bucket]: { ...prev[bucket], fitMode: value } };
+    });
+  }, []);
+
+  // Map a pane viewId to the zoom bucket key
+  const paneZoomBucket = (viewId) => {
+    if (viewId === VIEW_MY_PAPER) return 'my-paper';
+    if (viewId === VIEW_PAST_PAPER || viewId === VIEW_PP_RELATED) return 'past-paper';
+    return 'textbook';
+  };
+
+  // Derive zoom bucket from a DOM element inside a pane (uses data-annotation-language)
+  const getBucketForElement = useCallback((el) => {
+    const pane = el?.closest?.('[data-annotation-language]');
+    const lang = pane?.getAttribute('data-annotation-language');
+    if (lang === 'my-paper') return 'my-paper';
+    if (lang === 'past-paper' || lang === 'pp-related') return 'past-paper';
+    return 'textbook';
+  }, []);
+
   const panelDocked = true;
   const sidebarExcerptLanguage = getSidebarExcerptLanguage(selectedLanguage);
 
@@ -1414,32 +1772,47 @@ function App() {
     });
   }, [userId, selectedBook, selectedChapter, selectedFile, sessionUserResolved]);
 
+  const effectivePageSources = useMemo(() => {
+    if ((materialMode === MATERIAL_PP_TOPICS || materialMode === MATERIAL_PP_YEARS) && pastPaperLoaded) {
+      // Past-paper uses its own pane key so annotations stay scoped correctly
+      return pastPaperImages.length > 0 ? { 'past-paper:student': pastPaperImages } : {};
+    }
+    return pageSources;
+  }, [materialMode, pastPaperLoaded, pastPaperImages, pageSources]);
+
   const visiblePanes = useMemo(() => {
-    if (selectedLanguage === 'bilingual') {
-      return ['en', 'tc']
-        .map((language) => ({ language, role: 'student', sourceKey: getPageSourceKey(language, 'student') }))
-        .filter((pane) => hasRenderableSource(pageSources[pane.sourceKey]));
+    if (materialMode === MATERIAL_PP_TOPICS || materialMode === MATERIAL_PP_YEARS) {
+      const panes = [];
+      if (selectedViews.includes(VIEW_PAST_PAPER) && hasRenderableSource(effectivePageSources['past-paper:student'])) {
+        panes.push({ language: 'past-paper', role: 'student', sourceKey: 'past-paper:student', viewId: VIEW_PAST_PAPER });
+      }
+      if (selectedViews.includes(VIEW_EN_STUDENT) && hasRenderableSource(effectivePageSources[getPageSourceKey('en', 'student')])) {
+        panes.push({ language: 'en', role: 'student', sourceKey: getPageSourceKey('en', 'student'), viewId: VIEW_EN_STUDENT });
+      }
+      if (selectedViews.includes(VIEW_MY_PAPER)) {
+        panes.push({ language: 'my-paper', role: 'student', sourceKey: 'my-paper', viewId: VIEW_MY_PAPER });
+      }
+      return panes;
     }
+    const normalized = normalizeSelectedViewsForMaterial(materialMode, selectedViews);
+    const textbookViewToPane = {
+      [VIEW_EN_STUDENT]: { language: 'en', role: 'student', sourceKey: getPageSourceKey('en', 'student'), viewId: VIEW_EN_STUDENT },
+      [VIEW_TC_STUDENT]: { language: 'tc', role: 'student', sourceKey: getPageSourceKey('tc', 'student'), viewId: VIEW_TC_STUDENT },
+      [VIEW_EN_TEACHER]: { language: 'en', role: 'teacher', sourceKey: getPageSourceKey('en', 'teacher'), viewId: VIEW_EN_TEACHER },
+      [VIEW_TC_TEACHER]: { language: 'tc', role: 'teacher', sourceKey: getPageSourceKey('tc', 'teacher'), viewId: VIEW_TC_TEACHER },
+      [VIEW_MY_PAPER]: { language: 'my-paper', role: 'student', sourceKey: 'my-paper', viewId: VIEW_MY_PAPER },
+      [VIEW_PP_RELATED]: { language: 'pp-related', role: 'student', sourceKey: 'pp-related', viewId: VIEW_PP_RELATED },
+    };
 
-    const primaryLanguage = (
-      hasRenderableSource(pageSources[getPageSourceKey(selectedLanguage, 'student')])
-      || hasRenderableSource(pageSources[getPageSourceKey(selectedLanguage, 'teacher')])
-    )
-      ? selectedLanguage
-      : (selectedLanguage === 'en' ? 'tc' : 'en');
-
-    if (selectedRoleMode === 'dual') {
-      return ['student', 'teacher']
-        .map((role) => ({ language: primaryLanguage, role, sourceKey: getPageSourceKey(primaryLanguage, role) }))
-        .filter((pane) => hasRenderableSource(pageSources[pane.sourceKey]));
-    }
-
-    const role = selectedRoleMode === 'teacher' ? 'teacher' : 'student';
-    const sourceKey = getPageSourceKey(primaryLanguage, role);
-    return hasRenderableSource(pageSources[sourceKey])
-      ? [{ language: primaryLanguage, role, sourceKey }]
-      : [];
-  }, [selectedRoleMode, selectedLanguage, pageSources]);
+    return normalizeSelectedViewsForMaterial(materialMode, selectedViews)
+      .map((viewId) => textbookViewToPane[viewId])
+      .filter(Boolean)
+      .filter((pane) => {
+        if (pane.viewId === VIEW_MY_PAPER) return true;
+        if (pane.viewId === VIEW_PP_RELATED) return ppRelatedImages.length > 0;
+        return hasRenderableSource(effectivePageSources[pane.sourceKey]);
+      });
+  }, [materialMode, selectedRoleMode, selectedLanguage, effectivePageSources, selectedViews, ppRelatedImages, ppRelatedLanguage]);
 
   const visibleLanguages = useMemo(() => {
     return [...new Set(visiblePanes.map((pane) => pane.language))];
@@ -1451,6 +1824,34 @@ function App() {
   }, [visiblePanes]);
   const visiblePaneKeysRef = useRef(visiblePaneKeys);
 
+  // Active bucket for the toolbar: PP materials use past-paper, textbook+My Paper uses leading non-My-Paper pane
+  const activeZoomBucket = (() => {
+    if (materialMode === MATERIAL_PP_TOPICS || materialMode === MATERIAL_PP_YEARS) return 'past-paper';
+    const lead = visiblePanes.find((p) => p.viewId !== VIEW_MY_PAPER && p.viewId !== VIEW_PP_RELATED);
+    if (lead) return paneZoomBucket(lead.viewId);
+    if (visiblePanes.length > 0) return paneZoomBucket(visiblePanes[0].viewId);
+    return 'textbook';
+  })();
+
+  const zoomLevel = zoomSettings[activeZoomBucket].zoom;
+  const fitMode = zoomSettings[activeZoomBucket].fitMode;
+
+  const setZoomLevel = (valueOrUpdater) => {
+    setZoomSettings((prev) => {
+      const old = prev[activeZoomBucket].zoom;
+      const next = typeof valueOrUpdater === 'function' ? valueOrUpdater(old) : valueOrUpdater;
+      if (next === old) return prev;
+      return { ...prev, [activeZoomBucket]: { ...prev[activeZoomBucket], zoom: next } };
+    });
+  };
+
+  const setFitMode = (value) => {
+    setZoomSettings((prev) => {
+      if (prev[activeZoomBucket].fitMode === value) return prev;
+      return { ...prev, [activeZoomBucket]: { ...prev[activeZoomBucket], fitMode: value } };
+    });
+  };
+
   // Keep visibleLanguagesRef in sync for use inside callbacks that can't list visibleLanguages as a dependency
   useEffect(() => {
     visibleLanguagesRef.current = visibleLanguages;
@@ -1461,6 +1862,10 @@ function App() {
   const remarksLoadGenRef = useRef(0);
 
   const loadRemarksForCurrentScope = useCallback(async () => {
+    if (materialMode !== MATERIAL_TEXTBOOK && materialMode !== MATERIAL_PP_TOPICS && materialMode !== MATERIAL_PP_YEARS) {
+      setRemarks([]);
+      return [];
+    }
     // Build targets: each visible pane has a language+role combo
     const paneTargets = visiblePanes.map((p) => ({ langId: p.language, role: p.role }));
     if (!paneTargets.length) {
@@ -1473,11 +1878,15 @@ function App() {
 
     const responses = await Promise.all(
       paneTargets.map(({ langId, role }) => {
+        // My Paper and past-paper use their own scope (bookId/sectionId depend on active material)
+        const usePpScope = langId === 'my-paper' || langId === 'past-paper';
+        const bookId = usePpScope ? myPaperScope.bookId : (selectedChapter || selectedBook);
+        const sectionId = usePpScope ? myPaperScope.sectionId : selectedFile;
         const params = new URLSearchParams({
           userId,
           subjectId: selectedBook,
-          bookId: selectedChapter,
-          sectionId: String(selectedFile),
+          bookId,
+          sectionId: String(sectionId),
           langId,
           role,
         });
@@ -1506,7 +1915,7 @@ function App() {
       return [...filtered, ...optimistic];
     });
     return nextRemarks;
-  }, [userId, selectedBook, selectedChapter, selectedFile, selectedLanguage, selectedPage, visiblePanes, sectionScopedAnnotations]);
+  }, [materialMode, userId, selectedBook, selectedChapter, selectedFile, selectedLanguage, selectedPage, visiblePanes, sectionScopedAnnotations, myPaperScope]);
 
   useEffect(() => {
     const loadRemarks = async () => {
@@ -1536,7 +1945,8 @@ function App() {
     );
     const normalized = existing.map((remark) => ({
       ...remark,
-      langId: remark.langId === 'tc' ? 'tc' : 'en',
+      // Preserve special langIds (my-paper, past-paper, pp-related); only coerce unknown ones to en/tc
+      langId: remark.langId === 'tc' ? 'tc' : (remark.langId && remark.langId !== 'en' && !['my-paper','past-paper','pp-related'].includes(remark.langId)) ? 'en' : (remark.langId || 'en'),
       role: remark.role || 'student',
     }));
     // Strictly enforce: only include annotations whose paneKey is currently visible
@@ -1552,7 +1962,8 @@ function App() {
       )
       .map((remark) => ({
         ...remark,
-        langId: remark.langId === 'tc' ? 'tc' : 'en',
+        // Preserve special langIds (my-paper, past-paper, pp-related); only coerce unknown ones to en/tc
+        langId: remark.langId === 'tc' ? 'tc' : (remark.langId && remark.langId !== 'en' && !['my-paper','past-paper','pp-related'].includes(remark.langId)) ? 'en' : (remark.langId || 'en'),
         role: remark.role || 'student',
       }));
     // Strictly enforce: only include annotations whose paneKey is currently visible
@@ -1829,6 +2240,32 @@ function App() {
     return pastPaperCatalog.byTopics.contents;
   }, [pastPaperCatalog]);
 
+  const pastPaperByYearsEntries = useMemo(() => {
+    if (!pastPaperCatalog?.byYears?.contents) return [];
+    return pastPaperCatalog.byYears.contents;
+  }, [pastPaperCatalog]);
+
+  const availablePastPaperLanguages = useMemo(() => {
+    const entries = materialMode === MATERIAL_PP_TOPICS ? pastPaperByTopicsEntries : pastPaperByYearsEntries;
+    const languages = new Set(
+      entries
+        .map((entry) => String(entry?.lang || '').trim().toLowerCase())
+        .filter((lang) => lang === 'en' || lang === 'tc')
+    );
+    return ['en', 'tc'].filter((lang) => languages.has(lang));
+  }, [materialMode, pastPaperByTopicsEntries, pastPaperByYearsEntries]);
+
+  useEffect(() => {
+    if (materialMode !== MATERIAL_PP_TOPICS && materialMode !== MATERIAL_PP_YEARS) return;
+    if (!availablePastPaperLanguages.length) {
+      if (pastPaperLanguage !== 'en') setPastPaperLanguage('en');
+      return;
+    }
+    if (!availablePastPaperLanguages.includes(pastPaperLanguage)) {
+      setPastPaperLanguage(availablePastPaperLanguages[0]);
+    }
+  }, [materialMode, availablePastPaperLanguages, pastPaperLanguage]);
+
   const pastPaperHasPapers = useMemo(() => {
     return pastPaperByTopicsEntries.some(e => e.paper);
   }, [pastPaperByTopicsEntries]);
@@ -1842,25 +2279,45 @@ function App() {
 
   // Topic options for by-topics, filtered by paper type if applicable
   const pastPaperTopicOptions = useMemo(() => {
-    let entries = pastPaperByTopicsEntries;
+    let entries = pastPaperByTopicsEntries.filter((entry) => String(entry?.lang || 'en').trim().toLowerCase() === pastPaperLanguage);
     if (pastPaperHasPapers && pastPaperPaperType) {
       entries = entries.filter(e => String(e.paper) === pastPaperPaperType.replace('paper-', ''));
     }
-    return entries.map(e => ({
-      id: e.section,
-      label: selectedLanguage === 'tc'
-        ? (e.tc?.name || e.en?.name || `Topic ${e.section}`)
-        : (e.en?.name || e.tc?.name || `Topic ${e.section}`),
-      searchText: [e.section, e.en?.name, e.tc?.name].filter(Boolean).join('\n'),
-    }));
-  }, [pastPaperByTopicsEntries, pastPaperHasPapers, pastPaperPaperType, selectedLanguage]);
+    return mergePastPaperTopicEntries(entries, pastPaperLanguage);
+  }, [pastPaperByTopicsEntries, pastPaperHasPapers, pastPaperPaperType, pastPaperLanguage]);
 
   // Year options for by-years
   const pastPaperYearOptions = useMemo(() => {
-    if (!pastPaperCatalog?.byYears?.contents) return [];
-    const years = [...new Set(pastPaperCatalog.byYears.contents.map(e => e.year))].sort();
+    if (!pastPaperByYearsEntries.length) return [];
+    const years = [...new Set(
+      pastPaperByYearsEntries
+        .filter((entry) => String(entry?.lang || 'en').trim().toLowerCase() === pastPaperLanguage)
+        .map((e) => e.year)
+    )].sort();
     return years.map(y => ({ id: y, label: y, searchText: y }));
-  }, [pastPaperCatalog]);
+  }, [pastPaperByYearsEntries, pastPaperLanguage]);
+
+  useEffect(() => {
+    if (materialMode !== MATERIAL_PP_TOPICS) return;
+    if (!pastPaperTopicOptions.length) {
+      if (pastPaperTopic) setPastPaperTopic('');
+      return;
+    }
+    if (!pastPaperTopicOptions.some((option) => String(option.id) === String(pastPaperTopic))) {
+      setPastPaperTopic(pastPaperTopicOptions[0].id);
+    }
+  }, [materialMode, pastPaperTopicOptions, pastPaperTopic]);
+
+  useEffect(() => {
+    if (materialMode !== MATERIAL_PP_YEARS) return;
+    if (!pastPaperYearOptions.length) {
+      if (pastPaperYear) setPastPaperYear('');
+      return;
+    }
+    if (!pastPaperYearOptions.some((option) => String(option.id) === String(pastPaperYear))) {
+      setPastPaperYear(pastPaperYearOptions[0].id);
+    }
+  }, [materialMode, pastPaperYearOptions, pastPaperYear]);
 
   // Load past-paper catalog when subject changes
   useEffect(() => {
@@ -1871,11 +2328,20 @@ function App() {
     setPastPaperTopic('');
     setPastPaperYear('');
     setPastPaperPaperType('');
+    setPastPaperLanguage('en');
     (async () => {
       try {
         const data = await fetchJson(`api/past-papers/catalog?subject=${encodeURIComponent(selectedBook)}`);
         if (data.byTopics || data.byYears) {
           setPastPaperCatalog(data);
+          const availableLanguages = ['en', 'tc'].filter((lang) => {
+            const topicMatch = Array.isArray(data.byTopics?.contents) && data.byTopics.contents.some((entry) => String(entry?.lang || '').trim().toLowerCase() === lang);
+            const yearMatch = Array.isArray(data.byYears?.contents) && data.byYears.contents.some((entry) => String(entry?.lang || '').trim().toLowerCase() === lang);
+            return topicMatch || yearMatch;
+          });
+          if (availableLanguages.length > 0) {
+            setPastPaperLanguage(availableLanguages[0]);
+          }
           // Auto-select first paper type for subjects that have papers
           const entries = data.byTopics?.contents || [];
           if (entries.some(e => e.paper)) {
@@ -1888,11 +2354,82 @@ function App() {
     })();
   }, [selectedBook]);
 
+  // Load section→topic map whenever the book changes
+  useEffect(() => {
+    if (!selectedBook) { setSectionTopicMap(null); return; }
+    setSectionTopicMap(null);
+    (async () => {
+      try {
+        const data = await fetchJson(`api/past-papers/section-topic-map?subject=${encodeURIComponent(selectedBook)}`);
+        setSectionTopicMap(Object.keys(data).length ? data : null);
+      } catch {
+        setSectionTopicMap(null);
+      }
+    })();
+  }, [selectedBook]);
+
+  // Derive matched topics for the current section from the mapping
+  const ppRelatedTopics = useMemo(() => {
+    if (!sectionTopicMap || !selectedChapter || !selectedFile) return [];
+    const chapterMap = sectionTopicMap[selectedChapter];
+    if (!chapterMap) return [];
+    const secKey = String(selectedFile);
+    return chapterMap[secKey] || [];
+  }, [sectionTopicMap, selectedChapter, selectedFile]);
+
+  // Load PP-related pages when view is active and matched topics change
+  useEffect(() => {
+    if (!selectedViews.includes(VIEW_PP_RELATED) || materialMode !== MATERIAL_TEXTBOOK) {
+      setPpRelatedImages([]);
+      setPpRelatedLoaded(false);
+      return;
+    }
+    if (!selectedBook || ppRelatedTopics.length === 0) {
+      setPpRelatedImages([]);
+      setPpRelatedLoaded(false);
+      return;
+    }
+    setPpRelatedLoaded(false);
+    let cancelled = false;
+    (async () => {
+      try {
+        // Fetch pages for all matched topics in parallel and concatenate in score order
+        const results = await Promise.all(
+          ppRelatedTopics.map(async ({ topicId, paper }) => {
+            const paperParam = paper ? `&paper=${encodeURIComponent(paper)}` : '';
+            const data = await fetchJson(
+              `api/past-papers/pages?subject=${encodeURIComponent(selectedBook)}&mode=by-topics&lang=${ppRelatedLanguage}&topic=${encodeURIComponent(topicId)}${paperParam}`
+            );
+            return Array.isArray(data?.images) ? data.images : [];
+          })
+        );
+        if (cancelled) return;
+        // Flatten, preserving topic order (highest-score first)
+        setPpRelatedImages(results.flat());
+        setPpRelatedPage(1);
+        setPpRelatedLoaded(true);
+      } catch (err) {
+        if (!cancelled) {
+          console.warn('[pp-related] failed to load pages:', err);
+          setPpRelatedImages([]);
+          setPpRelatedLoaded(true);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedViews, materialMode, selectedBook, ppRelatedTopics, ppRelatedLanguage]);
+
   // Load past-paper pages when selection changes
   useEffect(() => {
-    if (readerMode === 'textbook') return;
+    if (materialMode !== MATERIAL_PP_TOPICS && materialMode !== MATERIAL_PP_YEARS) return;
+    setSelectedPage(1);
+  }, [pastPaperTopic, pastPaperYear, pastPaperYearType, pastPaperPaperType]);
+
+  // Load past-paper pages when selection changes
+  useEffect(() => {
+    if (materialMode === MATERIAL_TEXTBOOK) return;
     // Auto-set paper type default when entering by-topics
-    if (readerMode === 'by-topics' && pastPaperCatalog?.byTopics) {
+    if (materialMode === MATERIAL_PP_TOPICS && pastPaperCatalog?.byTopics) {
       const entries = pastPaperCatalog.byTopics.contents || [];
       if (entries.some(e => e.paper) && !pastPaperPaperType) {
         setPastPaperPaperType('paper-1');
@@ -1901,11 +2438,11 @@ function App() {
     }
     if (!selectedBook || !pastPaperCatalog) { setPastPaperImages([]); setPastPaperLoaded(false); return; }
 
-    if (readerMode === 'by-topics') {
+    if (materialMode === MATERIAL_PP_TOPICS) {
       if (!pastPaperTopic) { setPastPaperImages([]); setPastPaperLoaded(false); return; }
       const paper = pastPaperPaperType ? pastPaperPaperType.replace('paper-', '') : '';
       const params = new URLSearchParams({
-        subject: selectedBook, mode: 'by-topics', lang: 'en',
+        subject: selectedBook, mode: 'by-topics', lang: pastPaperLanguage,
         paper, topic: pastPaperTopic,
       });
       (async () => {
@@ -1915,10 +2452,10 @@ function App() {
         } catch { setPastPaperImages([]); }
         setPastPaperLoaded(true);
       })();
-    } else if (readerMode === 'by-years') {
+    } else if (materialMode === MATERIAL_PP_YEARS) {
       if (!pastPaperYear || !pastPaperYearType) { setPastPaperImages([]); setPastPaperLoaded(false); return; }
       const params = new URLSearchParams({
-        subject: selectedBook, mode: 'by-years', lang: 'en',
+        subject: selectedBook, mode: 'by-years', lang: pastPaperLanguage,
         year: pastPaperYear, type: pastPaperYearType,
       });
       (async () => {
@@ -1934,34 +2471,33 @@ function App() {
         setPastPaperLoaded(true);
       })();
     }
-  }, [readerMode, selectedBook, pastPaperCatalog, pastPaperPaperType, pastPaperTopic, pastPaperYear, pastPaperYearType]);
+  }, [materialMode, selectedBook, pastPaperCatalog, pastPaperPaperType, pastPaperTopic, pastPaperYear, pastPaperYearType, pastPaperLanguage]);
 
-  // Compute pageSources from pastPaperImages when in past-papers mode
   useEffect(() => {
-    if (readerMode !== 'textbook' && pastPaperLoaded) {
-      if (pastPaperImages.length > 0) {
-        setPageSources({ 'en:student': pastPaperImages });
-        setPageCounts((current) => {
-          if (Array.isArray(pastPaperImages)) {
-            return { ...current, 'en:student': pastPaperImages.length };
-          }
-          return current;
-        });
-        setSelectedPage(1);
-      } else {
-        setPageSources({});
-      }
+    if ((materialMode === MATERIAL_PP_TOPICS || materialMode === MATERIAL_PP_YEARS) && pastPaperLoaded) {
+      setPageCounts((current) => {
+        const next = { ...current };
+        if (Array.isArray(pastPaperImages) && pastPaperImages.length > 0) {
+          next['past-paper:student'] = pastPaperImages.length;
+        } else {
+          delete next['past-paper:student'];
+        }
+        return next;
+      });
+      setSelectedPage((current) => {
+        const maxPage = Array.isArray(pastPaperImages) ? pastPaperImages.length : 0;
+        if (maxPage <= 0) return 1;
+        return Math.min(Math.max(1, Number(current) || 1), maxPage);
+      });
     }
-  }, [readerMode, pastPaperLoaded, pastPaperImages]);
+  }, [materialMode, pastPaperLoaded, pastPaperImages]);
 
-  // Track reader mode changes to restore textbook sources when switching back
+  // Track reader mode changes to trigger re-load when switching back to textbook
   useEffect(() => {
     if (readerMode === 'textbook' && lastReaderModeRef.current !== 'textbook') {
-      // Force re-load of textbook pages
-      if (selectedChapter) {
-        setPageSources({});
-        // The loadPages effect will pick this up
-      }
+      // Bump loadPagesGenerationRef so any in-flight past-paper fetches are discarded,
+      // but don't wipe pageSources — loadPages will overwrite with fresh textbook sources.
+      loadPagesGenerationRef.current += 1;
     }
     lastReaderModeRef.current = readerMode;
   }, [readerMode, selectedChapter]);
@@ -2243,23 +2779,41 @@ function App() {
     setSelectedPage(1);
   }, [selectedChapter, selectedFile]);
 
+  const loadedTextbookPanesRef = useRef('');
+
+  // Keep pageSourcesRef in sync so loadPages can read current sources without
+  // listing pageSources as a dep (which would cause generation-counter races).
+  useEffect(() => { pageSourcesRef.current = pageSources; }, [pageSources]);
+
   useEffect(() => {
     const loadPages = async () => {
       const generation = ++loadPagesGenerationRef.current;
-      setPageLoading(true);
       try {
-        const targets = selectedLanguage === 'bilingual'
-          ? ['en', 'tc']
-          : [selectedLanguage, selectedLanguage === 'en' ? 'tc' : 'en'];
-        const roleTargets = selectedLanguage === 'bilingual'
-          ? ['student']
-          : selectedRoleMode === 'dual'
-            ? ['student', 'teacher']
-            : [selectedRoleMode === 'teacher' ? 'teacher' : 'student'];
+        const requestedPanes = normalizeSelectedViewsForMaterial(MATERIAL_TEXTBOOK, selectedViews)
+          .map((viewId) => {
+            if (viewId === VIEW_EN_STUDENT) return { language: 'en', role: 'student' };
+            if (viewId === VIEW_TC_STUDENT) return { language: 'tc', role: 'student' };
+            if (viewId === VIEW_EN_TEACHER) return { language: 'en', role: 'teacher' };
+            if (viewId === VIEW_TC_TEACHER) return { language: 'tc', role: 'teacher' };
+            return null;
+          })
+          .filter(Boolean);
+        if (!requestedPanes.length) {
+          // No textbook views selected (e.g. only My Paper) — leave existing sources intact
+          return;
+        }
+        // Skip fetch + spinner when same textbook panes are already loaded for the same section
+        const panesKey = `${selectedChapter}|${selectedFile}|${requestedPanes.map(p => `${p.language}:${p.role}`).sort().join(',')}`;
+        const alreadyLoaded = requestedPanes.every(({ language, role }) =>
+          hasRenderableSource(pageSourcesRef.current[getPageSourceKey(language, role)])
+        );
+        if (alreadyLoaded && panesKey === loadedTextbookPanesRef.current) return;
+        loadedTextbookPanesRef.current = panesKey;
+        setPageLoading(true);
         const bookParam = selectedBook ? `&book=${encodeURIComponent(selectedBook)}` : '';
-        console.log(`[loadPages] chapter=${selectedChapter} file=${selectedFile} languages=${targets.join(',')} role=${selectedRoleMode}`);
+        console.log(`[loadPages] chapter=${selectedChapter} file=${selectedFile} panes=${requestedPanes.map((pane) => `${pane.language}/${pane.role}`).join(',')}`);
         const entries = await Promise.allSettled(
-          targets.flatMap((language) => roleTargets.map(async (role) => {
+          requestedPanes.map(async ({ language, role }) => {
             let url = `api/page?chapter=${selectedChapter}&language=${language}&page=${selectedFile}${bookParam}&role=${encodeURIComponent(role)}`;
             // Cache-bust the API call and returned image URLs when ?timestamp is in the page URL
             let bustTimestamp = '';
@@ -2288,7 +2842,7 @@ function App() {
             }
             console.log(`[loadPages]   ${language}/${role}: images=${Array.isArray(data.images) ? data.images.length : 'N/A'} url=${typeof data.url === 'string' ? data.url : 'N/A'} result=${Array.isArray(result) ? result.length + ' imgs' : result}`);
             return [language, role, result];
-          }))
+          })
         );
         // Stale response guard — a newer navigation started while this fetch
         // was in flight, so its result would clobber the newer section's
@@ -2339,7 +2893,7 @@ function App() {
     if (selectedChapter && readerMode === 'textbook') {
       loadPages();
     }
-  }, [selectedChapter, selectedFile, selectedLanguage, selectedBook, selectedRoleMode, readerMode]);
+  }, [selectedChapter, selectedFile, selectedBook, selectedViews, readerMode]);
 
   useEffect(() => {
     if (!displayModeInitializedRef.current) {
@@ -2381,8 +2935,10 @@ function App() {
   }, [selectedPage]);
 
   useEffect(() => {
-    zoomLevelRef.current = zoomLevel;
-  }, [zoomLevel]);
+    zoomLevelRef.current = zoomSettings[activeZoomBucket].zoom;
+    zoomSettingsRef.current = zoomSettings;
+    activeZoomBucketRef.current = activeZoomBucket;
+  }, [zoomSettings, activeZoomBucket]);
 
   useEffect(() => {
     selectedFileRef.current = selectedFile;
@@ -2480,14 +3036,21 @@ function App() {
         displayMode: displayModeRef.current,
         selectedLanguage: selectedLanguageRef.current,
         selectedRoleMode: selectedRoleModeRef.current,
+        materialMode,
+        selectedViews,
+        pastPaperPaperType,
+        pastPaperTopic,
+        pastPaperYear,
+        pastPaperYearType,
+        pastPaperLanguage,
+        ppRelatedLanguage,
         sidebarCollapsed,
         sidebarHidden,
         tool,
         annotationToolsOpen,
         textColor,
         lineWidth,
-        zoomLevel: zoomLevelRef.current,
-        fitMode,
+        zoomSettings,
         panelPos,
         panelVisible,
         wholeWord,
@@ -2527,14 +3090,21 @@ function App() {
     displayMode,
     selectedLanguage,
     selectedRoleMode,
+    materialMode,
+    selectedViews,
+    pastPaperPaperType,
+    pastPaperTopic,
+    pastPaperYear,
+    pastPaperYearType,
+    pastPaperLanguage,
+    ppRelatedLanguage,
     sidebarCollapsed,
     sidebarHidden,
     tool,
     annotationToolsOpen,
     textColor,
     lineWidth,
-    zoomLevel,
-    fitMode,
+    zoomSettings,
     panelPos,
     panelVisible,
     wholeWord,
@@ -2629,7 +3199,7 @@ function App() {
       cancelAnimationFrame(raf1);
       if (timerId) clearTimeout(timerId);
     };
-  }, [pageAnnotations, allSectionAnnotations, pageSources, displayMode, selectedLanguage, sidebarCollapsed, zoomLevel, fitMode, fitRefreshToken, visiblePaneKeys, redrawTick]);
+  }, [pageAnnotations, allSectionAnnotations, pageSources, displayMode, selectedLanguage, sidebarCollapsed, zoomLevel, fitMode, fitRefreshToken, visiblePaneKeys, redrawTick, zoomSettings]);
 
   // Sync annotationToolsOpen with panelVisible
   useEffect(() => {
@@ -2670,12 +3240,13 @@ function App() {
       const dx = m.vx * dt;
       const dy = m.vy * dt;
 
-      // Scroll ALL scroll containers in the stage simultaneously so
-      // bilingual panes stay pixel-perfectly locked — eliminates the
-      // half-page jump caused by pdf-pane-scroll-sync lag.
+      // Scroll only containers in the same zoom bucket (keeps bilingual panes in sync
+      // but prevents cross-material scroll coupling, e.g. Textbook vs My Paper).
       const stage = stageRef.current;
       if (stage) {
+        const bucket = getBucketForElement(m.target);
         stage.querySelectorAll('.pdf-scroll-pages, .pdf-single-page').forEach((el) => {
+          if (getBucketForElement(el) !== bucket) return;
           const hDx = isPageFullyVisibleH(el) ? 0 : dx;
           myScrollBy(el, { left: hDx, top: dy, behavior: 'auto' });
         });
@@ -2820,12 +3391,13 @@ function App() {
         if (touchPinchZoomingRef.current) return;
         e.preventDefault();
         const delta = -e.deltaY * 0.01;
-        const currentZoom = zoomLevelRef.current || 1;
+        const scrollTarget = getScrollTargetForGesture(e);
+        const wheelBucket = getBucketForElement(scrollTarget || e.target);
+        const currentZoom = (zoomSettingsRef.current?.[wheelBucket]?.zoom) || zoomLevelRef.current || 1;
         const nextZoom = Math.min(5, Math.max(0.1, Number((currentZoom + delta).toFixed(2))));
         if (nextZoom === currentZoom) return;
 
         // Anchor-based zoom: keep the cursor position stable on screen
-        const scrollTarget = getScrollTargetForGesture(e);
         if (scrollTarget) {
           const containerRect = scrollTarget.getBoundingClientRect();
           const anchorInfo = getPageZoomAnchorElement(scrollTarget, e.clientX, e.clientY);
@@ -2858,8 +3430,8 @@ function App() {
             createdAt: Date.now(),
           };
 
-          setFitMode('none');
-          setZoomLevel(nextZoom);
+          setFitModeForBucketRef.current(wheelBucket, 'none');
+          setZoomForBucketRef.current(wheelBucket, nextZoom);
 
           // After React re-renders at the new zoom, adjust scroll to keep pinch center stable
           requestAnimationFrame(() => {
@@ -2896,8 +3468,8 @@ function App() {
             }, 160);
           });
         } else {
-          setFitMode('none');
-          setZoomLevel(nextZoom);
+          setFitModeForBucket(wheelBucket, 'none');
+          setZoomForBucket(wheelBucket, nextZoom);
         }
         return;
       }
@@ -2966,12 +3538,13 @@ function App() {
     let pinchActive = false;
     let pinchStartDistance = 0;
     let pinchStartZoom = 1;
+    let gestureBucket = 'textbook'; // zoom bucket of the pane being pinched
     let gestureStartMidX = 0;
     let gestureStartMidY = 0;
     let gestureLockMode = null; // null | 'pan' | 'zoom'
     const isTouchDevice = isIOSDevice || (navigator.maxTouchPoints > 1);
-    // Touch screens lack trackpad's built-in acceleration, so use higher sensitivity.
-    const PINCH_SENSITIVITY = isTouchDevice ? 0.9 : 0.65;
+    // sqrt (0.5) dampening keeps zoom feeling linear regardless of starting zoom level.
+    const PINCH_SENSITIVITY = isTouchDevice ? 0.5 : 0.5;
     let pinchStartAnchor = null;
     // iPad fingers drift more on initial contact, needs larger deadzone.
     const GESTURE_LOCK_DISTANCE = isTouchDevice ? 18 : 10;
@@ -3072,11 +3645,12 @@ function App() {
       accumulatedDeltaX = 0;
       accumulatedDeltaY = 0;
       if (dx === 0 && dy === 0) return;
-      // Scroll ALL scroll containers simultaneously to keep bilingual
-      // panes pixel-locked — prevents pdf-pane-scroll-sync feedback loop.
+      // Scroll only containers in the same zoom bucket as the touch target.
       const stage = stageRef.current;
       if (stage) {
+        const bucket = getBucketForElement(touchScrollTarget);
         stage.querySelectorAll('.pdf-scroll-pages, .pdf-single-page').forEach((el) => {
+          if (getBucketForElement(el) !== bucket) return;
           const hDx = isPageFullyVisibleH(el) ? 0 : dx;
           myScrollBy(el, { left: hDx, top: dy, behavior: 'auto' });
         });
@@ -3225,8 +3799,8 @@ function App() {
     const commitZoomToState = (z, anchor) => {
       clearCssZoomTransform();
       cssBaseScale = z;
-      setFitMode('none');
-      setZoomLevel(z);
+      setFitModeForBucketRef.current(gestureBucket, 'none');
+      setZoomForBucketRef.current(gestureBucket, z);
       schedulePinchZoomAnchor(anchor);
       lastCommitTime = performance.now();
     };
@@ -3246,13 +3820,19 @@ function App() {
         }
       } else {
         // Desktop trackpad: commit every frame (fast enough CPU)
-        setFitMode('none');
-        setZoomLevel(z);
+        setFitModeForBucketRef.current(gestureBucket, 'none');
+        setZoomForBucketRef.current(gestureBucket, z);
         schedulePinchZoomAnchor(anchor);
       }
     };
 
     const onTouchStart = (e) => {
+      // Skip My Paper action buttons — they handle their own events
+      if (e.touches.length > 0) {
+        const t = e.touches[0];
+        const hit = document.elementsFromPoint(t.clientX, t.clientY).find((el) => el.closest('.my-paper-action-btn'));
+        if (hit) return;
+      }
       // Log ALL touch-starts on the canvas to diagnose whether events reach us at all
       if (isDebugScrollingMomentum()) {
         console.log('[momentum] touch-start: RAW event', {
@@ -3286,7 +3866,8 @@ function App() {
         pinchActive = true;
         lastPinchDistance = 0;
         pinchStartDistance = getTouchDistance(e.touches);
-        pinchStartZoom = zoomLevelRef.current || 1;
+        gestureBucket = getBucketForElement(touchScrollTarget || e.target);
+        pinchStartZoom = (zoomSettingsRef.current?.[gestureBucket]?.zoom) || zoomLevelRef.current || 1;
         cssBaseScale = pinchStartZoom;
         lastAppliedZoom = pinchStartZoom;
         lastCommitTime = performance.now();
@@ -3397,8 +3978,8 @@ function App() {
             : (pinchStartAnchor ? { ...pinchStartAnchor, nextZoom: finalZoom } : null);
           latestPinchZoom = null;
           if (finalZoom !== cssBaseScale) {
-            setFitMode('none');
-            setZoomLevel(finalZoom);
+            setFitModeForBucketRef.current(gestureBucket, 'none');
+            setZoomForBucketRef.current(gestureBucket, finalZoom);
             schedulePinchZoomAnchor(finalAnchor);
           }
           touchActive = false;
@@ -3579,8 +4160,8 @@ function App() {
           ? latestPinchZoom.anchor
           : (pinchStartAnchor ? { ...pinchStartAnchor, nextZoom: finalZoom } : null);
         latestPinchZoom = null;
-        setFitMode('none');
-        setZoomLevel(finalZoom);
+        setFitModeForBucketRef.current(gestureBucket, 'none');
+        setZoomForBucketRef.current(gestureBucket, finalZoom);
         schedulePinchZoomAnchor(finalAnchor);
       }
       pinchStartAnchor = null;
@@ -3804,7 +4385,7 @@ function App() {
     }
     if (displayMode === 'thumbnails') {
       setTool('hand');
-      setZoomLevel((prev) => {
+      setZoomLevelStable((prev) => {
         // Clamp to 100% max for thumbnails; default to 25% if at pagination default
         const clamped = Math.min(prev, 1.0);
         const result = (clamped >= 0.95 && clamped <= 1.05) ? 0.25 : clamped;
@@ -3812,7 +4393,7 @@ function App() {
         return result;
       });
     } else {
-      setZoomLevel((prev) => {
+      setZoomLevelStable((prev) => {
         // Clamp to 500% max for pagination/scrolling; restore 100% if at thumbnail default
         const clamped = Math.min(prev, 5.0);
         const result = Math.abs(clamped - 0.25) < 0.01 ? 1.0 : clamped;
@@ -4060,6 +4641,33 @@ function App() {
     });
   };
 
+  const setZoomForBucket = useCallback((bucket, valueOrUpdater) => {
+    setZoomSettings((prev) => {
+      const old = prev[bucket].zoom;
+      const next = typeof valueOrUpdater === 'function' ? valueOrUpdater(old) : valueOrUpdater;
+      if (next === old) return prev;
+      return { ...prev, [bucket]: { ...prev[bucket], zoom: next } };
+    });
+  }, []);
+
+  const setFitModeForBucket = useCallback((bucket, value) => {
+    setZoomSettings((prev) => {
+      if (prev[bucket].fitMode === value) return prev;
+      return { ...prev, [bucket]: { ...prev[bucket], fitMode: value } };
+    });
+  }, []);
+
+  // Keep gesture-handler refs in sync so wheel/touch effects don't need re-subscription
+  // (refs are initialized inline above; these keep them pointing at the stable callbacks)
+
+  const changeZoomForBucket = (bucket, delta) => {
+    setFitModeForBucket(bucket, 'none');
+    setZoomForBucket(bucket, (current) => {
+      const next = current + delta;
+      return Math.min(5, Math.max(0.1, Number(next.toFixed(2))));
+    });
+  };
+
   const cycleBook = () => {
     if (!structure.length) return;
     const index = structure.findIndex((chapter) => chapter.id === selectedChapter);
@@ -4245,15 +4853,17 @@ function App() {
     const optimistic = { ...savedRemark, chapter: savedRemark.chapter || selectedChapter, _optimistic: true };
     setRemarks((prev) => [...prev, optimistic]);
 
-    // Enqueue for batched send — non-blocking, returns instantly.
-    // If offline, the action is persisted to localStorage and will be
-    // sent automatically when the network comes back.
+    // Resolve scope: My Paper and past-paper use myPaperScope; other panes use the normal textbook scope
+    const usePpScope = savedRemark.langId === 'my-paper' || savedRemark.langId === 'past-paper';
+    const remarkBookId = usePpScope ? myPaperScope.bookId : (selectedChapter || selectedBook);
+    const remarkSectionId = usePpScope ? myPaperScope.sectionId : selectedFile;
+
     enqueue('addRemark', {
       ...savedRemark,
       userId,
       subjectId: selectedBook,
-      bookId: selectedChapter,
-      sectionId: selectedFile,
+      bookId: remarkBookId,
+      sectionId: remarkSectionId,
       pageId: savedRemark.page,
       langId: savedRemark.langId,
       role: savedRemark.role,
@@ -4264,7 +4874,7 @@ function App() {
     if (!_skipUndoRecord) {
       clearPageRedo(userId, selectedBook, selectedChapter, selectedFile, savedRemark.page || selectedPage);
     }
-  }, [userId, selectedBook, selectedChapter, selectedFile, annotationScopeLangId, annotationScopeRole]);
+  }, [userId, selectedBook, selectedChapter, selectedFile, myPaperScope, annotationScopeLangId, annotationScopeRole]);
 
   const clearPageRemarks = async () => {
     const targetPage = Math.max(1, Number(selectedPageRef.current || selectedPage || 1));
@@ -4414,11 +5024,11 @@ function App() {
 
     // Optimistic: remove from local remarks instantly — no network delay.
     const removed = remarks.find(
-      (r) => r.createdAt === createdAtValue && ((r.langId === 'tc' ? 'tc' : 'en') === (langId === 'tc' ? 'tc' : 'en'))
+      (r) => r.createdAt === createdAtValue && r.langId === langId
     ) || options.deletedRemark || null;
     if (removed) {
       setRemarks((prev) => prev.filter(
-        (r) => !(r.createdAt === createdAtValue && ((r.langId === 'tc' ? 'tc' : 'en') === (langId === 'tc' ? 'tc' : 'en')))
+        (r) => !(r.createdAt === createdAtValue && r.langId === langId)
       ));
     }
 
@@ -4562,12 +5172,12 @@ function App() {
       const paneKey = `${langId}:${roleId}`;
 
       // Pagination mode: the single rendered page inside .pdf-single-page
-      let pageImage = pane.querySelector('.pdf-single-page canvas, .pdf-single-page img.page-img');
+      let pageImage = pane.querySelector('.pdf-single-page canvas, .pdf-single-page img.page-img, .pdf-single-page div[data-blank]');
 
       if (!pageImage) {
-        // Scrolling mode: collect ALL page canvases/images, keyed by paneKey-pageNum
-        const candidates = pane.querySelectorAll('canvas[data-page], img[data-page]');
-        if (candidates.length > 1 && isScrolling) {
+        // Scrolling mode: collect ALL page canvases/images/blanks, keyed by paneKey-pageNum
+        const candidates = pane.querySelectorAll('canvas[data-page], img[data-page], div[data-page][data-blank]');
+        if (candidates.length >= 1 && isScrolling) {
           for (const el of candidates) {
             const elPage = Number(el.getAttribute('data-page'));
             if (!elPage) continue;
@@ -5032,9 +5642,8 @@ function App() {
     const vpk = visiblePaneKeysRef.current;
     const filteredAnnotations = vpk.length > 0
       ? annotations.filter(a => {
-          const lid = a.langId === 'tc' ? 'tc' : 'en';
           const rid = a.role || 'student';
-          return vpk.includes(`${lid}:${rid}`);
+          return vpk.includes(`${a.langId}:${rid}`);
         })
       : annotations;
     const activeTextEdit = textInputStateRef.current;
@@ -5045,9 +5654,8 @@ function App() {
     // Group annotations by paneKey (lang:role) so we can apply per-pane hard clipping.
     const byPane = {};
     for (const a of visuallyFilteredAnnotations) {
-      const lid = a.langId === 'tc' ? 'tc' : 'en';
       const rid = a.role || 'student';
-      const pk = `${lid}:${rid}`;
+      const pk = `${a.langId}:${rid}`;
       if (!byPane[pk]) byPane[pk] = [];
       byPane[pk].push(a);
     }
@@ -5288,7 +5896,7 @@ function App() {
       (r) => r.chapter === selectedChapter
         && Number(r.page) === Number(searchPage)
         && !clearedTimestampsRef.current.includes(r.createdAt)
-        && (r.langId === 'tc' ? 'tc' : 'en') === langId
+        && r.langId === langId
         && (r.role || 'student') === role
     );
     // Get current page image rect for denormalizing stored percentage coords
@@ -5623,6 +6231,7 @@ function App() {
   };
 
   const handlePointerDown = (event) => {
+    if (event.target?.closest?.('.my-paper-action-btn')) return;
     if (isDebugAnnoStrokes()) console.log('[anno-stroke] ↓ pointerdown id=' + event.pointerId + ' tool=' + tool + ' drawing=' + drawingRef.current + ' activePtrs=' + activePointersRef.current.size);
     if (tool !== 'pen' && tool !== 'highlight' && tool !== 'move' && tool !== 'eraser' && tool !== 'text') {
       return;
@@ -7263,16 +7872,25 @@ function App() {
   }, [isNarrowScreen]);
 
   const isBilingualView = visiblePanes.length > 1;
-  const isSingleLanguageSinglePane = selectedLanguage !== 'bilingual' && selectedRoleMode !== 'dual';
-  // When the screen is portrait OR in the medium tablet-landscape range
-  // (817px–1040px), use the stacked layout with bilingual-mid-header bar
-  // between the two language panes instead of the floating pill badge.
-  const useBilingualMidHeaderLayout = isBilingualView && (isPortrait || isMediumBilingualWidth);
+  // Treat My Paper + textbook as a multi-pane layout, not a single pane.
+  const isSingleLanguageSinglePane = selectedLanguage !== 'bilingual'
+    && selectedRoleMode !== 'dual'
+    && visiblePanes.length === 1;
+  // Stacked mid-header layout only applies to two real textbook language panes.
+  const hasSpecialPane = visiblePanes.some(
+    (p) => p.viewId === VIEW_MY_PAPER || p.viewId === VIEW_PP_RELATED || p.viewId === VIEW_PAST_PAPER
+  );
+  const useBilingualMidHeaderLayout = isBilingualView && visiblePanes.length === 2 && !hasSpecialPane && (isPortrait || isMediumBilingualWidth);
   const maxPagesInGroup = useMemo(() => {
-    const counts = visiblePanes
+    // Only synchronise page heights across same-material textbook panes.
+    // My Paper and PP-related are independent materials and must not be equalised.
+    const textbookPanes = visiblePanes.filter(
+      (pane) => pane.viewId !== VIEW_MY_PAPER && pane.viewId !== VIEW_PP_RELATED
+    );
+    const counts = textbookPanes
       .map((pane) => Number(pageCounts[pane.sourceKey] || 0))
       .filter((value) => value > 0);
-    return counts.length ? Math.max(...counts) : 0;
+    return counts.length > 1 ? Math.max(...counts) : 0;
   }, [visiblePanes, pageCounts]);
   const displayZoomPercent = useMemo(() => {
     const scales = visiblePanes
@@ -7285,6 +7903,31 @@ function App() {
     // No render scale reported yet — unknown
     return null;
   }, [visiblePanes, renderScaleByLanguage]);
+
+  // Ordered list of distinct zoom buckets currently visible (preserves pane order)
+  const activeBuckets = useMemo(() => {
+    const seen = new Set();
+    const result = [];
+    for (const pane of visiblePanes) {
+      const b = paneZoomBucket(pane.viewId);
+      if (!seen.has(b)) { seen.add(b); result.push(b); }
+    }
+    return result.length > 0 ? result : ['textbook'];
+  }, [visiblePanes]);
+
+  // Per-bucket actual render scale (min across panes in that bucket)
+  const displayZoomPercentByBucket = useMemo(() => {
+    const out = {};
+    for (const bucket of ['textbook', 'past-paper', 'my-paper']) {
+      const scales = visiblePanes
+        .filter((p) => paneZoomBucket(p.viewId) === bucket)
+        .map((p) => renderScaleByLanguage[p.sourceKey])
+        .filter((v) => Number.isFinite(v) && v > 0);
+      out[bucket] = scales.length > 0 ? Math.round(Math.min(...scales) * 100) : null;
+    }
+    return out;
+  }, [visiblePanes, renderScaleByLanguage]);
+
   const maxNavigablePage = useMemo(() => {
     const counts = visiblePanes
       .map((pane) => Number(pageCounts[pane.sourceKey] || 0))
@@ -7677,7 +8320,7 @@ function App() {
         if (modalInfo) { setModalInfo(null); return; }
         if (toolMenuOpen) { setToolMenuOpen(false); return; }
         if (studyMenuOpen) { setStudyMenuOpen(false); return; }
-        if (zoomMenuOpen) { setZoomMenuOpen(false); return; }
+        if (zoomMenuOpen) { setZoomMenuOpen(null); return; }
         if (resourcesDrawerOpen) { setResourcesDrawerOpen(false); return; }
         if (searchDrawerOpen) { setSearchDrawerOpen(false); return; }
         if (aiDrawerOpen) { setAiDrawerOpen(false); return; }
@@ -7708,20 +8351,32 @@ function App() {
           changePage(dir);
         }
       }
+
+      // My Paper page-count undo/redo
+      if ((e.ctrlKey || e.metaKey) && !isInput) {
+        if (e.key === 'z' && !e.shiftKey) { e.preventDefault(); handleMyPaperUndo(); return; }
+        if (e.key === 'y' || (e.key === 'z' && e.shiftKey)) { e.preventDefault(); handleMyPaperRedo(); return; }
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [modalInfo, toolMenuOpen, studyMenuOpen, zoomMenuOpen, resourcesDrawerOpen, searchDrawerOpen, aiDrawerOpen, selectedChapter, structure, displayMode]);
+  }, [modalInfo, toolMenuOpen, studyMenuOpen, zoomMenuOpen, resourcesDrawerOpen, searchDrawerOpen, aiDrawerOpen, selectedChapter, structure, displayMode, handleMyPaperUndo, handleMyPaperRedo]);
 
   // ── Right-click context menu: Copy to clipboard ────────
-  const handleCopyToClipboard = useCallback(async () => {
+  const handleCopyToClipboard = useCallback(async ({ mouseX, mouseY } = {}) => {
     if (typeof window === 'undefined') return;
     const stage = stageRef.current;
     const annotationCanvas = canvasRef.current;
     if (!stage) return;
+    const copyDialogDefaults = loadCopyDialogDefaults();
 
-    // Find only the current page's images
-    const currentPage = selectedPageRef.current;
+    // Resolve the page under the mouse cursor (right-click position), or fall back to selectedPage
+    let currentPage = selectedPageRef.current;
+    if (mouseX != null && mouseY != null) {
+      const hit = document.elementsFromPoint(mouseX, mouseY)
+        .find(el => el.dataset?.page);
+      if (hit) currentPage = Number(hit.dataset.page) || currentPage;
+    }
     const currentPageImages = stage.querySelectorAll(`img.page-img[data-page="${currentPage}"]`);
     // Pagination mode: the single rendered canvas per pane
     const pageCanvases = stage.querySelectorAll('.pdf-single-page canvas');
@@ -7735,7 +8390,7 @@ function App() {
             <span>${_('pageContents')} (p.${currentPage})</span>
           </label>
           <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:0.95rem;">
-            <input type="checkbox" id="swal-copy-annotations" checked style="width:18px;height:18px;accent-color:#667eea;" />
+            <input type="checkbox" id="swal-copy-annotations" ${copyDialogDefaults.includeAnnotations ? 'checked' : ''} style="width:18px;height:18px;accent-color:#667eea;" />
             <span>${_('annotations')}</span>
           </label>
         </div>
@@ -7753,6 +8408,7 @@ function App() {
 
     if (!result.isConfirmed || !result.value) return;
     const { includeContents, includeAnnotations } = result.value;
+  saveCopyDialogDefaults({ includeAnnotations });
     if (!includeContents && !includeAnnotations) return;
 
     try {
@@ -7875,7 +8531,7 @@ function App() {
     // Only show custom menu on the stage area (not on buttons/inputs etc.)
     if (e.target.closest('button, input, a, [role="button"]')) return;
     e.preventDefault();
-    handleCopyToClipboard();
+    handleCopyToClipboard({ mouseX: e.clientX, mouseY: e.clientY });
   }, [handleCopyToClipboard]);
 
   // ── Debounced search with infinite-scroll pagination ────
@@ -8111,7 +8767,7 @@ function App() {
     return annotationsToRender
       .filter((annotation) => annotation.type === 'text' && isRichTextAnnotation(annotation) && annotation.createdAt !== activeEditId)
       .map((annotation) => {
-        const langId = annotation.langId === 'tc' ? 'tc' : 'en';
+        const langId = annotation.langId;
         const role = annotation.role || 'student';
         const annotationPage = Number(annotation.page || selectedPage);
         const paneKey = `${langId}:${role}`;
@@ -8426,7 +9082,7 @@ function App() {
       if (!e.target.closest('.tool-menu-wrapper')) {
         setToolMenuOpen(false);
         setStudyMenuOpen(false);
-        setZoomMenuOpen(false);
+        setZoomMenuOpen(null);
       }
     };
     document.addEventListener('pointerdown', onPointer, true);
@@ -8628,35 +9284,128 @@ function App() {
           </button>
         )}
         {!sidebarCollapsed && (
-          <div className="book-section-mode-toggle" role="group" aria-label="Reader mode">
+          <label>
+            <span className="sidebar-label-icon">
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                <path d="M4 5h16v4H4V5zm0 5h16v4H4v-4zm0 5h16v4H4v-4z" />
+              </svg>
+              {_('material')}
+            </span>
+            <div className="book-section-mode-toggle" role="group" aria-label="Material mode">
             <button
               type="button"
-              className={`toggle-btn ${readerMode === 'textbook' ? 'active' : ''}`}
-              onClick={() => setReaderMode('textbook')}
-              aria-pressed={readerMode === 'textbook'}
+              className={`toggle-btn ${materialMode === MATERIAL_TEXTBOOK ? 'active' : ''}`}
+              onClick={() => setMaterialMode(MATERIAL_TEXTBOOK)}
+              aria-pressed={materialMode === MATERIAL_TEXTBOOK}
             >
               {_('textbook')}
             </button>
             <button
               type="button"
-              className={`toggle-btn ${readerMode === 'by-topics' ? 'active' : ''}`}
-              onClick={() => setReaderMode('by-topics')}
-              aria-pressed={readerMode === 'by-topics'}
+              className={`toggle-btn ${materialMode === MATERIAL_PP_TOPICS ? 'active' : ''}`}
+              onClick={() => setMaterialMode(MATERIAL_PP_TOPICS)}
+              aria-pressed={materialMode === MATERIAL_PP_TOPICS}
             >
               {_('papersByTopics')}
             </button>
             <button
               type="button"
-              className={`toggle-btn ${readerMode === 'by-years' ? 'active' : ''}`}
-              onClick={() => setReaderMode('by-years')}
-              aria-pressed={readerMode === 'by-years'}
+              className={`toggle-btn ${materialMode === MATERIAL_PP_YEARS ? 'active' : ''}`}
+              onClick={() => setMaterialMode(MATERIAL_PP_YEARS)}
+              aria-pressed={materialMode === MATERIAL_PP_YEARS}
             >
               {_('papersByYears')}
             </button>
-          </div>
+            </div>
+          </label>
         )}
 
-        {!sidebarCollapsed && readerMode === 'textbook' && sectionOptionsCount > 0 && !(selectedBook === 'physics-oup' && physicsChapterOptions.length > 0) && (
+        {!sidebarCollapsed && (
+          <label>
+            <span className="sidebar-label-icon">
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                <path d="M4 5h7v6H4V5zm9 0h7v6h-7V5zM4 13h7v6H4v-6zm9 0h7v6h-7v-6z" />
+              </svg>
+              {_('view')}
+            </span>
+            <div className="toggle-group multi-toggle-group">
+              {normalizeSelectedViewsForMaterial(materialMode, ALL_VIEW_IDS).filter((viewId) => {
+                if (materialMode === MATERIAL_PP_TOPICS) {
+                  return viewId === VIEW_PAST_PAPER || viewId === VIEW_MY_PAPER;
+                }
+                return true;
+              }).map((viewId) => {
+                const active = selectedViews.includes(viewId);
+                const modeDisabled = (materialMode !== MATERIAL_TEXTBOOK) && !(viewId === VIEW_PAST_PAPER || viewId === VIEW_MY_PAPER);
+                // Only check source availability for non-textbook views; textbook sources
+                // are loaded on-demand per selected view so absence ≠ unavailable.
+                const noSource = viewId === VIEW_MY_PAPER ? false
+                  : viewId === VIEW_PP_RELATED ? ppRelatedTopics.length === 0
+                  : viewId === VIEW_PAST_PAPER ? !hasRenderableSource(effectivePageSources['past-paper:student'])
+                  : false;
+                const disabled = modeDisabled || noSource;
+                return (
+                  <button
+                    key={viewId}
+                    type="button"
+                    className={`toggle-btn ${active ? 'active' : ''}`}
+                    disabled={disabled}
+                    onClick={() => {
+                      setSelectedViews((current) => {
+                        const normalized = normalizeSelectedViewsForMaterial(materialMode, current);
+                        const exists = normalized.includes(viewId);
+                        const next = exists
+                          ? normalized.filter((item) => item !== viewId)
+                          : [...normalized, viewId];
+                        return normalizeSelectedViewsForMaterial(materialMode, next);
+                      });
+                    }}
+                    aria-pressed={active}
+                  >
+                    {_(getViewLabelKey(viewId))}
+                  </button>
+                );
+              })}
+            </div>
+          </label>
+        )}
+
+        {/* ── PP Related controls ───────────────────────────────── */}
+        {!sidebarCollapsed && selectedViews.includes(VIEW_PP_RELATED) && materialMode === MATERIAL_TEXTBOOK && (
+          <label>
+            <span className="sidebar-label-icon">
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 14l-5-5 1.41-1.41L12 14.17l7.59-7.59L21 8l-9 9z" />
+              </svg>
+              {_('viewPpRelated')}
+            </span>
+            {ppRelatedTopics.length === 0 ? (
+              <p style={{ fontSize: '0.8rem', color: 'var(--sidebar-muted, #888)', margin: '4px 0' }}>
+                {_('ppRelatedNoTopics')}
+              </p>
+            ) : (
+              <>
+                <div style={{ fontSize: '0.78rem', color: 'var(--sidebar-muted, #888)', margin: '2px 0 6px' }}>
+                  {ppRelatedTopics.map((t) => t.topicName).filter(Boolean).join(' · ')}
+                </div>
+                <div className="toggle-group">
+                  {['en', 'tc'].map((lang) => (
+                    <button
+                      key={lang}
+                      type="button"
+                      className={`toggle-btn ${ppRelatedLanguage === lang ? 'active' : ''}`}
+                      onClick={() => setPpRelatedLanguage(lang)}
+                      aria-pressed={ppRelatedLanguage === lang}
+                    >{_(lang === 'en' ? 'english' : 'chinese')}</button>
+                  ))}
+                </div>
+              </>
+            )}
+          </label>
+        )}
+
+
+        {!sidebarCollapsed && materialMode === MATERIAL_TEXTBOOK && sectionOptionsCount > 0 && !(selectedBook === 'physics-oup' && physicsChapterOptions.length > 0) && (
           <label>
             <span className="sidebar-label-icon">
               <svg viewBox="0 0 24 24" role="presentation" focusable="false">
@@ -8694,7 +9443,7 @@ function App() {
           </label>
         )}
 
-        {!sidebarCollapsed && readerMode === 'textbook' && selectedBook === 'physics-oup' && physicsChapterOptions.length > 0 && (
+        {!sidebarCollapsed && materialMode === MATERIAL_TEXTBOOK && selectedBook === 'physics-oup' && physicsChapterOptions.length > 0 && (
           <label>
             <span className="sidebar-label-icon">
               <svg viewBox="0 0 24 24" role="presentation" focusable="false">
@@ -8719,8 +9468,31 @@ function App() {
         )}
 
         {/* ── Past-papers: by-topics ───────────────────────────── */}
-        {!sidebarCollapsed && readerMode === 'by-topics' && pastPaperCatalog?.byTopics && (
+        {!sidebarCollapsed && materialMode === MATERIAL_PP_TOPICS && pastPaperCatalog?.byTopics && (
           <>
+            <label>
+              <span className="sidebar-label-icon">
+                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                  <path d="M12 3 4 7v5c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V7l-8-4zm-1 14.5-4-4 1.4-1.4L11 14.7l4.6-4.6L17 11.5l-6 6z" />
+                </svg>
+                {_('language')}
+              </span>
+              <div className="toggle-group">
+                {['en', 'tc'].map((langId) => {
+                  const available = availablePastPaperLanguages.includes(langId);
+                  return (
+                    <button
+                      key={langId}
+                      type="button"
+                      className={`toggle-btn ${pastPaperLanguage === langId ? 'active' : ''}`}
+                      onClick={() => { if (available) setPastPaperLanguage(langId); }}
+                      aria-pressed={pastPaperLanguage === langId}
+                      disabled={!available}
+                    >{_(langId === 'en' ? 'english' : 'chinese')}</button>
+                  );
+                })}
+              </div>
+            </label>
             {/* Paper type selector (shown only for subjects that have paper field) */}
             {pastPaperHasPapers && (
               <label>
@@ -8753,7 +9525,7 @@ function App() {
                   <svg viewBox="0 0 24 24" role="presentation" focusable="false">
                     <path d="M4 5h16v2H4V5zm0 6h16v2H4v-2zm0 6h16v2H4v-2z" />
                   </svg>
-                  {_('section')}
+                  {_('topic')}
                 </span>
                 <div className="selector-stepper-row" data-autocomplete-id="pastpaper-topic">
                   <button type="button" className="selector-stepper-btn" onClick={() => {
@@ -8766,6 +9538,7 @@ function App() {
                     language={selectedLanguage}
                     getSectionName={(item) => item?.label || item?.id || ''}
                     onSelect={(id) => { setPastPaperTopic(id); }}
+                    noSelectionHighlight
                   />
                   <button type="button" className="selector-stepper-btn" onClick={() => {
                     const idx = pastPaperTopicOptions.findIndex(o => o.id === pastPaperTopic);
@@ -8778,8 +9551,31 @@ function App() {
         )}
 
         {/* ── Past-papers: by-years ────────────────────────────── */}
-        {!sidebarCollapsed && readerMode === 'by-years' && pastPaperCatalog?.byYears && (
+        {!sidebarCollapsed && materialMode === MATERIAL_PP_YEARS && pastPaperCatalog?.byYears && (
           <>
+            <label>
+              <span className="sidebar-label-icon">
+                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                  <path d="M12 3 4 7v5c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V7l-8-4zm-1 14.5-4-4 1.4-1.4L11 14.7l4.6-4.6L17 11.5l-6 6z" />
+                </svg>
+                {_('language')}
+              </span>
+              <div className="toggle-group">
+                {['en', 'tc'].map((langId) => {
+                  const available = availablePastPaperLanguages.includes(langId);
+                  return (
+                    <button
+                      key={langId}
+                      type="button"
+                      className={`toggle-btn ${pastPaperLanguage === langId ? 'active' : ''}`}
+                      onClick={() => { if (available) setPastPaperLanguage(langId); }}
+                      aria-pressed={pastPaperLanguage === langId}
+                      disabled={!available}
+                    >{_(langId === 'en' ? 'english' : 'chinese')}</button>
+                  );
+                })}
+              </div>
+            </label>
             {/* Year selector */}
             <label>
               <span className="sidebar-label-icon">
@@ -8799,6 +9595,7 @@ function App() {
                   language={selectedLanguage}
                   getSectionName={(item) => item?.label || ''}
                   onSelect={(id) => { setPastPaperYear(id); }}
+                  noSelectionHighlight
                 />
                 <button type="button" className="selector-stepper-btn" onClick={() => {
                   const idx = pastPaperYearOptions.findIndex(o => o.id === pastPaperYear);
@@ -8815,14 +9612,14 @@ function App() {
                 {_('paperType')}
               </span>
               <div className="toggle-group">
-                {['p1', 'p2', 'ans', 'per'].map((type) => (
+                {(pastPaperCatalog?.byYears?.availableTypesByYear?.[pastPaperYear] || ['p1', 'p2', 'ans', 'per']).map((type) => (
                   <button
                     key={type}
                     type="button"
                     className={`toggle-btn ${pastPaperYearType === type ? 'active' : ''}`}
                     onClick={() => setPastPaperYearType(type)}
                     aria-pressed={pastPaperYearType === type}
-                  >{_(type === 'p1' ? 'typeP1' : type === 'p2' ? 'typeP2' : type === 'ans' ? 'typeAns' : 'typePer')}</button>
+                  >{_(type === 'p1' ? 'typeP1' : type === 'p2' ? 'typeP2' : type === 'ans' ? 'typeAns' : type === 'per' ? 'typePer' : type)}</button>
                 ))}
               </div>
             </label>
@@ -8913,105 +9710,6 @@ function App() {
             </button>
           </div>
         </label>
-
-        <label>
-          <span className="sidebar-label-icon">
-            <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-              <path d="M5 6h9v2H5V6zm2 4h5v2H7v-2zm7.5 0h2.4L20 18h-2.1l-.7-2h-3l-.7 2h-2.1l3.2-8zm.2 4h1.7l-.8-2.3-.9 2.3z" />
-            </svg>
-            {_('language')}
-          </span>
-          <div className="toggle-group">
-            <button
-              className={`toggle-btn ${selectedLanguage === 'en' ? 'active' : ''}`}
-              onClick={() => setSelectedLanguage('en')}
-              aria-pressed={selectedLanguage === 'en'}
-              disabled={!bookAvailableLanguages.includes('en')}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="lang-toggle-icon">
-                <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="1.5"/>
-                <text x="12" y="16" textAnchor="middle" fontSize="11" fontWeight="700" fill="currentColor" fontFamily="system-ui, sans-serif">A</text>
-              </svg>
-              {_('english')}
-            </button>
-            <button
-              className={`toggle-btn ${selectedLanguage === 'tc' ? 'active' : ''}`}
-              onClick={() => setSelectedLanguage('tc')}
-              aria-pressed={selectedLanguage === 'tc'}
-              disabled={!bookAvailableLanguages.includes('tc')}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="lang-toggle-icon">
-                <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="1.5"/>
-                <text x="12" y="17" textAnchor="middle" fontSize="13" fontWeight="700" fill="currentColor" fontFamily="system-ui, sans-serif">文</text>
-              </svg>
-              {_('chinese')}
-            </button>
-            <button
-              className={`toggle-btn ${selectedLanguage === 'bilingual' ? 'active' : ''}`}
-              onClick={() => setSelectedLanguage('bilingual')}
-              aria-pressed={selectedLanguage === 'bilingual'}
-              disabled={!(bookAvailableLanguages.includes('en') && bookAvailableLanguages.includes('tc'))}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="lang-toggle-icon">
-                <rect x="2" y="4" width="9" height="16" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.5"/>
-                <rect x="13" y="4" width="9" height="16" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.5"/>
-                <text x="6.5" y="16" textAnchor="middle" fontSize="8" fontWeight="700" fill="currentColor" fontFamily="system-ui, sans-serif">A</text>
-                <text x="17.5" y="16" textAnchor="middle" fontSize="8" fontWeight="700" fill="currentColor" fontFamily="system-ui, sans-serif">文</text>
-              </svg>
-              {_('bilingual')}
-            </button>
-          </div>
-        </label>
-
-        {selectedLanguage !== 'bilingual' && (
-        <label>
-          <span className="sidebar-label-icon">
-            <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-              <path d="M12 3a4 4 0 110 8 4 4 0 010-8zm-6 15c0-2.76 3.58-5 8-5s8 2.24 8 5v1H6v-1zm-2 1v-1c0-1.9.98-3.58 2.55-4.85C4.39 13.72 3 15.25 3 17v2h1zm16.45-5.85C22.02 14.42 23 16.1 23 18v1h-1v-2c0-1.75-1.39-3.28-3.55-3.85z" />
-            </svg>
-            {_('role')}
-          </span>
-          <div className="toggle-group toggle-group-triple compact-text">
-            <button
-              className={`toggle-btn ${selectedRoleMode === 'student' ? 'active' : ''}`}
-              onClick={() => setSelectedRoleMode('student')}
-              aria-pressed={selectedRoleMode === 'student'}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="lang-toggle-icon">
-                <circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" strokeWidth="1.6"/>
-                <path d="M4 20c0-3.31 3.58-6 8-6s8 2.69 8 6" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
-              </svg>
-              {_('student')}
-            </button>
-            <button
-              className={`toggle-btn ${selectedRoleMode === 'teacher' ? 'active' : ''}`}
-              onClick={() => setSelectedRoleMode('teacher')}
-              aria-pressed={selectedRoleMode === 'teacher'}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="lang-toggle-icon">
-                <rect x="3" y="3" width="18" height="13" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.6"/>
-                <path d="M8 21l4-5 4 5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"/>
-                <path d="M8 9h8M8 12h5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-              </svg>
-              {_('teacher')}
-            </button>
-            <button
-              className={`toggle-btn ${selectedRoleMode === 'dual' ? 'active' : ''}`}
-              onClick={() => setSelectedRoleMode('dual')}
-              aria-pressed={selectedRoleMode === 'dual'}
-            >
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="lang-toggle-icon">
-                <circle cx="8" cy="8" r="3" fill="none" stroke="currentColor" strokeWidth="1.5"/>
-                <path d="M2 19c0-2.76 2.69-5 6-5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                <circle cx="16" cy="8" r="3" fill="none" stroke="currentColor" strokeWidth="1.5"/>
-                <path d="M16 14c3.31 0 6 2.24 6 5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                <path d="M11 19c0-2.76 2.24-5 5-5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-              </svg>
-              {_('dual')}
-            </button>
-          </div>
-        </label>
-        )}
 
         {sidebarCollapsed && (
           <div className="sidebar-icon-stack" aria-label="Collapsed sidebar controls">
@@ -9184,7 +9882,7 @@ function App() {
 
       <main className={`reader ${isRightDrawerOpen ? 'reader-with-right-drawer' : ''}`}>
         <div
-          className={`book-stage ${displayMode} ${isBilingualView ? 'bilingual-layout' : ''} ${useBilingualMidHeaderLayout ? 'bilingual-stacked' : ''} ${isSingleLanguageSinglePane && isRightDrawerOpen ? 'single-pane-with-right-drawer' : ''} tool-${tool}`}
+          className={`book-stage ${displayMode} ${isBilingualView ? 'bilingual-layout' : ''} ${isBilingualView ? `pane-count-${visiblePanes.length}` : ''} ${useBilingualMidHeaderLayout ? 'bilingual-stacked' : ''} ${hasSpecialPane ? 'has-special-pane' : ''} ${isSingleLanguageSinglePane && isRightDrawerOpen ? 'single-pane-with-right-drawer' : ''} tool-${tool}`}
           ref={stageRef}
           onClick={(e) => { handleStageClick(e); if (tool === 'text') handleCanvasClick(e); }}
           onContextMenu={handleStageContextMenu}
@@ -9255,27 +9953,34 @@ function App() {
               <>
                 {visiblePanes.slice(0, 1).map((pane) => {
                   const language = pane.language;
-                  const src = pageSources[pane.sourceKey];
+                  const isMyPaper = pane.viewId === VIEW_MY_PAPER;
+                  const isPpRelated = pane.viewId === VIEW_PP_RELATED;
+                  const src = (isMyPaper || isPpRelated) ? null : effectivePageSources[pane.sourceKey];
                   const isImages = Array.isArray(src);
                   return (
+                    <div key={pane.sourceKey} style={{ display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
                     <PdfPane key={pane.sourceKey} paneLanguage={pane.language} paneRole={pane.role}
-                      source={isImages ? `img:${selectedBook}:${selectedChapter}:${selectedFile}:${pane.sourceKey}` : (src || '')}
-                      images={isImages ? src : null}
+                      source={isMyPaper ? '' : isPpRelated ? `img:${selectedBook}:${selectedChapter}:${selectedFile}:pp-related` : isImages ? `img:${selectedBook}:${selectedChapter}:${selectedFile}:${pane.sourceKey}` : (src || '')}
+                      images={isMyPaper ? myPaperImages : isPpRelated ? ppRelatedImages : isImages ? src : null}
                       title={`${selectedChapter} · ${selectedFile} · ${selectedPage}`}
                       section={null} hideHeader={true}
-                      mode={displayMode} currentPage={selectedPage}
-                      onPageChange={setSelectedPage}
+                      mode={displayMode} currentPage={isMyPaper ? myPaperPage : isPpRelated ? ppRelatedPage : selectedPage}
+                      onPageChange={isMyPaper ? setMyPaperPage : isPpRelated ? setPpRelatedPage : setSelectedPage}
                       onPageCountChange={(count) => setPageCounts((current) => ({ ...current, [pane.sourceKey]: count }))}
                       thumbnailsOpen={showThumbnails}
-                      onThumbnailClick={(page) => { setSelectedPage(page); setDisplayMode('pagination'); }}
-                      syncGroup={displayMode === 'scrolling' ? `${selectedChapter}-${selectedFile}-bilingual` : ''}
-                      syncId={pane.sourceKey} zoom={zoomLevel} thumbCols={thumbCols}
-                      fitMode={fitMode} fitRefreshToken={fitRefreshToken} forceRedrawToken={forceRedrawToken}
+                      onThumbnailClick={(page) => { if (isMyPaper) { setMyPaperPage(page); } else if (isPpRelated) { setPpRelatedPage(page); } else { setSelectedPage(page); setDisplayMode('pagination'); } }}
+                      syncGroup={(isMyPaper || isPpRelated || displayMode !== 'scrolling' || !maxPagesInGroup) ? '' : `${selectedChapter}-${selectedFile}-bilingual`}
+                      syncId={pane.sourceKey} zoom={zoomSettings[paneZoomBucket(pane.viewId)].zoom} thumbCols={thumbCols}
+                      fitMode={zoomSettings[paneZoomBucket(pane.viewId)].fitMode} fitRefreshToken={fitRefreshToken} forceRedrawToken={forceRedrawToken}
                       onRenderScaleChange={(scale) => { setRenderScaleByLanguage((current) => { if (current[pane.sourceKey] === scale) return current; return { ...current, [pane.sourceKey]: scale }; }); }}
                       onScrollCanvasesReady={() => setRedrawTick((t) => t + 1)}
                       language={selectedLanguage}
-                      maxPagesInGroup={maxPagesInGroup}
+                      maxPagesInGroup={(isMyPaper || isPpRelated) ? 0 : maxPagesInGroup}
+                      onScrollPastEnd={isMyPaper ? handleMyPaperAdd : null}
+                      onMyPaperDeletePage={isMyPaper ? handleMyPaperDeletePageAt : null}
+                      onMyPaperMovePage={isMyPaper ? handleMyPaperReorderPage : null}
                     />
+                    </div>
                   );
                 })}
                 <header className="page-card-header bilingual-mid-header">
@@ -9303,27 +10008,34 @@ function App() {
                 </header>
                 {visiblePanes.slice(1).map((pane) => {
                   const language = pane.language;
-                  const src = pageSources[pane.sourceKey];
+                  const isMyPaper = pane.viewId === VIEW_MY_PAPER;
+                  const isPpRelated = pane.viewId === VIEW_PP_RELATED;
+                  const src = (isMyPaper || isPpRelated) ? null : effectivePageSources[pane.sourceKey];
                   const isImages = Array.isArray(src);
                   return (
+                    <div key={pane.sourceKey} style={{ display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
                     <PdfPane key={pane.sourceKey} paneLanguage={pane.language} paneRole={pane.role}
-                      source={isImages ? `img:${selectedBook}:${selectedChapter}:${selectedFile}:${pane.sourceKey}` : (src || '')}
-                      images={isImages ? src : null}
+                      source={isMyPaper ? '' : isPpRelated ? `img:${selectedBook}:${selectedChapter}:${selectedFile}:pp-related` : isImages ? `img:${selectedBook}:${selectedChapter}:${selectedFile}:${pane.sourceKey}` : (src || '')}
+                      images={isMyPaper ? myPaperImages : isPpRelated ? ppRelatedImages : isImages ? src : null}
                       title={`${selectedChapter} · ${selectedFile} · ${selectedPage}`}
                       section={null} hideHeader={true}
-                      mode={displayMode} currentPage={selectedPage}
-                      onPageChange={setSelectedPage}
+                      mode={displayMode} currentPage={isMyPaper ? myPaperPage : isPpRelated ? ppRelatedPage : selectedPage}
+                      onPageChange={isMyPaper ? setMyPaperPage : isPpRelated ? setPpRelatedPage : setSelectedPage}
                       onPageCountChange={(count) => setPageCounts((current) => ({ ...current, [pane.sourceKey]: count }))}
                       thumbnailsOpen={showThumbnails}
-                      onThumbnailClick={(page) => { setSelectedPage(page); setDisplayMode('pagination'); }}
-                      syncGroup={displayMode === 'scrolling' ? `${selectedChapter}-${selectedFile}-bilingual` : ''}
-                      syncId={pane.sourceKey} zoom={zoomLevel} thumbCols={thumbCols}
-                      fitMode={fitMode} fitRefreshToken={fitRefreshToken} forceRedrawToken={forceRedrawToken}
-                      onRenderScaleChange={(scale) => { setRenderScaleByLanguage((current) => { if (current[pane.sourceKey] === scale) return current; return { ...current, [pane.sourceKey]: scale }; }); }}
+                      onThumbnailClick={(page) => { if (isMyPaper) { setMyPaperPage(page); } else if (isPpRelated) { setPpRelatedPage(page); } else { setSelectedPage(page); setDisplayMode('pagination'); } }}
+                      syncGroup={(isMyPaper || isPpRelated || displayMode !== 'scrolling' || !maxPagesInGroup) ? '' : `${selectedChapter}-${selectedFile}-bilingual`}
+                      syncId={pane.sourceKey} zoom={zoomSettings[paneZoomBucket(pane.viewId)].zoom} thumbCols={thumbCols}
+                      fitMode={zoomSettings[paneZoomBucket(pane.viewId)].fitMode} fitRefreshToken={fitRefreshToken} forceRedrawToken={forceRedrawToken}
+                      onRenderScaleChange={isMyPaper ? null : (scale) => { setRenderScaleByLanguage((current) => { if (current[pane.sourceKey] === scale) return current; return { ...current, [pane.sourceKey]: scale }; }); }}
                       onScrollCanvasesReady={() => setRedrawTick((t) => t + 1)}
                       language={selectedLanguage}
-                      maxPagesInGroup={maxPagesInGroup}
+                      maxPagesInGroup={(isMyPaper || isPpRelated) ? 0 : maxPagesInGroup}
+                      onScrollPastEnd={isMyPaper ? handleMyPaperAdd : null}
+                      onMyPaperDeletePage={isMyPaper ? handleMyPaperDeletePageAt : null}
+                      onMyPaperMovePage={isMyPaper ? handleMyPaperReorderPage : null}
                     />
+                    </div>
                   );
                 })}
               </>
@@ -9331,35 +10043,39 @@ function App() {
               /* ── Non-bilingual or bilingual landscape: render all panes normally ── */
               visiblePanes.map((pane) => {
             const language = pane.language;
-            const src = pageSources[pane.sourceKey];
+            const isMyPaper = pane.viewId === VIEW_MY_PAPER;
+            const isPpRelated = pane.viewId === VIEW_PP_RELATED;
+            const src = (isMyPaper || isPpRelated) ? null : effectivePageSources[pane.sourceKey];
             const isImages = Array.isArray(src);
             return (
+              <div key={pane.sourceKey} style={{ display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
               <PdfPane
-                key={pane.sourceKey}
+                key={`pane-${pane.sourceKey}`}
                 paneLanguage={pane.language}
                 paneRole={pane.role}
-                source={isImages ? `img:${selectedBook}:${selectedChapter}:${selectedFile}:${pane.sourceKey}` : (src || '')}
-                images={isImages ? src : null}
+                source={isMyPaper ? '' : isPpRelated ? `img:${selectedBook}:${selectedChapter}:${selectedFile}:pp-related` : isImages ? `img:${selectedBook}:${selectedChapter}:${selectedFile}:${pane.sourceKey}` : (src || '')}
+                images={isMyPaper ? myPaperImages : isPpRelated ? ppRelatedImages : isImages ? src : null}
                 title={`${selectedChapter} · ${selectedFile} · ${selectedPage}`}
                 section={null}
                 hideHeader={isBilingualView}
                 mode={displayMode}
-                currentPage={selectedPage}
-                onPageChange={setSelectedPage}
+                currentPage={isMyPaper ? myPaperPage : isPpRelated ? ppRelatedPage : selectedPage}
+                onPageChange={isMyPaper ? setMyPaperPage : isPpRelated ? setPpRelatedPage : setSelectedPage}
                 onPageCountChange={(count) => setPageCounts((current) => ({ ...current, [pane.sourceKey]: count }))}
                 thumbnailsOpen={showThumbnails}
                 onThumbnailClick={(page) => {
-                  setSelectedPage(page);
-                  setDisplayMode('pagination');
+                  if (isMyPaper) { setMyPaperPage(page); }
+                  else if (isPpRelated) { setPpRelatedPage(page); }
+                  else { setSelectedPage(page); setDisplayMode('pagination'); }
                 }}
-                syncGroup={isBilingualView && displayMode === 'scrolling' ? `${selectedChapter}-${selectedFile}-bilingual` : ''}
+                syncGroup={(isMyPaper || isPpRelated || !isBilingualView || displayMode !== 'scrolling' || !maxPagesInGroup) ? '' : `${selectedChapter}-${selectedFile}-bilingual`}
                 syncId={pane.sourceKey}
-                zoom={zoomLevel}
+                zoom={zoomSettings[paneZoomBucket(pane.viewId)].zoom}
                 thumbCols={thumbCols}
-                fitMode={fitMode}
+                fitMode={zoomSettings[paneZoomBucket(pane.viewId)].fitMode}
                 fitRefreshToken={fitRefreshToken}
                 forceRedrawToken={forceRedrawToken}
-                onRenderScaleChange={(scale) => {
+                onRenderScaleChange={isMyPaper ? null : (scale) => {
                   setRenderScaleByLanguage((current) => {
                     if (current[pane.sourceKey] === scale) {
                       return current;
@@ -9369,8 +10085,12 @@ function App() {
                 }}
                 onScrollCanvasesReady={() => setRedrawTick((t) => t + 1)}
                 language={selectedLanguage}
-                maxPagesInGroup={isBilingualView ? maxPagesInGroup : 0}
+                maxPagesInGroup={(isMyPaper || isPpRelated) ? 0 : isBilingualView ? maxPagesInGroup : 0}
+                onScrollPastEnd={isMyPaper ? handleMyPaperAdd : null}
+                onMyPaperDeletePage={isMyPaper ? handleMyPaperDeletePageAt : null}
+                onMyPaperMovePage={isMyPaper ? handleMyPaperReorderPage : null}
               />
+              </div>
             );
           })
           )}
@@ -9725,25 +10445,27 @@ function App() {
           <div className="toolbar-group toolbar-primary" ref={primaryToolbarRef}>
             <button className="icon-btn" onClick={() => changePage(-1)} disabled={selectedPage <= 1} data-tooltip={displayMode === 'scrolling' ? _('jumpPrevPage') : _('prevPage')} aria-label={displayMode === 'scrolling' ? _('jumpPrevPage') : _('prevPage')}>&lt;</button>
             <button className="icon-btn" onClick={() => changePage(1)} disabled={selectedPage >= maxNavigablePage} data-tooltip={displayMode === 'scrolling' ? _('jumpNextPage') : _('nextPage')} aria-label={displayMode === 'scrolling' ? _('jumpNextPage') : _('nextPage')}>&gt;</button>
-            {!fitDisabled && (
+            {!fitDisabled && (() => {
+              const tbPercent = displayZoomPercentByBucket['textbook'] ?? displayZoomPercentByBucket['past-paper'] ?? displayZoomPercentByBucket['my-paper'];
+              const displayBucket = displayZoomPercentByBucket['textbook'] != null ? 'textbook' : displayZoomPercentByBucket['past-paper'] != null ? 'past-paper' : 'my-paper';
+              const multiSection = activeBuckets.length > 1;
+              return (
             <div className="tool-menu-wrapper">
               <div className="tool-split-btn">
                 <button
                   className="tool-btn tool-split-main"
-                  disabled={fitDisabled}
                   onClick={() => {
-                    if (isDebugZooming()) console.log('[zoom-app] reset zoom to 100%');
-                    setFitMode('none'); setZoomLevel(1);
+                    if (isDebugZooming()) console.log('[zoom-app] reset TB zoom to 100%');
+                    setFitModeForBucket(displayBucket, 'none'); setZoomForBucket(displayBucket, 1);
                   }}
                   data-tooltip={_('zoomLevel')}
                   aria-label={_('zoomLevel')}
                 >
-                  <span className="zoom-percent-label">{displayZoomPercent != null ? `${displayZoomPercent}%` : ''}</span>
+                  <span className="zoom-percent-label">{tbPercent != null ? `${tbPercent}%` : ''}</span>
                 </button>
                 <button
                   className="tool-btn tool-split-arrow"
-                  disabled={fitDisabled}
-                  onClick={() => setZoomMenuOpen((prev) => !prev)}
+                  onClick={() => setZoomMenuOpen((prev) => (prev === 'combined' ? null : 'combined'))}
                   data-tooltip={_('zoomLevel')}
                   aria-label={_('zoomLevel')}
                 >
@@ -9752,72 +10474,74 @@ function App() {
                   </svg>
                 </button>
               </div>
-              {zoomMenuOpen && (
+              {zoomMenuOpen === 'combined' && (
                 <div className="tool-menu-popup">
-                  <div className="tool-menu-section-label">{_('zoomLevel')}</div>
-                  <div className="tool-menu-zoom-slider">
-                    <button
-                      className="tool-menu-zoom-btn"
-                      onClick={(e) => {
-                        const delta = e.shiftKey ? -0.10 : e.ctrlKey ? -0.05 : -0.01;
-                        changeZoom(delta);
-                      }}
-                      aria-label={_('zoomOut')}
-                    >−</button>
-                    <input
-                      type="range"
-                      className="tool-menu-zoom-range"
-                      min="0.1"
-                      max="5"
-                      step="0.05"
-                      value={zoomLevel}
-                      onChange={(e) => {
-                        const val = Number(e.target.value);
-                        if (isDebugZooming()) console.log('[zoom-app] slider change', { from: zoomLevel, to: val });
-                        setFitMode('none'); setZoomLevel(val);
-                      }}
-                      aria-label={_('zoomLevel')}
-                    />
-                    <button
-                      className="tool-menu-zoom-btn"
-                      onClick={(e) => {
-                        const delta = e.shiftKey ? 0.10 : e.ctrlKey ? 0.05 : 0.01;
-                        changeZoom(delta);
-                      }}
-                      aria-label={_('zoomIn')}
-                    >+</button>
-                  </div>
-                  <span className="tool-menu-sep" />
-                  <button
-                    className={`tool-menu-item ${fitMode === 'width' ? 'active' : ''}`}
-                    onClick={() => {
-                      if (isDebugZooming()) console.log('[zoom-app] fitWidth selected');
-                      const keepPage = selectedPage;
-                      setFitMode('width'); setZoomLevel(1); setFitRefreshToken((t) => t + 1); setSelectedPage(keepPage); setZoomMenuOpen(false);
-                    }}
-                  >
-                    <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon">
-                      <path d="M3 12l3.5-3.5 1.4 1.4-1.1 1.1h10.4l-1.1-1.1 1.4-1.4L21 12l-3.5 3.5-1.4-1.4 1.1-1.1H6.8l1.1 1.1-1.4 1.4L3 12zM5 5h14v3h-2V7H7v1H5V5zm0 11h2v1h10v-1h2v3H5v-3z" />
-                    </svg>
-                    {_('fitWidth')}
-                  </button>
-                  <button
-                    className={`tool-menu-item ${fitMode === 'height' ? 'active' : ''}`}
-                    onClick={() => {
-                      if (isDebugZooming()) console.log('[zoom-app] fitHeight selected');
-                      const keepPage = selectedPage;
-                      setFitMode('height'); setZoomLevel(1); setFitRefreshToken((t) => t + 1); setSelectedPage(keepPage); setZoomMenuOpen(false);
-                    }}
-                  >
-                    <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon">
-                      <path d="M12 3l3.5 3.5-1.4 1.4-1.1-1.1V17.2l1.1-1.1 1.4 1.4L12 21l-3.5-3.5 1.4-1.4 1.1 1.1V6.8L9.9 7.9 8.5 6.5 12 3zM5 5h3v2H7v10h1v2H5V5zm11 0h3v14h-3v-2h1V7h-1V5z" />
-                    </svg>
-                    {_('fitHeight')}
-                  </button>
+                  {(['textbook', 'past-paper', 'my-paper']).map((bucket, idx) => {
+                    const bZoom = zoomSettings[bucket].zoom;
+                    const bFitMode = zoomSettings[bucket].fitMode;
+                    const bucketLabelKey = bucket === 'textbook' ? 'zoomBucketTextbook' : bucket === 'past-paper' ? 'zoomBucketPastPaper' : 'zoomBucketMyPaper';
+                    return (
+                      <div key={bucket}>
+                        <div className="tool-menu-section-label">{_(bucketLabelKey)}</div>
+                        <div className="tool-menu-zoom-slider">
+                          <button
+                            className="tool-menu-zoom-btn"
+                            onClick={(e) => { const delta = e.shiftKey ? -0.10 : e.ctrlKey ? -0.05 : -0.01; changeZoomForBucket(bucket, delta); }}
+                            aria-label={_('zoomOut')}
+                          >−</button>
+                          <input
+                            type="range"
+                            className="tool-menu-zoom-range"
+                            min="0.1" max="5" step="0.05"
+                            value={bZoom}
+                            onChange={(e) => {
+                              const val = Number(e.target.value);
+                              if (isDebugZooming()) console.log('[zoom-app] slider change', { bucket, from: bZoom, to: val });
+                              setFitModeForBucket(bucket, 'none'); setZoomForBucket(bucket, val);
+                            }}
+                            aria-label={_('zoomLevel')}
+                          />
+                          <button
+                            className="tool-menu-zoom-btn"
+                            onClick={(e) => { const delta = e.shiftKey ? 0.10 : e.ctrlKey ? 0.05 : 0.01; changeZoomForBucket(bucket, delta); }}
+                            aria-label={_('zoomIn')}
+                          >+</button>
+                        </div>
+                        <button
+                          className={`tool-menu-item tool-menu-item-full ${bFitMode === 'width' ? 'active' : ''}`}
+                          onClick={() => {
+                            if (isDebugZooming()) console.log('[zoom-app] fitWidth selected', bucket);
+                            const keepPage = selectedPage;
+                            setFitModeForBucket(bucket, 'width'); setZoomForBucket(bucket, 1); setFitRefreshToken((t) => t + 1); setSelectedPage(keepPage); setZoomMenuOpen(null);
+                          }}
+                        >
+                          <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon">
+                            <path d="M3 12l3.5-3.5 1.4 1.4-1.1 1.1h10.4l-1.1-1.1 1.4-1.4L21 12l-3.5 3.5-1.4-1.4 1.1-1.1H6.8l1.1 1.1-1.4 1.4L3 12zM5 5h14v3h-2V7H7v1H5V5zm0 11h2v1h10v-1h2v3H5v-3z" />
+                          </svg>
+                          {_('fitWidth')}
+                        </button>
+                        <button
+                          className={`tool-menu-item tool-menu-item-full ${bFitMode === 'height' ? 'active' : ''}`}
+                          onClick={() => {
+                            if (isDebugZooming()) console.log('[zoom-app] fitHeight selected', bucket);
+                            const keepPage = selectedPage;
+                            setFitModeForBucket(bucket, 'height'); setZoomForBucket(bucket, 1); setFitRefreshToken((t) => t + 1); setSelectedPage(keepPage); setZoomMenuOpen(null);
+                          }}
+                        >
+                          <svg viewBox="0 0 24 24" role="presentation" focusable="false" className="tool-menu-item-icon">
+                            <path d="M12 3l3.5 3.5-1.4 1.4-1.1-1.1V17.2l1.1-1.1 1.4 1.4L12 21l-3.5-3.5 1.4-1.4 1.1 1.1V6.8L9.9 7.9 8.5 6.5 12 3zM5 5h3v2H7v10h1v2H5V5zm11 0h3v14h-3v-2h1V7h-1V5z" />
+                          </svg>
+                          {_('fitHeight')}
+                        </button>
+                        {idx < 2 && <span className="tool-menu-sep" />}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
-            )}
+              );
+            })()}
             {showThumbnails && (
               <>
                 <span className="toolbar-sep" />

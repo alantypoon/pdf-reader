@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.js?url';
 import { t, uiLang } from './i18n';
@@ -526,7 +527,10 @@ function PdfPane({
   paneLanguage = 'en',
   paneRole = 'student',
   maxPagesInGroup = 0,
-  hideHeader = false
+  hideHeader = false,
+  onScrollPastEnd = null,
+  onMyPaperDeletePage = null,
+  onMyPaperMovePage = null,
 }) {
   const lang = uiLang(language);
   const _ = (key) => t(key, lang);
@@ -563,6 +567,8 @@ function PdfPane({
   const renderedPageRef = useRef(1);
   const syncingFromRemoteRef = useRef(false);
   const programmaticScrollingRef = useRef(false);  // true while the scroll-to-page effect is scrolling (per-instance, not shared across panes)
+  const scrollPastEndFiredRef = useRef(false);  // prevents repeated onScrollPastEnd fires on a single scroll-to-bottom
+  const [myPaperPageRects, setMyPaperPageRects] = useState([]);  // [{page, top, right}] in viewport coords for portal buttons
   const postRestoreUntilRef = useRef(0);     // timestamp: suppress saveScrollNow for detected-page changes until this time
   const lastRestoredPageRef = useRef(0);      // page number that was just restored — if saveScrollNow detects a different page within the grace period, skip
   const modeGenRef = useRef(0);
@@ -1026,11 +1032,12 @@ function PdfPane({
     if (!isImageMode || mode !== 'pagination') return;
 
     // Handle blank page div dimensions
-    const isBlankPage = currentPage > images.length;
+    const isBlankPage = currentPage > images.length || !images[currentPage - 1];
     if (isBlankPage) {
       const blank = blankRef.current;
+      if (!blank) return;
       const container = blank?.closest('.pdf-single-page');
-      if (!blank || !container) return;
+      if (!container) return;
       if (fitMode === 'height') {
         const h = container.clientHeight;
         if (h > 0) {
@@ -1048,6 +1055,7 @@ function PdfPane({
           blank.style.maxHeight = 'none';
         }
       } else {
+        // fitMode === 'width'
         const w = container.clientWidth;
         if (w > 0) {
           blank.style.width = `${w * zoom}px`;
@@ -2266,12 +2274,25 @@ function PdfPane({
     let uniformImgHeight = null;
     const imgElements = images.map((item, idx) => {
       const pageNum = idx + 1;
+      // Support both old format (plain URL string) and new format ({ url, w, h })
+      const url = typeof item === 'string' ? item : item?.url || '';
+      // Null/empty items become blank A4 pages for My Paper (annotation canvas only)
+      if (!url) {
+        const blankDiv = document.createElement('div');
+        blankDiv.dataset.page = String(pageNum);
+        blankDiv.className = 'page-img my-paper-page';
+        blankDiv.dataset.blank = 'true';
+        const pageNumSpan = document.createElement('span');
+        pageNumSpan.className = 'my-paper-page-number';
+        pageNumSpan.textContent = String(pageNum);
+        blankDiv.appendChild(pageNumSpan);
+        return blankDiv;
+      }
       const img = document.createElement('img');
       img.alt = `${_('pageN')} ${pageNum}`;
       img.dataset.page = String(pageNum);
       img.className = 'page-img';
-      // Support both old format (plain URL string) and new format ({ url, w, h })
-      const url = typeof item === 'string' ? item : item?.url || '';
+      img.dataset.src = url;
       const natW = typeof item === 'object' ? item.w : undefined;
       const natH = typeof item === 'object' ? item.h : undefined;
       img.dataset.src = url;
@@ -2346,7 +2367,9 @@ function PdfPane({
       const pageNum = i + 1;
       const dist = Math.abs(pageNum - explicitTargetPage);
       const shouldEagerLoad = dist <= INITIAL_WINDOW || pageNum === explicitTargetPage;
-      if (shouldEagerLoad || isBilingual) {
+      // Blank divs (My Paper) are always appended directly — no lazy-load needed.
+      const isBlankEl = imgElements[i].dataset.blank === 'true';
+      if (shouldEagerLoad || isBilingual || isBlankEl) {
         // Bilingual: all pages must be real images because the CSS
         // height rule must apply to actual <img> elements.
         fragment.appendChild(imgElements[i]);
@@ -2878,6 +2901,17 @@ function PdfPane({
         mySetScrollTop(mount, maxTop);
         return;
       }
+      // Auto-add page when user scrolls near the bottom of a My Paper pane
+      if (onScrollPastEnd && !programmaticScrollingRef.current && !isInitialLoadRef.current) {
+        if (top >= maxTop - 80) {
+          if (!scrollPastEndFiredRef.current) {
+            scrollPastEndFiredRef.current = true;
+            onScrollPastEnd();
+          }
+        } else {
+          scrollPastEndFiredRef.current = false;
+        }
+      }
       // Containing page (offsetTop ≤ scrollTop), not geometrically nearest.
       const { page: nearest } = findContainingPage(mount, top);
       // Only update React state when the page actually changes to avoid
@@ -3010,6 +3044,123 @@ function PdfPane({
       mount.removeEventListener('scroll', onScrollWithSave);
     };
   }, [isImageMode, images, mode, syncGroup, syncId, maxPagesInGroup, forceRedrawToken]);
+
+  // ── Drag-to-reorder for My Paper pages ───────────────────────
+  useEffect(() => {
+    if (!onMyPaperMovePage) return;
+    const mount = scrollRef.current;
+    if (!mount) return;
+
+    let dragFrom = null;   // page number being dragged
+    let indicator = null;  // drop-position line element
+
+    const removeIndicator = () => {
+      if (indicator) { indicator.remove(); indicator = null; }
+    };
+
+    const getPageElAtY = (y) => {
+      // Find the .my-paper-page closest to the pointer Y within the scroll container
+      const pages = mount.querySelectorAll('.my-paper-page[data-page]');
+      let best = null; let bestDist = Infinity;
+      pages.forEach((el) => {
+        const r = el.getBoundingClientRect();
+        const mid = (r.top + r.bottom) / 2;
+        const dist = Math.abs(y - mid);
+        if (dist < bestDist) { bestDist = dist; best = el; }
+      });
+      return best;
+    };
+
+    const showIndicator = (targetEl, above) => {
+      removeIndicator();
+      indicator = document.createElement('div');
+      indicator.className = 'my-paper-drop-indicator';
+      const r = targetEl.getBoundingClientRect();
+      const mountR = mount.getBoundingClientRect();
+      indicator.style.top = `${(above ? r.top : r.bottom) - mountR.top + mount.scrollTop}px`;
+      mount.querySelector('.pdf-content')?.appendChild(indicator) || mount.appendChild(indicator);
+    };
+
+    const onPointerDown = (e) => {
+      const handle = e.target.closest('[data-drag-handle]');
+      if (!handle) return;
+      e.preventDefault();
+      e.stopPropagation();
+      dragFrom = parseInt(handle.dataset.page, 10);
+      handle.closest('.my-paper-page')?.classList.add('my-paper-dragging');
+    };
+
+    const onPointerMove = (e) => {
+      if (dragFrom == null) return;
+      const targetEl = getPageElAtY(e.clientY);
+      if (!targetEl) return;
+      const r = targetEl.getBoundingClientRect();
+      const above = e.clientY < (r.top + r.bottom) / 2;
+      showIndicator(targetEl, above);
+    };
+
+    const onPointerUp = (e) => {
+      if (dragFrom == null) return;
+      const from = dragFrom;
+      dragFrom = null;
+      removeIndicator();
+      mount.querySelectorAll('.my-paper-dragging').forEach((el) => el.classList.remove('my-paper-dragging'));
+
+      const targetEl = getPageElAtY(e.clientY);
+      if (!targetEl) return;
+      const targetPage = parseInt(targetEl.dataset.page, 10);
+      if (!targetPage || targetPage === from) return;
+      const r = targetEl.getBoundingClientRect();
+      const above = e.clientY < (r.top + r.bottom) / 2;
+      let toPos = above ? targetPage : targetPage + 1;
+      if (toPos > from) toPos -= 1;
+      onMyPaperMovePage(from, Math.max(1, toPos));
+    };
+
+    mount.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', () => { dragFrom = null; removeIndicator(); mount.querySelectorAll('.my-paper-dragging').forEach((el) => el.classList.remove('my-paper-dragging')); });
+
+    return () => {
+      removeIndicator();
+      mount.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+    };
+  }, [onMyPaperMovePage]);
+
+  // ── Track My Paper page positions for portal-rendered action buttons ──
+  useEffect(() => {
+    if (!onMyPaperDeletePage && !onMyPaperMovePage) { setMyPaperPageRects([]); return; }
+    const mount = scrollRef.current;
+    if (!mount) { console.log('[myPaper] rectTrack: no mount'); return; }
+
+    const updateRects = () => {
+      const pages = mount.querySelectorAll('.my-paper-page[data-page]');
+      const rects = [];
+      pages.forEach((el) => {
+        const r = el.getBoundingClientRect();
+        if (r.height > 0) rects.push({ page: parseInt(el.dataset.page, 10), top: r.top, right: r.right });
+      });
+      setMyPaperPageRects(rects);
+    };
+
+    updateRects();
+    mount.addEventListener('scroll', updateRects, { passive: true });
+    window.addEventListener('resize', updateRects, { passive: true });
+    const ro = new ResizeObserver(updateRects);
+    ro.observe(mount);
+
+    return () => {
+      mount.removeEventListener('scroll', updateRects);
+      window.removeEventListener('resize', updateRects);
+      ro.disconnect();
+      setMyPaperPageRects([]);
+    };
+  }, [onMyPaperDeletePage, onMyPaperMovePage, images]);
 
   // ── Apply zoom to image-mode scrolling via .pdf-content width ─
   useEffect(() => {
@@ -3144,7 +3295,9 @@ function PdfPane({
       // Skipping detached ones leaves them with a stale width baked in,
       // which then renders wrong once swapped into the DOM.
       const pageW = Math.round(sharedW * zoom);
-      imgElementsRef.current.forEach((img) => { img.style.width = `${pageW}px`; });
+      imgElementsRef.current.forEach((img) => {
+        img.style.width = `${pageW}px`;
+      });
       // Placeholder divs (still attached, standing in for un-loaded pages)
       // also need their width kept in sync so scrollWidth/layout stays correct.
       mount.querySelectorAll('.page-placeholder').forEach((ph) => { ph.style.width = `${pageW}px`; });
@@ -3399,6 +3552,7 @@ function PdfPane({
   // Scroll position in scrolling mode is user-controlled — no auto-scroll on page change
 
   return (
+    <>
     <section
       className="page-frame page-card pdf-pane"
       data-annotation-language={paneLanguage}
@@ -3512,7 +3666,7 @@ function PdfPane({
             </div>
           ) : isImageMode && mode === 'pagination' ? (
             (() => {
-              const isBlankPage = currentPage > images.length;
+              const isBlankPage = currentPage > images.length || !images[currentPage - 1];
               const imgItem = !isBlankPage ? images[currentPage - 1] : null;
               const imgSrc = typeof imgItem === 'string' ? imgItem : imgItem?.url || '';
               const imageStyle = fitMode === 'height'
@@ -3539,11 +3693,12 @@ function PdfPane({
               {isBlankPage ? (
                 <div
                   ref={blankRef}
-                  className="page-img pdf-blank-page"
-                  style={{ ...imageStyle, minHeight: '120px', background: '#fff' }}
+                  className="page-img my-paper-page"
                   data-page={currentPage}
                   data-blank="true"
-                />
+                >
+                  <span className="my-paper-page-number">{currentPage}</span>
+                </div>
               ) : imgSrc ? (
                 <img
                   ref={imgRef}
@@ -3574,6 +3729,31 @@ function PdfPane({
         </div>
       </div>
     </section>
+    {myPaperPageRects.length > 0 && createPortal(
+      <div className="my-paper-portal-actions" aria-hidden="false">
+        {myPaperPageRects.map(({ page, top, right }) => (
+          <div key={page} className="my-paper-page-actions" style={{ position: 'fixed', top: top + 8, left: right - 76, zIndex: 9999 }}>
+            {onMyPaperMovePage && (
+              <button className="my-paper-action-btn my-paper-drag-handle" title="Drag to reorder" data-drag-handle="true" data-page={String(page)}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <svg viewBox="0 0 24 24"><path d="M9 3h2v2H9zm4 0h2v2h-2zM9 7h2v2H9zm4 0h2v2h-2zM9 11h2v2H9zm4 0h2v2h-2zM9 15h2v2H9zm4 0h2v2h-2z"/></svg>
+              </button>
+            )}
+            {onMyPaperDeletePage && (
+              <button className="my-paper-action-btn my-paper-action-delete" title="Delete page"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => { e.stopPropagation(); onMyPaperDeletePage(page); }}
+              >
+                <svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+              </button>
+            )}
+          </div>
+        ))}
+      </div>,
+      document.body,
+    )}
+    </>
   );
 }
 

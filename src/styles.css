@@ -933,10 +933,21 @@ button, input, select {
   min-width: 0;
 }
 
-.toggle-group.compact-text .toggle-btn {
-  font-size: 0.76rem;
+.toggle-group.compact-text .toggle-btn,
+.toggle-group.multi-toggle-group .toggle-btn {
+  font-size: 0.7rem;
   padding-left: 4px;
   padding-right: 4px;
+  min-width: 0;
+  white-space: normal;
+  text-align: center;
+  line-height: 1.2;
+}
+
+.toggle-group.multi-toggle-group {
+  flex-wrap: wrap;
+  overflow: visible;
+  border-radius: 8px;
 }
 
 .toggle-btn {
@@ -1751,6 +1762,14 @@ button, input, select {
   align-items: stretch;
 }
 
+.book-stage.bilingual-layout.pane-count-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.book-stage.bilingual-layout.pane-count-4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 /* Stacked bilingual layout (portrait or medium-width 817–1040px):
    header bar gets natural height, both language panes split the
    remaining vertical space equally. */
@@ -1781,7 +1800,198 @@ button, input, select {
   border-radius: 8px;
   border: 1px solid gray !important;
   margin: 20px 0px !important;  
-  /* min-height: -webkit-fill-available; */
+}
+
+/* My Paper blank pages — A4 portrait, centered, scrollable independently */
+.my-paper-page {
+  background: #fff;
+  box-sizing: border-box;
+  position: relative;
+  display: block;
+  aspect-ratio: 1 / 1.41421;
+  border-radius: 2px;
+  border: 1px solid rgba(0,0,0,0.15) !important;
+  margin: 20px auto !important;
+  padding: 0 18mm;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+  pointer-events: auto;
+  flex-shrink: 0;
+}
+/* White scroll area behind My Paper pages */
+.page-frame[data-annotation-language="my-paper"] .pdf-scroll-pages,
+.page-frame[data-annotation-language="my-paper"] .pdf-content {
+  background: #f0f2f5;
+}
+:root.dark .my-paper-page {
+  background: #1e1e1e;
+  border-color: rgba(255,255,255,0.15) !important;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+}
+.my-paper-page-number {
+  position: absolute;
+  top: 12px;
+  left: 16px;
+  bottom: auto;
+  right: auto;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: rgba(0,0,0,0.25);
+  user-select: none;
+  pointer-events: none;
+  letter-spacing: 0.02em;
+}
+:root.dark .my-paper-page-number {
+  color: rgba(255,255,255,0.2);
+}
+
+/* ── My Paper page action buttons (move / delete) ─────────── */
+.my-paper-page-actions {
+  display: flex;
+  gap: 4px;
+  opacity: 0.35;
+  transition: opacity 0.15s;
+  pointer-events: auto;
+}
+.my-paper-portal-actions:hover .my-paper-page-actions,
+.my-paper-page-actions:hover {
+  opacity: 1;
+}
+@media (hover: none) {
+  .my-paper-page-actions { opacity: 1; }
+}
+.my-paper-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  border: none;
+  background: rgba(255,255,255,0.85);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.18);
+  cursor: pointer;
+  padding: 0;
+  color: #444;
+  backdrop-filter: blur(4px);
+}
+.my-paper-action-btn svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+  pointer-events: none;
+}
+.my-paper-action-btn:hover:not(:disabled) {
+  background: #fff;
+  color: #111;
+}
+.my-paper-action-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.my-paper-action-delete {
+  color: #e74c3c;
+}
+.my-paper-action-delete:hover:not(:disabled) {
+  background: #fff0ef;
+  color: #c0392b;
+}
+.my-paper-drag-handle {
+  cursor: grab;
+  touch-action: none;
+}
+.my-paper-drag-handle:active { cursor: grabbing; }
+.my-paper-dragging {
+  opacity: 0.45;
+  outline: 2px dashed rgba(99,102,241,0.6);
+  outline-offset: 2px;
+}
+.my-paper-drop-indicator {
+  position: absolute;
+  left: 5%;
+  width: 90%;
+  height: 3px;
+  border-radius: 2px;
+  background: #6366f1;
+  pointer-events: none;
+  z-index: 20;
+}
+:root.dark .my-paper-action-btn {
+  background: rgba(40,40,40,0.85);
+  color: #ccc;
+}
+:root.dark .my-paper-action-btn:hover:not(:disabled) {
+  background: #333;
+  color: #fff;
+}
+:root.dark .my-paper-action-delete {
+  color: #e74c3c;
+}
+
+/* ── My Paper long-press context menu ─────────────────────── */
+.my-paper-context-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+}
+.my-paper-context-menu {
+  position: fixed;
+  z-index: 1201;
+  min-width: 160px;
+  background: var(--sidebar-bg, #fff);
+  border: 1px solid rgba(0,0,0,0.12);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+  padding: 6px 0;
+  display: flex;
+  flex-direction: column;
+}
+:root.dark .my-paper-context-menu {
+  background: #2a2a2a;
+  border-color: rgba(255,255,255,0.12);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+}
+.my-paper-ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px;
+  font-size: 0.9rem;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+.my-paper-ctx-item svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+  flex-shrink: 0;
+}
+.my-paper-ctx-item:hover:not(:disabled) {
+  background: rgba(0,0,0,0.06);
+}
+:root.dark .my-paper-ctx-item:hover:not(:disabled) {
+  background: rgba(255,255,255,0.08);
+}
+.my-paper-ctx-item:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.my-paper-ctx-item:first-child {
+  color: #e74c3c;
+}
+.my-paper-ctx-cancel {
+  color: var(--sidebar-muted, #888) !important;
+}
+.my-paper-ctx-divider {
+  height: 1px;
+  background: rgba(0,0,0,0.08);
+  margin: 4px 0;
+}
+:root.dark .my-paper-ctx-divider {
+  background: rgba(255,255,255,0.08);
 }
 .bilingual-scroll-spacer{
   display:none;
@@ -1792,6 +2002,17 @@ button, input, select {
   height: calc(100dvh - var(--bottom-toolbar-offset, 0px));
   min-height: 0;
   /* overflow: hidden; -- removed for free-zoom */
+}
+
+/* bilingual-layout must override the auto-fit columns from .scrolling */
+.book-stage.scrolling.bilingual-layout {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.book-stage.scrolling.bilingual-layout.pane-count-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.book-stage.scrolling.bilingual-layout.pane-count-4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 /* Prevent native iOS scroll on the PDF scroll containers when using
@@ -2005,6 +2226,9 @@ button, input, select {
 .pdf-pane {
   display: flex;
   flex-direction: column;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
 }
 
 .pdf-pane-shell {
@@ -3181,6 +3405,11 @@ button, input, select {
   min-height: 44px;
 }
 
+.tool-menu-item-full {
+  width: 100% !important;
+  box-sizing: border-box !important;
+}
+
 .tool-menu-item-icon {
   width: 22px;
   height: 22px;
@@ -3368,6 +3597,17 @@ button, input, select {
 }
 
 /* ── Zoom percent label in split button ───────────────── */
+
+.zoom-bucket-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  opacity: 0.6;
+  margin-right: 1px;
+  user-select: none;
+  white-space: nowrap;
+}
 
 .zoom-percent-label {
   font-size: 0.85rem;
@@ -3898,11 +4138,11 @@ button, input, select {
 /* Bilingual stacked layout: force single-column grid so the
    mid-header bar separates EN (top) and TC (bottom) panes. */
 @media (max-width: 1040px) {
-  .book-stage.scrolling {
+  .book-stage.scrolling:not(.has-special-pane) {
     grid-template-columns: 1fr;
   }
 
-  .book-stage.bilingual-layout {
+  .book-stage.bilingual-layout:not(.has-special-pane) {
     grid-template-columns: 1fr;
   }
 }

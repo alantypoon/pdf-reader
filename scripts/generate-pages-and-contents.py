@@ -1797,6 +1797,38 @@ def _split_pdf_to_single_page_pdfs(pdf_path, pages_dir, prefix):
     return results
 
 
+def _normalize_past_paper_stem(stem):
+    """Normalize malformed paper stems like 'p1 ' to 'p1'."""
+    normalized = re.sub(r"\s+", "", str(stem or "").strip())
+    return normalized
+
+
+def _cleanup_generated_year_page_outputs(pages_dir, prefix, image_format):
+    """Remove stale generated split-page outputs for one by-years paper type.
+
+    Deletes only generated page files in pages/, not the source PDFs in the year root.
+    """
+    if not os.path.isdir(pages_dir):
+        return
+
+    normalized_prefix = _normalize_past_paper_stem(prefix)
+    image_exts = {"png", "jpg", "jpeg", "webp"}
+
+    for fname in os.listdir(pages_dir):
+        stem, ext = os.path.splitext(fname)
+        ext = ext.lstrip('.').lower()
+        if not ext:
+            continue
+        compact_stem = re.sub(r"\s+", "", stem)
+        if not compact_stem.startswith(f"{normalized_prefix}-"):
+            continue
+        if ext == 'pdf' or ext in image_exts:
+            try:
+                os.remove(os.path.join(pages_dir, fname))
+            except OSError:
+                pass
+
+
 def _create_contents_skeleton(papers_dir, paper_id):
     """Create a minimal contents.json for a past-paper directory."""
     chapter = paper_id if paper_id else os.path.basename(papers_dir)
@@ -2168,7 +2200,7 @@ def _process_by_years(by_years_dir, args, base_dir):
     """Case 3: by-years processing.
     
     From /by-years/<lang>/<year>/<paper-id>*.pdf
-    Extract pages to /by-years/<lang>/<year>/pages/*.pdf (single-page PDFs)
+    Extract pages to /by-years/<lang>/<year>/pages/*.<format>
     """
     langs = sorted(
         (entry.name for entry in os.scandir(by_years_dir) if entry.is_dir()),
@@ -2195,10 +2227,17 @@ def _process_by_years(by_years_dir, args, base_dir):
                 total_pages = 0
                 for pdf_name in pdf_files:
                     pdf_path = os.path.join(year_dir, pdf_name)
-                    stem = pdf_name[:-4]
-                    results = _split_pdf_to_single_page_pdfs(pdf_path, pages_dir, stem)
+                    stem = _normalize_past_paper_stem(pdf_name[:-4])
+                    _cleanup_generated_year_page_outputs(pages_dir, stem, args.format)
+                    results = _split_pdf_to_pages(
+                        pdf_path,
+                        pages_dir,
+                        stem,
+                        dpi=args.dpi,
+                        fmt=args.format,
+                    )
                     total_pages += len(results)
-                print(f"    {year}: {len(pdf_files)} PDFs → {total_pages} page PDFs in {pages_dir}/")
+                print(f"    {year}: {len(pdf_files)} PDFs → {total_pages} page images in {pages_dir}/")
             else:
                 print(f"    {year}: [skip] PDF splitting")
 

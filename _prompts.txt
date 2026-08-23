@@ -511,3 +511,39 @@ then the 4 types dropdownlist:
 - p2
 - ans
 - per
+
+
+///
+
+1. the split pages should be in *.png instead of */pdf in /var/www/html/pdf-reader/data/past-papers/biology/by-years/en/2012/pages/*
+modify /var/www/html/pdf-reader/scripts/generate-pages-and-contents.py and let me retun that to split the pdf files after remove the incorrect files with wrong pdf extension in the mentioned paths.
+
+2. add the label material below subject and above textbook / pp-topics / pp-years.
+
+3. when the subject math or biology, and pp-topics is selected, add a toggle Paper-1 and Paper 2 below material select, add the section dropdown select list below. the section number and name should be read from the cooresponding contents.json.
+
+4. when the subject is biology-oup and the material is selected as PP-topics, pages to be shown should be under:  /var/www/html/pdf-reader/data/past-papers/biology/by-topics/en/paper-1/1/pages/<section-id>-<page-id>.png
+or /var/www/html/pdf-reader/data/past-papers/biology/by-topics/en/paper-2/1/pages.
+
+5. when pp-years, show a select dropdown list of the available years, then a type toggle of p1/p2/ans/per for the page to be selected:
+  /var/www/html/pdf-reader/data/past-papers/biology/by-years/en/<year>/<type>-<page-id>.png.
+
+6. 
+replace language and role select to be view select toggle:
+  - english student
+  - chinese student
+  - english teacher
+  - chinese student
+  - past paper: refer to the relevant by-topics past-papers to be defined later
+  - my paper: a new version for the user to freely select on their own, 
+    the user can add/update/delete as many page as they want to 
+    add for the selected subject/book/section/page.
+    the user can draw on them any time.
+    > enabled when the related pages are available; disabled when the related pages are available
+
+7. the user can select as many views as they want
+
+////
+
+in dark mode, the strokes cannot be seen with black pen because their constrast is too low. consider another color for the page in dark mode.
+
