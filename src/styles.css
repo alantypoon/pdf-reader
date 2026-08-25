@@ -2465,6 +2465,11 @@ button, input, select {
 /* touch-action is NOT inherited — children need explicit value too */
 .pdf-scroll-pages > * {
   touch-action: manipulation;
+  /* Never let pages shrink to fit the container.  .pdf-scroll-pages switches
+     to display:flex (column) when zoomed out, and the default flex-shrink:1
+     squeezes every child into the container height — empty placeholders
+     collapse to slivers so only already-loaded pages remain visible. */
+  flex: 0 0 auto;
 }
 .book-stage.tool-hand .pdf-scroll-pages > * {
   touch-action: none;

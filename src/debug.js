@@ -18,7 +18,7 @@ export const DEBUG_SCROLLING_MOMENTUM = 999;
 export const DEBUG_ZOOMING = 998;
 export const DEBUG_SCROLLING_PERSISTENCE = 999;
 
-export const DEBUG_FLAG = 0;
+export const DEBUG_FLAG = DEBUG_SCROLLING_PERSISTENCE;  // was 0
 // export const DEBUG_FLAG = 999;  // change this to enable verbose logging for a specific subsystem
 
 export function isDebugAnnoStrokes() {
@@ -26,7 +26,7 @@ export function isDebugAnnoStrokes() {
 }
 
 export function isDebugLoadingPageImages() {
-  return DEBUG_FLAG === DEBUG_LOADING_PAGE_IMAGES;
+  return DEBUG_FLAG === DEBUG_LOADING_PAGE_IMAGES || DEBUG_FLAG === DEBUG_SCROLLING_PERSISTENCE;
 }
 
 export function isDebugMyLocalStorage() {

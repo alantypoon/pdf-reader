@@ -547,3 +547,6 @@ replace language and role select to be view select toggle:
 
 in dark mode, the strokes cannot be seen with black pen because their constrast is too low. consider another color for the page in dark mode.
 
+///
+
+handle onscroll on my paper, past paper and textbook pages in three separate set of code and they should be scrolling independently. never mix them together.

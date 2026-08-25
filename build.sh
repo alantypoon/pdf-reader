@@ -17,16 +17,20 @@ fi
 echo "=== dist/index.html ==="
 cat dist/index.html
 
-echo "=== Syncing dist/ → public/ ==="
-cp dist/index.html public/index.html
-mkdir -p public/assets
-cp dist/assets/*.js dist/assets/*.css public/assets/ 2>/dev/null
-# Remove stale assets not in current dist
-for f in public/assets/*.js public/assets/*.css; do
-  base=$(basename "$f")
-  if [ ! -f "dist/assets/$base" ]; then
-    rm -f "$f"
-    echo "Removed stale: public/assets/$base"
-  fi
-done
-echo "=== Sync complete ==="
+if [ "$SYNC_PUBLIC" = "1" ]; then
+  echo "=== Syncing dist/ → public/ ==="
+  cp dist/index.html public/index.html
+  mkdir -p public/assets
+  cp dist/assets/*.js dist/assets/*.css public/assets/ 2>/dev/null
+  # Remove stale assets not in current dist
+  for f in public/assets/*.js public/assets/*.css; do
+    base=$(basename "$f")
+    if [ ! -f "dist/assets/$base" ]; then
+      rm -f "$f"
+      echo "Removed stale: public/assets/$base"
+    fi
+  done
+  echo "=== Sync complete ==="
+else
+  echo "=== Skipping public/ sync (set SYNC_PUBLIC=1 to enable) ==="
+fi

@@ -5,6 +5,7 @@ export default defineConfig({
   plugins: [react()],
   base: '/pdf-reader/',
   server: {
+    host: '0.0.0.0',
     port: 5174,
     allowedHosts: ['ai-edu.dedyn.io'],
     proxy: {

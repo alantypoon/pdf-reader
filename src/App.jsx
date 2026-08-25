@@ -941,17 +941,23 @@ function App() {
   // My Paper is always "selected" when the view is toggled on
   const myPaperSelectedId = 'my-paper';
 
-  const handleMyPaperAdd = useCallback(() => {
+  const handleMyPaperAdd = useCallback((n = 1) => {
+    if (n <= 0) return;
     setMyPaperPageCount((prev) => {
-      const next = prev + 1;
+      const next = prev + n;
       try { window.localStorage.setItem(MY_PAPER_PAGE_COUNT_KEY, String(next)); } catch {}
-      // Append new slot at the end of the order
-      const nextOrder = [...myPaperOrderRef.current, next];
+      const base = Math.max(...myPaperOrderRef.current, prev);
+      const newSlots = Array.from({ length: n }, (_, i) => base + 1 + i);
+      const nextOrder = [...myPaperOrderRef.current, ...newSlots];
       setMyPaperOrder(nextOrder);
       try { window.localStorage.setItem(MY_PAPER_ORDER_KEY, JSON.stringify(nextOrder)); } catch {}
       return next;
     });
   }, []);
+
+  const handleMyPaperViewportNeed = useCallback((n) => {
+    handleMyPaperAdd(Math.max(0, Number(n) || 0));
+  }, [handleMyPaperAdd]);
 
   const handleMyPaperDeletePage = useCallback(() => {
     setMyPaperPageCount((prev) => {
@@ -976,14 +982,15 @@ function App() {
   const handleMyPaperDeletePageAt = useCallback((displayPos) => {
     const currentCount = myPaperPageCountRef.current;
     const currentOrder = myPaperOrderRef.current;
+    if (currentCount <= 1) return;
+    if (displayPos < 1 || displayPos > currentOrder.length) return;
     myPaperHistoryRef.current = [...myPaperHistoryRef.current.slice(-19), { count: currentCount, order: currentOrder }];
     myPaperRedoStackRef.current = [];
-    // Rotate the deleted slot to the end — count stays same so scroll position is preserved
     const deletedSlot = currentOrder[displayPos - 1];
-    const newSlot = Math.max(...currentOrder) + 1;
-    const nextOrder = [...currentOrder.filter((_, i) => i !== displayPos - 1), newSlot];
-    applyMyPaperState(currentCount, nextOrder);
-    setMyPaperPage((prev) => Math.min(prev, currentCount));
+    const nextCount = currentCount - 1;
+    const nextOrder = currentOrder.filter((_, i) => i !== displayPos - 1);
+    applyMyPaperState(nextCount, nextOrder);
+    setMyPaperPage((prev) => Math.min(prev, nextCount));
     // Clear annotations for the deleted slot on the server
     const scope = myPaperScopeRef.current;
     if (scope && deletedSlot != null && userId) {
@@ -3384,6 +3391,8 @@ function App() {
     if (!stage) return;
 
     const onWheel = (e) => {
+        const inPageContent = !!e.target.closest('.pdf-scroll-pages, .pdf-single-page, canvas.annotation-canvas, .page-img, .pdf-content');
+        if (!inPageContent) return;
       // Trackpad pinch-to-zoom fires as wheel events with ctrlKey=true.
       // When a native touch-pinch zoom is already active, suppress this
       // duplicate — otherwise the two zoom sources compound ("double doer").
@@ -3473,7 +3482,10 @@ function App() {
         }
         return;
       }
-      if (Date.now() - lastTouchScrollAtRef.current < 250) return;
+      if (Date.now() - lastTouchScrollAtRef.current < 250) {
+        if (isDebugScrollingMomentum()) console.log(`[wheel] IGNORED — within 250ms of last touch scroll`);
+        return;
+      }
       cancelMomentum();
 
       // Let the thumbnail grid scroll naturally with the mouse wheel —
@@ -3481,10 +3493,18 @@ function App() {
       if (e.target.closest('.thumbnail-grid')) return;
 
       const scrollTarget = getScrollTargetForGesture(e);
-      if (!scrollTarget) return;
+      if (!scrollTarget) {
+        if (isDebugScrollingMomentum()) console.log(`[wheel] no scroll target found for target <${e.target?.tagName} class="${typeof e.target?.className === 'string' ? e.target.className.split(' ').slice(0, 2).join('.') : ''}">`);
+        return;
+      }
       e.preventDefault();
       const hDx = isPageFullyVisibleH(scrollTarget) ? 0 : e.deltaX;
+      const beforeTop = scrollTarget.scrollTop;
+      const maxTop = Math.max(0, scrollTarget.scrollHeight - scrollTarget.clientHeight);
       myScrollBy(scrollTarget, { left: hDx, top: e.deltaY, behavior: 'auto' });
+      if (isDebugScrollingMomentum()) {
+        console.log(`[wheel] → ${typeof scrollTarget.className === 'string' ? scrollTarget.className.split(' ').filter(Boolean).slice(0, 2).join('.') : ''}  deltaY=${e.deltaY}  scrollTop ${Math.round(beforeTop)}→${Math.round(scrollTarget.scrollTop)}  maxTop=${Math.round(maxTop)}  scrollH=${Math.round(scrollTarget.scrollHeight)}  clientH=${scrollTarget.clientHeight}  overflow=${getComputedStyle(scrollTarget).overflow}`);
+      }
     };
     stage.addEventListener('wheel', onWheel, { passive: false });
     return () => stage.removeEventListener('wheel', onWheel);
@@ -3652,11 +3672,21 @@ function App() {
         stage.querySelectorAll('.pdf-scroll-pages, .pdf-single-page').forEach((el) => {
           if (getBucketForElement(el) !== bucket) return;
           const hDx = isPageFullyVisibleH(el) ? 0 : dx;
+          const beforeTop = el.scrollTop;
+          const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
           myScrollBy(el, { left: hDx, top: dy, behavior: 'auto' });
+          if (isDebugScrollingMomentum()) {
+            console.log(`[momentum] applyScroll → ${el.className}  dy=${dy.toFixed(1)}  scrollTop ${Math.round(beforeTop)}→${Math.round(el.scrollTop)}  maxTop=${Math.round(maxTop)}  scrollH=${Math.round(el.scrollHeight)}  clientH=${el.clientHeight}  overflow=${getComputedStyle(el).overflow}`);
+          }
         });
       } else if (touchScrollTarget) {
         const hDx = isPageFullyVisibleH(touchScrollTarget) ? 0 : dx;
+        const beforeTop = touchScrollTarget.scrollTop;
+        const maxTop = Math.max(0, touchScrollTarget.scrollHeight - touchScrollTarget.clientHeight);
         myScrollBy(touchScrollTarget, { left: hDx, top: dy, behavior: 'auto' });
+        if (isDebugScrollingMomentum()) {
+          console.log(`[momentum] applyScroll(no-stage) → ${touchScrollTarget.className}  dy=${dy.toFixed(1)}  scrollTop ${Math.round(beforeTop)}→${Math.round(touchScrollTarget.scrollTop)}  maxTop=${Math.round(maxTop)}  scrollH=${Math.round(touchScrollTarget.scrollHeight)}  clientH=${touchScrollTarget.clientHeight}  overflow=${getComputedStyle(touchScrollTarget).overflow}`);
+        }
       }
     };
 
@@ -3827,6 +3857,9 @@ function App() {
     };
 
     const onTouchStart = (e) => {
+      const touchTarget = e.target instanceof Element ? e.target : null;
+      const inPageContent = !!touchTarget?.closest('.pdf-scroll-pages, .pdf-single-page, canvas.annotation-canvas, .page-img, .pdf-content');
+      if (!inPageContent) return;
       // Skip My Paper action buttons — they handle their own events
       if (e.touches.length > 0) {
         const t = e.touches[0];
@@ -3939,6 +3972,7 @@ function App() {
     };
 
     const onTouchMove = (e) => {
+      if (touchScrollTarget && !stageRef.current?.contains(touchScrollTarget)) return;
       // Non-hand single touch (pen/highlight/eraser): keep the gesture
       // cancelled so iOS Safari continues to fire pointer events.
       // Text tool excluded — see onTouchStart.
@@ -4339,6 +4373,20 @@ function App() {
       window.addEventListener('mouseup', handleMouseUp);
     }
 
+    // ── Raw scroll-event tracer (capture phase) ──
+    // Logs WHICH element actually fires the native 'scroll' event.  If the
+    // .pdf-scroll-pages mount never appears here while scrolling, the JS
+    // scroll driver is moving a different element (or none at all).
+    const traceScroll = (e) => {
+      const t = e.target;
+      if (!t || t.nodeType !== 1) return;
+      const cls = (typeof t.className === 'string' ? t.className : '').split(' ').filter(Boolean).slice(0, 3).join('.');
+      if (isDebugScrollingMomentum()) {
+        console.log(`[raw-scroll] target=<${t.tagName.toLowerCase()} class="${cls}">  scrollTop=${Math.round(t.scrollTop)}  scrollH=${Math.round(t.scrollHeight)}  clientH=${t.clientHeight}`);
+      }
+    };
+    if (stageRef.current) stageRef.current.addEventListener('scroll', traceScroll, true);
+
     return () => {
       if (pendingRaf) cancelAnimationFrame(pendingRaf);
       if (pendingZoomRaf) cancelAnimationFrame(pendingZoomRaf);
@@ -4353,6 +4401,7 @@ function App() {
         stage.removeEventListener('touchmove', onTouchMove, true);
         stage.removeEventListener('touchend', onTouchEnd, true);
         stage.removeEventListener('touchcancel', onTouchEnd, true);
+        stage.removeEventListener('scroll', traceScroll, true);
       }
       window.removeEventListener('mousedown', handleMouseDown, true);
       window.removeEventListener('mousemove', handleMouseMove);
@@ -7929,11 +7978,31 @@ function App() {
   }, [visiblePanes, renderScaleByLanguage]);
 
   const maxNavigablePage = useMemo(() => {
-    const counts = visiblePanes
-      .map((pane) => Number(pageCounts[pane.sourceKey] || 0))
+    let paneKeys;
+    if (materialMode === MATERIAL_PP_TOPICS || materialMode === MATERIAL_PP_YEARS) {
+      paneKeys = normalizeSelectedViewsForMaterial(materialMode, selectedViews)
+        .map((viewId) => {
+          if (viewId === VIEW_PAST_PAPER) return 'past-paper:student';
+          if (viewId === VIEW_EN_STUDENT) return getPageSourceKey('en', 'student');
+          return null;
+        })
+        .filter(Boolean);
+    } else {
+      paneKeys = normalizeSelectedViewsForMaterial(materialMode, selectedViews)
+        .map((viewId) => {
+          if (viewId === VIEW_EN_STUDENT) return getPageSourceKey('en', 'student');
+          if (viewId === VIEW_TC_STUDENT) return getPageSourceKey('tc', 'student');
+          if (viewId === VIEW_EN_TEACHER) return getPageSourceKey('en', 'teacher');
+          if (viewId === VIEW_TC_TEACHER) return getPageSourceKey('tc', 'teacher');
+          return null;
+        })
+        .filter(Boolean);
+    }
+    const counts = paneKeys
+      .map((key) => Number(pageCounts[key] || 0))
       .filter((value) => value > 0);
     return counts.length ? Math.max(...counts) : Number.POSITIVE_INFINITY;
-  }, [visiblePanes, pageCounts]);
+  }, [materialMode, selectedViews, pageCounts]);
 
   useEffect(() => {
     maxNavigablePageRef.current = maxNavigablePage;
@@ -9642,10 +9711,22 @@ function App() {
               items={pageSelectOptions}
               value={selectedPage}
               onChange={(value) => { console.log('[page-select] StepperSelect onChange  raw=', value, '  numeric=', Number(value), '  pageOptions.length=', pageOptions.length, '  maxNavigablePage=', maxNavigablePage); setSelectedPage(Number(value)); }}
-              onPrev={() => currentPageIndex > 0 && setSelectedPage(Number(pageOptions[currentPageIndex - 1]))}
-              onNext={() => currentPageIndex >= 0 && currentPageIndex < pageOptions.length - 1 && setSelectedPage(Number(pageOptions[currentPageIndex + 1]))}
+              onPrev={() => {
+                if (currentPageIndex > 0) {
+                  setSelectedPage(Number(pageOptions[currentPageIndex - 1]));
+                  return;
+                }
+                setSelectedPage((current) => Math.max(1, Number(current || 1) - 1));
+              }}
+              onNext={() => {
+                if (currentPageIndex >= 0 && currentPageIndex < pageOptions.length - 1) {
+                  setSelectedPage(Number(pageOptions[currentPageIndex + 1]));
+                  return;
+                }
+                setSelectedPage((current) => Number(current || 1) + 1);
+              }}
               disablePrev={currentPageIndex <= 0}
-              disableNext={currentPageIndex < 0 || currentPageIndex >= pageOptions.length - 1}
+              disableNext={Number.isFinite(maxNavigablePage) ? Number(selectedPage) >= Number(maxNavigablePage) : false}
               placeholder={String(selectedPage || 1)}
             />
             </div>
@@ -9960,6 +10041,7 @@ function App() {
                   return (
                     <div key={pane.sourceKey} style={{ display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
                     <PdfPane key={pane.sourceKey} paneLanguage={pane.language} paneRole={pane.role}
+                      contentType={paneZoomBucket(pane.viewId)}
                       source={isMyPaper ? '' : isPpRelated ? `img:${selectedBook}:${selectedChapter}:${selectedFile}:pp-related` : isImages ? `img:${selectedBook}:${selectedChapter}:${selectedFile}:${pane.sourceKey}` : (src || '')}
                       images={isMyPaper ? myPaperImages : isPpRelated ? ppRelatedImages : isImages ? src : null}
                       title={`${selectedChapter} · ${selectedFile} · ${selectedPage}`}
@@ -9972,11 +10054,12 @@ function App() {
                       syncGroup={(isMyPaper || isPpRelated || displayMode !== 'scrolling' || !maxPagesInGroup) ? '' : `${selectedChapter}-${selectedFile}-bilingual`}
                       syncId={pane.sourceKey} zoom={zoomSettings[paneZoomBucket(pane.viewId)].zoom} thumbCols={thumbCols}
                       fitMode={zoomSettings[paneZoomBucket(pane.viewId)].fitMode} fitRefreshToken={fitRefreshToken} forceRedrawToken={forceRedrawToken}
-                      onRenderScaleChange={(scale) => { setRenderScaleByLanguage((current) => { if (current[pane.sourceKey] === scale) return current; return { ...current, [pane.sourceKey]: scale }; }); }}
+                      onRenderScaleChange={isMyPaper ? null : (scale) => { setRenderScaleByLanguage((current) => { if (current[pane.sourceKey] === scale) return current; return { ...current, [pane.sourceKey]: scale }; }); }}
                       onScrollCanvasesReady={() => setRedrawTick((t) => t + 1)}
                       language={selectedLanguage}
                       maxPagesInGroup={(isMyPaper || isPpRelated) ? 0 : maxPagesInGroup}
-                      onScrollPastEnd={isMyPaper ? handleMyPaperAdd : null}
+                      onScrollPastEnd={isMyPaper ? () => handleMyPaperAdd(3) : null}
+                      onMyPaperViewportNeed={isMyPaper ? handleMyPaperViewportNeed : null}
                       onMyPaperDeletePage={isMyPaper ? handleMyPaperDeletePageAt : null}
                       onMyPaperMovePage={isMyPaper ? handleMyPaperReorderPage : null}
                     />
@@ -10015,6 +10098,7 @@ function App() {
                   return (
                     <div key={pane.sourceKey} style={{ display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
                     <PdfPane key={pane.sourceKey} paneLanguage={pane.language} paneRole={pane.role}
+                      contentType={paneZoomBucket(pane.viewId)}
                       source={isMyPaper ? '' : isPpRelated ? `img:${selectedBook}:${selectedChapter}:${selectedFile}:pp-related` : isImages ? `img:${selectedBook}:${selectedChapter}:${selectedFile}:${pane.sourceKey}` : (src || '')}
                       images={isMyPaper ? myPaperImages : isPpRelated ? ppRelatedImages : isImages ? src : null}
                       title={`${selectedChapter} · ${selectedFile} · ${selectedPage}`}
@@ -10031,7 +10115,8 @@ function App() {
                       onScrollCanvasesReady={() => setRedrawTick((t) => t + 1)}
                       language={selectedLanguage}
                       maxPagesInGroup={(isMyPaper || isPpRelated) ? 0 : maxPagesInGroup}
-                      onScrollPastEnd={isMyPaper ? handleMyPaperAdd : null}
+                      onScrollPastEnd={isMyPaper ? () => handleMyPaperAdd(3) : null}
+                      onMyPaperViewportNeed={isMyPaper ? handleMyPaperViewportNeed : null}
                       onMyPaperDeletePage={isMyPaper ? handleMyPaperDeletePageAt : null}
                       onMyPaperMovePage={isMyPaper ? handleMyPaperReorderPage : null}
                     />
@@ -10053,6 +10138,7 @@ function App() {
                 key={`pane-${pane.sourceKey}`}
                 paneLanguage={pane.language}
                 paneRole={pane.role}
+                contentType={paneZoomBucket(pane.viewId)}
                 source={isMyPaper ? '' : isPpRelated ? `img:${selectedBook}:${selectedChapter}:${selectedFile}:pp-related` : isImages ? `img:${selectedBook}:${selectedChapter}:${selectedFile}:${pane.sourceKey}` : (src || '')}
                 images={isMyPaper ? myPaperImages : isPpRelated ? ppRelatedImages : isImages ? src : null}
                 title={`${selectedChapter} · ${selectedFile} · ${selectedPage}`}
@@ -10086,7 +10172,8 @@ function App() {
                 onScrollCanvasesReady={() => setRedrawTick((t) => t + 1)}
                 language={selectedLanguage}
                 maxPagesInGroup={(isMyPaper || isPpRelated) ? 0 : isBilingualView ? maxPagesInGroup : 0}
-                onScrollPastEnd={isMyPaper ? handleMyPaperAdd : null}
+                onScrollPastEnd={isMyPaper ? () => handleMyPaperAdd(3) : null}
+                onMyPaperViewportNeed={isMyPaper ? handleMyPaperViewportNeed : null}
                 onMyPaperDeletePage={isMyPaper ? handleMyPaperDeletePageAt : null}
                 onMyPaperMovePage={isMyPaper ? handleMyPaperReorderPage : null}
               />
