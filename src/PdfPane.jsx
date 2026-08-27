@@ -2561,13 +2561,30 @@ function PdfPane({
     // Everything else (textbooks/past-papers) uses the progressive loop below.
     const isMyPaperHere = contentType === 'my-paper';
     if (isMyPaperHere) {
-      const mpPageH = Math.max(50, Math.round(mount.clientWidth * 1.41421) || 800);
+      // Preserve the user's zoom across rebuilds (e.g. page delete/reorder):
+      // blank pages get the same zoom-scaled width — and spacers the same
+      // zoom-scaled height — that the resize/zoom effect applies, otherwise
+      // the rebuilt DOM snaps back to 100% width because zoom itself
+      // didn't change and that effect never re-runs.
+      const mpDisplayW = Math.max(50, Math.round(baseWidth * zoom));
+      // fitMode 'height' drives size from the container height (same as the
+      // resize/zoom effect, which doesn't width-scale My Paper in that mode).
+      const mpPageH = fitMode === 'height'
+        ? Math.max(50, Math.round(mount.getBoundingClientRect().height * zoom) || 800)
+        : Math.max(50, Math.round(mpDisplayW * 1.41421) || 800);
       // Center the window where the user was (after auto-add rebuilds).
       const mpScrollTop = myPaperPreScrollTop >= 0 ? myPaperPreScrollTop : Math.max(0, getScrollPos(mount).scrollTop);
       const { start, end } = getMyPaperWindowRange(mount, imgElements.length, mpPageH, mpScrollTop);
       myPaperWindowRef.current = { start, end };
       if (start > 1) fragment.appendChild(makeMyPaperSpacer(1, start - 1, mpPageH));
-      for (let p = start; p <= end; p++) fragment.appendChild(imgElements[p - 1]);
+      for (let p = start; p <= end; p++) {
+        const pageEl = imgElements[p - 1];
+        if (pageEl && fitMode !== 'height') {
+          pageEl.style.width = `${mpDisplayW}px`;
+          pageEl.style.maxWidth = fitMode === 'none' ? 'none' : '';
+        }
+        fragment.appendChild(pageEl);
+      }
       if (end < imgElements.length) fragment.appendChild(makeMyPaperSpacer(end + 1, imgElements.length, mpPageH));
     }
     if (!isMyPaperHere) {
