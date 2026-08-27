@@ -911,19 +911,29 @@ function App() {
   const lastPastPaperSubjectRef = useRef('');
 
   // My Paper: blank annotation pages; count persisted in localStorage
+  const MY_PAPER_MAX_PAGES = 1000;
   const MY_PAPER_PAGE_COUNT_KEY = 'pdfReaderMyPaperPageCount';
   const [myPaperPageCount, setMyPaperPageCount] = useState(() => {
-    try { return Math.max(1, parseInt(window.localStorage.getItem(MY_PAPER_PAGE_COUNT_KEY) || '1', 10) || 1); } catch { return 1; }
+    try { 
+      const stored = parseInt(window.localStorage.getItem(MY_PAPER_PAGE_COUNT_KEY) || '1000', 10);
+      return Math.min(MY_PAPER_MAX_PAGES, Math.max(1000, stored)); // Start with 1000 pages, lazy-rendered
+    } catch { return 1000; }
   });
   const MY_PAPER_ORDER_KEY = 'pdfReaderMyPaperOrder';
   const [myPaperOrder, setMyPaperOrder] = useState(() => {
     try {
       const raw = window.localStorage.getItem(MY_PAPER_ORDER_KEY);
       const parsed = raw ? JSON.parse(raw) : null;
-      const count = Math.max(1, parseInt(window.localStorage.getItem(MY_PAPER_PAGE_COUNT_KEY) || '1', 10) || 1);
+      // Normalize the count the same way as myPaperPageCount above so the
+      // order array always matches the rendered page count. Without this,
+      // a fresh session (no stored count) would get order=[1] while the
+      // page count is 1000, silently breaking page delete/reorder for every
+      // page except page 1.
+      const stored = parseInt(window.localStorage.getItem(MY_PAPER_PAGE_COUNT_KEY) || '1000', 10);
+      const count = Math.min(MY_PAPER_MAX_PAGES, Math.max(1000, stored));
       if (Array.isArray(parsed) && parsed.length === count) return parsed;
       return Array.from({ length: count }, (_, i) => i + 1);
-    } catch { return [1]; }
+    } catch { return Array.from({ length: 1000 }, (_, i) => i + 1); }
   });
   const [myPaperPage, setMyPaperPage] = useState(1);
   const [myPaperContextMenu, setMyPaperContextMenu] = useState(null); // { page, x, y }
@@ -931,6 +941,7 @@ function App() {
   const myPaperRedoStackRef = useRef([]); // redo stack
   const myPaperPageCountRef = useRef(myPaperPageCount);
   const myPaperScopeRef = useRef(null); // kept in sync below for use in callbacks
+  const myPaperFillRef = useRef(null); // set by PdfPane; call to fill vertical gap with pages
   const [ppRelatedPage, setPpRelatedPage] = useState(1);
   // Blank images array — stable identity as long as count doesn't change; no DOM rebuild on reorder/delete
   const myPaperImages = useMemo(() => Array(myPaperPageCount).fill(null), [myPaperPageCount]);
@@ -944,14 +955,10 @@ function App() {
   const handleMyPaperAdd = useCallback((n = 1) => {
     if (n <= 0) return;
     setMyPaperPageCount((prev) => {
-      const next = prev + n;
-      try { window.localStorage.setItem(MY_PAPER_PAGE_COUNT_KEY, String(next)); } catch {}
-      const base = Math.max(...myPaperOrderRef.current, prev);
-      const newSlots = Array.from({ length: n }, (_, i) => base + 1 + i);
-      const nextOrder = [...myPaperOrderRef.current, ...newSlots];
-      setMyPaperOrder(nextOrder);
-      try { window.localStorage.setItem(MY_PAPER_ORDER_KEY, JSON.stringify(nextOrder)); } catch {}
-      return next;
+      if (prev >= MY_PAPER_MAX_PAGES) return prev;
+      const next = Math.min(MY_PAPER_MAX_PAGES, Math.max(prev + n, prev * 1.5)); // Grow exponentially to avoid thrashing
+      try { window.localStorage.setItem(MY_PAPER_PAGE_COUNT_KEY, String(Math.floor(next))); } catch {}
+      return Math.floor(next);
     });
   }, []);
 
@@ -988,19 +995,46 @@ function App() {
     myPaperRedoStackRef.current = [];
     const deletedSlot = currentOrder[displayPos - 1];
     const nextCount = currentCount - 1;
-    const nextOrder = currentOrder.filter((_, i) => i !== displayPos - 1);
+    // Remove the deleted page and shift every later page number down by one,
+    // keeping the order array a valid permutation of 1..nextCount.
+    const nextOrder = currentOrder
+      .filter((slot) => slot !== deletedSlot)
+      .map((slot) => (slot > deletedSlot ? slot - 1 : slot));
     applyMyPaperState(nextCount, nextOrder);
-    setMyPaperPage((prev) => Math.min(prev, nextCount));
-    // Clear annotations for the deleted slot on the server
+    // Keep the current page anchored to the same content: pages after the
+    // deleted one moved up one display position.
+    setMyPaperPage((prev) => {
+      let next = prev;
+      if (next > displayPos) next -= 1;
+      return Math.min(next, nextCount);
+    });
+    setTimeout(() => myPaperFillRef.current?.(), 0);
+    // Remove the deleted page and shift later pages down in the database
     const scope = myPaperScopeRef.current;
     if (scope && deletedSlot != null && userId) {
       const pageId = deletedSlot;
-      // Optimistically remove from local state
-      setRemarks((prev) => prev.filter((r) => !(r.langId === 'my-paper' && Number(r.page) === pageId)));
-      fetchJson(
-        `api/remarks?userId=${encodeURIComponent(userId)}&subjectId=${encodeURIComponent(selectedBook)}&bookId=${encodeURIComponent(scope.bookId)}&sectionId=${scope.sectionId}&pageId=${pageId}`,
-        { method: 'DELETE' }
-      ).catch(() => {});
+      // Optimistically update local remarks: drop the deleted page, decrement later pages
+      setRemarks((prev) => prev
+        .map((r) => {
+          if (r.langId !== 'my-paper') return r;
+          const p = Number(r.page);
+          if (p === pageId) return null;
+          if (p > pageId) return { ...r, page: String(p - 1) };
+          return r;
+        })
+        .filter(Boolean)
+      );
+      fetchJson('api/remarks/delete-page-shift', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          subjectId: selectedBook,
+          bookId: scope.bookId,
+          sectionId: scope.sectionId,
+          pageId,
+        }),
+      }).catch((err) => console.error('[myPaper] delete-page-shift failed:', err));
     }
   }, [applyMyPaperState, userId, selectedBook]);
 
@@ -1474,9 +1508,12 @@ function App() {
     const timer = setTimeout(() => {
       if (isTestMode) console.log('[layout] firing deferred fit refresh');
       refreshFitForCurrentMode();
+      if (selectedViews.includes(VIEW_MY_PAPER)) {
+        setTimeout(() => myPaperFillRef.current?.(), 0);
+      }
     }, 350);
     return () => clearTimeout(timer);
-  }, [isFullscreen, sidebarCollapsed, sidebarHidden, panelVisible, refreshFitForCurrentMode]);
+  }, [isFullscreen, sidebarCollapsed, sidebarHidden, panelVisible, refreshFitForCurrentMode, selectedViews]);
 
   // Clear the initial-mount guard after the first loadPages completes AND
   // PdfPane has had time to mount and restore the saved scroll position.
@@ -9439,6 +9476,23 @@ function App() {
           </label>
         )}
 
+        {/* ── My Paper: Add Page button ────────────────────────── */}
+        {selectedViews.includes(VIEW_MY_PAPER) && (
+          <button
+            type="button"
+            className="sidebar-my-paper-add-btn"
+            onClick={() => { handleMyPaperAdd(1); setTimeout(() => myPaperFillRef.current?.(), 0); }}
+            title={_('addMyPaperPage')}
+            aria-label={_('addMyPaperPage')}
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" role="presentation" focusable="false">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 7V3.5L18.5 9H13z" fill="currentColor" opacity=".7"/>
+              <path d="M12 18v-4M10 16h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+            </svg>
+            {!sidebarCollapsed && <span>{_('addMyPaperPage')}</span>}
+          </button>
+        )}
+
         {/* ── PP Related controls ───────────────────────────────── */}
         {!sidebarCollapsed && selectedViews.includes(VIEW_PP_RELATED) && materialMode === MATERIAL_TEXTBOOK && (
           <label>
@@ -10046,7 +10100,7 @@ function App() {
                       images={isMyPaper ? myPaperImages : isPpRelated ? ppRelatedImages : isImages ? src : null}
                       title={`${selectedChapter} · ${selectedFile} · ${selectedPage}`}
                       section={null} hideHeader={true}
-                      mode={displayMode} currentPage={isMyPaper ? myPaperPage : isPpRelated ? ppRelatedPage : selectedPage}
+                      mode={isMyPaper ? 'scrolling' : displayMode} currentPage={isMyPaper ? myPaperPage : isPpRelated ? ppRelatedPage : selectedPage}
                       onPageChange={isMyPaper ? setMyPaperPage : isPpRelated ? setPpRelatedPage : setSelectedPage}
                       onPageCountChange={(count) => setPageCounts((current) => ({ ...current, [pane.sourceKey]: count }))}
                       thumbnailsOpen={showThumbnails}
@@ -10103,7 +10157,7 @@ function App() {
                       images={isMyPaper ? myPaperImages : isPpRelated ? ppRelatedImages : isImages ? src : null}
                       title={`${selectedChapter} · ${selectedFile} · ${selectedPage}`}
                       section={null} hideHeader={true}
-                      mode={displayMode} currentPage={isMyPaper ? myPaperPage : isPpRelated ? ppRelatedPage : selectedPage}
+                      mode={isMyPaper ? 'scrolling' : displayMode} currentPage={isMyPaper ? myPaperPage : isPpRelated ? ppRelatedPage : selectedPage}
                       onPageChange={isMyPaper ? setMyPaperPage : isPpRelated ? setPpRelatedPage : setSelectedPage}
                       onPageCountChange={(count) => setPageCounts((current) => ({ ...current, [pane.sourceKey]: count }))}
                       thumbnailsOpen={showThumbnails}
@@ -10144,7 +10198,7 @@ function App() {
                 title={`${selectedChapter} · ${selectedFile} · ${selectedPage}`}
                 section={null}
                 hideHeader={isBilingualView}
-                mode={displayMode}
+                mode={isMyPaper ? 'scrolling' : displayMode}
                 currentPage={isMyPaper ? myPaperPage : isPpRelated ? ppRelatedPage : selectedPage}
                 onPageChange={isMyPaper ? setMyPaperPage : isPpRelated ? setPpRelatedPage : setSelectedPage}
                 onPageCountChange={(count) => setPageCounts((current) => ({ ...current, [pane.sourceKey]: count }))}

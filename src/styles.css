@@ -1822,6 +1822,46 @@ button, input, select {
 .page-frame[data-annotation-language="my-paper"] .pdf-content {
   background: #f0f2f5;
 }
+/* My Paper must always scroll natively — the JS wheel/touch handler skips it.
+   These rules use high specificity so they also beat the global
+   ".book-stage.tool-hand" and ".app-shell[data-fit-mode='none'] ... tool-hand"
+   overflow:hidden rules; otherwise the vertical scrollbar disappears once the
+   user zooms in (free-zoom) with the hand tool selected. */
+.page-frame[data-annotation-language="my-paper"] .pdf-scroll-pages {
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  scrollbar-gutter: stable;
+  /* Always show a grabbable thumb for fast vertical scrolling */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.35) rgba(0, 0, 0, 0.07);
+}
+.app-shell[data-fit-mode="none"] .book-stage.scrolling.tool-hand .page-frame[data-annotation-language="my-paper"] .pdf-scroll-pages {
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+}
+.page-frame[data-annotation-language="my-paper"] .pdf-scroll-pages::-webkit-scrollbar {
+  width: 10px;
+}
+.page-frame[data-annotation-language="my-paper"] .pdf-scroll-pages::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.06);
+}
+.page-frame[data-annotation-language="my-paper"] .pdf-scroll-pages::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.32);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.page-frame[data-annotation-language="my-paper"] .pdf-scroll-pages::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.5);
+  background-clip: content-box;
+}
+:root.dark .page-frame[data-annotation-language="my-paper"] .pdf-scroll-pages {
+  scrollbar-color: rgba(255, 255, 255, 0.35) rgba(255, 255, 255, 0.08);
+}
+:root.dark .page-frame[data-annotation-language="my-paper"] .pdf-scroll-pages::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.32);
+  background-clip: content-box;
+}
 :root.dark .my-paper-page {
   background: #1e1e1e;
   border-color: rgba(255,255,255,0.15) !important;
@@ -1842,6 +1882,14 @@ button, input, select {
 }
 :root.dark .my-paper-page-number {
   color: rgba(255,255,255,0.2);
+}
+
+/* Single virtual spacer that stands in for many out-of-window pages. */
+.my-paper-spacer {
+  box-sizing: border-box;
+  flex-shrink: 0;
+  pointer-events: none;
+  /* transparent — pages within scroll into view as real divs */
 }
 
 /* ── My Paper page action buttons (move / delete) ─────────── */
@@ -1925,6 +1973,43 @@ button, input, select {
 }
 :root.dark .my-paper-action-delete {
   color: #e74c3c;
+}
+
+/* ── Sidebar Add Page button (My Paper) ───────────────────── */
+.sidebar-my-paper-add-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  border: 1px dashed #a0b8cc;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--sidebar-fg, #1a3a52);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.sidebar-my-paper-add-btn:hover {
+  background: rgba(0,120,200,0.07);
+  border-color: #5a9ec8;
+}
+.sidebar-my-paper-add-btn:active {
+  background: rgba(0,120,200,0.14);
+}
+.sidebar.collapsed .sidebar-my-paper-add-btn {
+  padding: 8px 6px;
+}
+:root.dark .sidebar-my-paper-add-btn {
+  color: #cdd8e3;
+  border-color: #3a5568;
+}
+:root.dark .sidebar-my-paper-add-btn:hover {
+  background: rgba(100,180,255,0.1);
+  border-color: #6aace0;
 }
 
 /* ── My Paper long-press context menu ─────────────────────── */

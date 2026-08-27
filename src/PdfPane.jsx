@@ -168,18 +168,96 @@ function centerAnchoredScroll(container, oldScrollTop, oldScrollHeight, axis = '
  * @returns {{ page: number, pageEl: Element | null }}
  */
 function findContainingPage(mount, scrollTop) {
-  const nodes = mount.querySelectorAll('[data-page]');
+  const nodes = mount.querySelectorAll('[data-page], [data-spacer-start]');
   let page = 1;
   let pageEl = null;
   for (const node of nodes) {
     if (node.offsetTop <= scrollTop) {
-      page = Number(node.dataset.page);
-      pageEl = node;
+      if (node.dataset.spacerStart) {
+        // Virtual spacer: compute page number from position within it.
+        const startPage = Number(node.dataset.spacerStart);
+        const endPage = Number(node.dataset.spacerEnd);
+        const pageH = Number(node.dataset.spacerPageH) || 1;
+        const pagesIn = Math.floor((scrollTop - node.offsetTop) / pageH);
+        page = Math.min(endPage, startPage + pagesIn);
+        pageEl = node;
+      } else {
+        page = Number(node.dataset.page);
+        pageEl = node;
+      }
     } else {
-      break; // pages are in DOM order — remaining start after scrollTop
+      break;
     }
   }
   return { page, pageEl };
+}
+
+// ── My Paper lazy window ─────────────────────────────────
+// My Paper is up to 1000 uniform A4 blank pages.  Only the viewport ±
+// MY_PAPER_BUFFER are real `.my-paper-page` divs; everything else is two
+// virtual `.my-paper-spacer` shims (before + after) that keep scrollHeight
+// correct with a tiny DOM.
+const MY_PAPER_BUFFER = 3;
+
+// Real blank page (annotation canvas + number).  Mirrors the blank div
+// construction used in the images effect.
+function makeMyPaperPage(pageNum) {
+  const blankDiv = document.createElement('div');
+  blankDiv.dataset.page = String(pageNum);
+  blankDiv.className = 'page-img my-paper-page';
+  blankDiv.dataset.blank = 'true';
+  const pageNumSpan = document.createElement('span');
+  pageNumSpan.className = 'my-paper-page-number';
+  pageNumSpan.textContent = String(pageNum);
+  blankDiv.appendChild(pageNumSpan);
+  return blankDiv;
+}
+
+// One virtual block standing in for a contiguous run of out-of-window pages.
+function makeMyPaperSpacer(startPage, endPage, pageH) {
+  const sp = document.createElement('div');
+  sp.className = 'my-paper-spacer';
+  sp.dataset.spacerStart = String(startPage);
+  sp.dataset.spacerEnd = String(endPage);
+  sp.dataset.spacerPageH = String(Math.round(pageH));
+  // flowH = pageH + 20px vertical margin between siblings
+  sp.style.height = `${(endPage - startPage + 1) * (Math.round(pageH) + 20)}px`;
+  sp.style.flexShrink = '0';
+  return sp;
+}
+
+// Real-page window centered on the current scroll (or an explicit scrollTop).
+function getMyPaperWindowRange(mount, totalPages, pageH, scrollTopOverride) {
+  const flowH = pageH + 20;
+  const top = Math.max(0, typeof scrollTopOverride === 'number' ? scrollTopOverride : getScrollPos(mount).scrollTop);
+  const firstVisible = Math.floor(top / flowH) + 1;
+  const visCount = Math.max(1, Math.ceil(mount.clientHeight / flowH));
+  return {
+    start: Math.max(1, firstVisible - MY_PAPER_BUFFER),
+    end: Math.min(totalPages, firstVisible + visCount + MY_PAPER_BUFFER),
+  };
+}
+
+// One-pass rebuild: pages [start..end] are real, the rest are spacers.
+function renderMyPaperWindow(mount, start, end, pageH, totalPages, getWidth) {
+  mount.querySelectorAll('.my-paper-spacer').forEach((sp) => sp.remove());
+  mount.querySelectorAll('.my-paper-page[data-page]').forEach((pg) => {
+    const p = Number(pg.dataset.page);
+    if (p < start || p > end) pg.remove();
+  });
+  for (let p = start; p <= end; p++) {
+    if (mount.querySelector(`.my-paper-page[data-page="${p}"]`)) continue;
+    const pg = makeMyPaperPage(p);
+    const w = getWidth ? getWidth() : '';
+    if (w) pg.style.width = w;
+    mount.appendChild(pg);
+  }
+  // Normalize DOM order (window may have shifted both ways).
+  [...mount.querySelectorAll('.my-paper-page[data-page]')]
+    .sort((a, b) => Number(a.dataset.page) - Number(b.dataset.page))
+    .forEach((pg) => mount.appendChild(pg));
+  if (start > 1) mount.insertBefore(makeMyPaperSpacer(1, start - 1, pageH), mount.querySelector('.my-paper-page[data-page]'));
+  if (end < totalPages) mount.appendChild(makeMyPaperSpacer(end + 1, totalPages, pageH));
 }
 
 /**
@@ -530,6 +608,8 @@ function PdfPane({
   maxPagesInGroup = 0,
   hideHeader = false,
   onScrollPastEnd = null,
+  onMyPaperViewportNeed = null,
+  myPaperFillRef = null,
   onMyPaperDeletePage = null,
   onMyPaperMovePage = null,
   // 'textbook' | 'past-paper' | 'my-paper' — namespaces shared module-level
@@ -573,6 +653,7 @@ function PdfPane({
   const syncingFromRemoteRef = useRef(false);
   const programmaticScrollingRef = useRef(false);  // true while the scroll-to-page effect is scrolling (per-instance, not shared across panes)
   const scrollPastEndFiredRef = useRef(false);  // prevents repeated onScrollPastEnd fires on a single scroll-to-bottom
+  const myPaperWindowRef = useRef({ start: 1, end: 1 });  // My Paper: mounted page window [start..end]
   const [myPaperPageRects, setMyPaperPageRects] = useState([]);  // [{page, top, right}] in viewport coords for portal buttons
   const postRestoreUntilRef = useRef(0);     // timestamp: suppress saveScrollNow for detected-page changes until this time
   const lastRestoredPageRef = useRef(0);      // page number that was just restored — if saveScrollNow detects a different page within the grace period, skip
@@ -1724,6 +1805,8 @@ function PdfPane({
     }
     lastScrolledFromSyncRef.current = false;
     lastScrollReportedPageRef.current = null;
+    // Skip scroll-to-page for My Paper — let natural scrolling handle positioning
+    if (contentType === 'my-paper') return;
     const target = mount.querySelector(`[data-page="${currentPage}"]`);
     if (!target) {
       const allPages = [...mount.querySelectorAll('[data-page]')].map(el => el.dataset.page);
@@ -2072,6 +2155,8 @@ function PdfPane({
     // Without this, switching language triggers a save at scrollTop=0
     // before the restore runs, corrupting the stored position.
     isInitialLoadRef.current = true;
+    // Allow the fill-check to fire again after each DOM rebuild.
+    if (contentType === 'my-paper') scrollPastEndFiredRef.current = false;
 
     // Must be declared OUTSIDE the try block so the cleanup return
     // (also outside try) can access them on unmount.
@@ -2234,6 +2319,7 @@ function PdfPane({
       const lazyOnScroll = () => {
         const top = getScrollPos(mount).scrollTop;
         const { page: nearest } = findContainingPage(mount, top);
+        if (contentType === 'my-paper') ensureMyPaperWindow();
         if (nearest !== renderedPageRef.current) setRenderedPage(nearest);
         if (nearest !== lastVisiblePageLite) {
           lastVisiblePageLite = nearest;
@@ -2285,6 +2371,11 @@ function PdfPane({
         console.log(`[scroll-save] ${prevDomKey}  PRE-REBUILD  page=${prePage}  fraction=${preFrac.toFixed(4)}  ph=${Math.round(preDispH)}  oldSource=${activeDomSourceRef.current}  newSource=${source}  imgsChanged=${imagesChanged}  maxPgsChanged=${maxPagesChanged}`);
       }
     }
+
+    // For My Paper, capture raw scrollTop before clearing DOM so we can
+    // restore it directly after a rebuild (e.g. after auto-adding pages).
+    // Only when the pane previously held content — true first mount starts at top.
+    const myPaperPreScrollTop = (contentType === 'my-paper' && mount.scrollHeight > 0) ? getScrollPos(mount).scrollTop : -1;
 
     mount.innerHTML = '';
     // Center pages when zoomed out (flex column + align-items center)
@@ -2466,38 +2557,68 @@ function PdfPane({
     const initVisibleCount = Math.max(1, Math.ceil(initMountH / Math.max(50, initEstPageH)));
     const explicitTargetPage = Math.max(1, Number(currentPage) || 1);
     const INITIAL_WINDOW = Math.max(6, initVisibleCount + 4);
-    for (let i = 0; i < imgElements.length; i++) {
-      const pageNum = i + 1;
-      const dist = Math.abs(pageNum - explicitTargetPage);
-      const shouldEagerLoad = dist <= INITIAL_WINDOW || pageNum === explicitTargetPage;
-      // Blank divs (My Paper) are always appended directly — no lazy-load needed.
-      const isBlankEl = imgElements[i].dataset.blank === 'true';
-      if (shouldEagerLoad || isBilingual || isBlankEl) {
-        // Bilingual: all pages must be real images because the CSS
-        // height rule must apply to actual <img> elements.
-        fragment.appendChild(imgElements[i]);
-      } else {
-        const img = imgElements[i];
-        const ph = document.createElement('div');
-        ph.className = 'page-img page-placeholder';
-        ph.dataset.page = String(i + 1);
-        ph.dataset.placeholder = 'true';
-        if (img.style.height && img.style.height !== 'auto') {
-          ph.style.height = img.style.height;
+    // My Paper: build [top spacer] + real pages in the lazy window + [bottom spacer].
+    // Everything else (textbooks/past-papers) uses the progressive loop below.
+    const isMyPaperHere = contentType === 'my-paper';
+    if (isMyPaperHere) {
+      const mpPageH = Math.max(50, Math.round(mount.clientWidth * 1.41421) || 800);
+      // Center the window where the user was (after auto-add rebuilds).
+      const mpScrollTop = myPaperPreScrollTop >= 0 ? myPaperPreScrollTop : Math.max(0, getScrollPos(mount).scrollTop);
+      const { start, end } = getMyPaperWindowRange(mount, imgElements.length, mpPageH, mpScrollTop);
+      myPaperWindowRef.current = { start, end };
+      if (start > 1) fragment.appendChild(makeMyPaperSpacer(1, start - 1, mpPageH));
+      for (let p = start; p <= end; p++) fragment.appendChild(imgElements[p - 1]);
+      if (end < imgElements.length) fragment.appendChild(makeMyPaperSpacer(end + 1, imgElements.length, mpPageH));
+    }
+    if (!isMyPaperHere) {
+      for (let i = 0; i < imgElements.length; i++) {
+        const pageNum = i + 1;
+        const dist = Math.abs(pageNum - explicitTargetPage);
+        const shouldEagerLoad = dist <= INITIAL_WINDOW || pageNum === explicitTargetPage;
+        if (shouldEagerLoad || isBilingual) {
+          // Bilingual: all pages must be real images because the CSS
+          // height rule must apply to actual <img> elements.
+          fragment.appendChild(imgElements[i]);
         } else {
-          ph.style.minHeight = img.style.minHeight || '120px';
+          const img = imgElements[i];
+          const ph = document.createElement('div');
+          ph.className = 'page-img page-placeholder';
+          ph.dataset.page = String(i + 1);
+          ph.dataset.placeholder = 'true';
+          if (img.style.height && img.style.height !== 'auto') {
+            ph.style.height = img.style.height;
+          } else {
+            ph.style.minHeight = img.style.minHeight || '120px';
+          }
+          if (img.style.width && img.style.width !== 'auto') {
+            ph.style.width = img.style.width;
+          }
+          ph.style.display = 'block';
+          ph.style.opacity = '1';
+          ph.style.background = '#f0f0f0';
+          fragment.appendChild(ph);
         }
-        if (img.style.width && img.style.width !== 'auto') {
-          ph.style.width = img.style.width;
-        }
-        ph.style.display = 'block';
-        ph.style.opacity = '1';
-        ph.style.background = '#f0f0f0';
-        fragment.appendChild(ph);
       }
     }
     mount.appendChild(fragment);
-
+    // After real pages have laid out, correct spacer heights to the exact
+    // measured page height so scrollHeight is pixel-accurate.
+    if (isMyPaperHere) {
+      const fixMpSpacers = () => {
+        if (disposed) return;
+        const realPage = mount.querySelector('.my-paper-page[data-page]');
+        const measured = realPage ? realPage.offsetHeight : 0;
+        if (measured > 0) {
+          mount.querySelectorAll('.my-paper-spacer').forEach((sp) => {
+            const start = Number(sp.dataset.spacerStart);
+            const end = Number(sp.dataset.spacerEnd);
+            sp.dataset.spacerPageH = String(measured);
+            sp.style.height = `${(end - start + 1) * (measured + 20)}px`;
+          });
+        }
+      };
+      requestAnimationFrame(() => requestAnimationFrame(fixMpSpacers));
+    }
     // Update refs after rebuild
     lastImagesRef.current = images;
     maxPagesInGroupRef.current = maxPagesInGroup;
@@ -2829,6 +2950,7 @@ function PdfPane({
                   programmaticScrollingRef.current = true;
                   requestAnimationFrame(() => {
                     programmaticScrollingRef.current = false;
+                    if (contentType === 'my-paper' && !disposed) doScrollWork();
                   });
                 });
               });
@@ -2883,6 +3005,7 @@ function PdfPane({
           programmaticScrollingRef.current = true;
           requestAnimationFrame(() => {
             programmaticScrollingRef.current = false;
+            if (contentType === 'my-paper' && !disposed) doScrollWork();
           });
         });
       });
@@ -3016,9 +3139,46 @@ function PdfPane({
       } catch (e) { setLoadDebugText(`ERR-waitForReady: ${e.message}`); }
     };
     setLoadDebugText('chk5: calling waitForReady');
-    try { waitForReadyThenScroll(); } catch (e) { setLoadDebugText(`ERR-call: ${e.message}`); }
+    // My Paper has only blank divs — skip the image-load wait and just restore scrollTop directly.
+    if (contentType === 'my-paper') {
+      setShowLoadingOverlay(false);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (disposed) return;
+          if (myPaperPreScrollTop >= 0) mySetScrollTop(mount, myPaperPreScrollTop);
+          scrollRestoreInProgressRef.current = false;
+          isInitialLoadRef.current = false;
+          programmaticScrollingRef.current = true;
+          // Defer gap-check by a macrotask to ensure DOM is fully painted before checking.
+          setTimeout(() => {
+            programmaticScrollingRef.current = false;
+            if (!disposed) requestAnimationFrame(() => deferredDoScrollWork());
+          }, 0);
+        });
+      });
+    } else {
+      try { waitForReadyThenScroll(); } catch (e) { setLoadDebugText(`ERR-call: ${e.message}`); }
+    }
 
     // scrollRafId2 and pendingScroll2 declared above (before try block)
+
+    // Keep only viewport ± MY_PAPER_BUFFER as real My Paper pages; the rest
+    // are covered by virtual spacer divs so the DOM stays small.
+    const ensureMyPaperWindow = () => {
+      if (contentType !== 'my-paper' || disposed) return;
+      const totalPages = (imgElementsRef.current && imgElementsRef.current.length) || (Array.isArray(images) ? images.length : 0);
+      if (totalPages <= 0) return;
+      const realPage = mount.querySelector('.my-paper-page[data-page]');
+      const pageH = realPage && realPage.offsetHeight > 0 ? realPage.offsetHeight : Math.max(50, Math.round(mount.clientWidth * 1.41421) || 800);
+      const { start, end } = getMyPaperWindowRange(mount, totalPages, pageH);
+      if (start === myPaperWindowRef.current.start && end === myPaperWindowRef.current.end) return;
+      renderMyPaperWindow(mount, start, end, pageH, totalPages, () => {
+        const rp = mount.querySelector('.my-paper-page[data-page]');
+        const origEl = imgElementsRef.current && imgElementsRef.current[0];
+        return (rp && rp.style.width) || (origEl && origEl.style.width) || '';
+      });
+      myPaperWindowRef.current = { start, end };
+    };
 
     // Core scroll work: page detection, lazy loading, cross-pane sync.
     // Extracted so both onScroll (direct calls) and onScrollWithSave
@@ -3035,16 +3195,19 @@ function PdfPane({
         mySetScrollTop(mount, maxTop);
         return;
       }
-      // Auto-add page when user scrolls near the bottom of a My Paper pane
-      if (contentType === 'my-paper' && onScrollPastEnd && !programmaticScrollingRef.current && !isInitialLoadRef.current) {
-        if (top >= maxTop - 80) {
-          if (!scrollPastEndFiredRef.current) {
-            scrollPastEndFiredRef.current = true;
-            onScrollPastEnd();
-          }
-        } else {
-          scrollPastEndFiredRef.current = false;
+      // For My Paper, add pages eagerly to maintain infinite scroll buffer.
+      // Add when approaching 80% of available content to avoid hitting limit.
+      if (contentType === 'my-paper' && !programmaticScrollingRef.current && !isInitialLoadRef.current) {
+        const scrollBuffer = mount.clientHeight * 3;
+        const maxScroll = Math.max(0, mount.scrollHeight - mount.clientHeight);
+        const distanceFromEnd = maxScroll - top;
+        if (distanceFromEnd < scrollBuffer && onMyPaperViewportNeed) {
+          const pageH = mount.querySelector('.my-paper-page[data-page]')?.offsetHeight || mount.clientHeight;
+          const pagesNeeded = Math.ceil(scrollBuffer / Math.max(50, pageH));
+          onMyPaperViewportNeed(pagesNeeded);
         }
+        // Mount real pages only around the current viewport (lazy window).
+        ensureMyPaperWindow();
       }
       // Containing page (offsetTop ≤ scrollTop), not geometrically nearest.
       const { page: nearest, pageEl } = findContainingPage(mount, top);
@@ -3204,6 +3367,26 @@ function PdfPane({
       console.log(`[init] scroll listener attached to mount (isImageMode=${isImageMode})`);
     }
 
+    // Expose appendMyPapers so App.jsx can call it on delete/resize/add.
+    if (myPaperFillRef && contentType === 'my-paper') {
+      myPaperFillRef.current = () => {
+        if (disposed || !mount) return;
+        const pageH = mount.querySelector('.my-paper-page[data-page]')?.offsetHeight || mount.clientHeight;
+        const gap = mount.clientHeight - mount.scrollHeight;
+        if (gap > 0 && onMyPaperViewportNeed) {
+          const needed = Math.max(1, Math.ceil(gap / Math.max(50, pageH)) + 1);
+          onMyPaperViewportNeed(needed);
+        }
+      };
+    }
+
+    // Do NOT run gap-check during the initial-load double-RAF because the DOM isn't fully painted yet.
+    // Defer by one more frame to let the browser render the new pages before checking for gaps.
+    const deferredDoScrollWork = () => {
+      if (isInitialLoadRef.current || disposed) return;
+      doScrollWork();
+    };
+
     // Restore page-number state so the header shows the correct page
     // immediately.  The actual scroll position is handled by
     // scheduleScrollToCurrent (which retries until the layout is ready).
@@ -3224,6 +3407,7 @@ function PdfPane({
       disposed = true;
       if (scrollRafId2 != null) cancelAnimationFrame(scrollRafId2);
       mount.removeEventListener('scroll', onScrollWithSave);
+      if (myPaperFillRef && myPaperFillRef.current) myPaperFillRef.current = null;
     };
   }, [isImageMode, images, mode, syncGroup, syncId, maxPagesInGroup, forceRedrawToken]);
 
@@ -3520,6 +3704,21 @@ function PdfPane({
           img.style.maxWidth = 'none';
         });
         placeholders.forEach((ph) => { ph.style.width = `${w}px`; });
+        // Also update any .my-paper-page divs swapped in by ensureMyPaperWindow
+        // (they are not in imgElementsRef so the forEach above misses them).
+        if (contentType === 'my-paper') {
+          mount.querySelectorAll('.my-paper-page[data-page]').forEach((pg) => {
+            pg.style.width = `${w}px`;
+          });
+          mount.querySelectorAll('.my-paper-spacer').forEach((sp) => {
+            sp.style.width = `${w}px`;
+            // Recompute spacer height if page height changed with new zoom.
+            const start = Number(sp.dataset.spacerStart);
+            const end = Number(sp.dataset.spacerEnd);
+            const spPageH = Number(sp.dataset.spacerPageH) || w * Math.SQRT2;
+            sp.style.height = `${(end - start + 1) * (spPageH + 20)}px`;
+          });
+        }
       }
     }
 

@@ -1081,6 +1081,84 @@ app.delete('/api/remarks', requireValidUserId(true), asyncRoute(async (request, 
   }
 }));
 
+// POST /api/remarks/delete-page-shift  { subjectId, bookId, sectionId, pageId }
+// Delete one My Paper page AND shift every later page down by one
+// (pageId: X -> X-1), so annotations "move up" with their pages.
+// Scoped to langId='my-paper' so textbook annotations (which share the
+// same bookId/sectionId in textbook mode) are never touched.
+app.post('/api/remarks/delete-page-shift', requireValidUserId(true), asyncRoute(async (request, response) => {
+  try {
+    if (!annotationsCollection) {
+      response.status(500).json({ error: 'MongoDB not connected', deletedCount: 0, shiftedCount: 0 });
+      return;
+    }
+    const userId = request.validatedUserId;
+    const { subjectId, bookId, sectionId, pageId } = request.body || {};
+    const deletedPageId = Number(pageId);
+    if (!Number.isInteger(deletedPageId) || deletedPageId < 1) {
+      response.status(400).json({ error: 'pageId must be a positive integer', deletedCount: 0, shiftedCount: 0 });
+      return;
+    }
+    const scope = {
+      userId,
+      subjectId: String(subjectId || '').trim(),
+      bookId: String(bookId || '').trim(),
+      sectionId: Number(sectionId),
+      langId: 'my-paper',
+    };
+
+    // 1. Remove the deleted page's annotations.
+    const deleteResult = await annotationsCollection.deleteMany({ ...scope, pageId: deletedPageId });
+
+    // 2. Read every page after the deleted one so we can shift them down.
+    const laterDocs = await annotationsCollection.find({ ...scope, pageId: { $gt: deletedPageId } }).toArray();
+
+    // 3. Drop the old (higher-numbered) docs, then re-insert them one page lower.
+    //    Reading into memory first avoids collisions: each pageId maps to a
+    //    unique pageId-1 and the deleted page (the one target slot) is already gone.
+    let shiftedCount = 0;
+    if (laterDocs.length > 0) {
+      await annotationsCollection.deleteMany({ _id: { $in: laterDocs.map((doc) => doc._id) } });
+      for (const doc of laterDocs) {
+        const { _id, ...rest } = doc;
+        // The client renders annotations by the `page` field stored inside each
+        // remark, so shift that down along with the document's pageId.
+        const shiftedRemarks = (Array.isArray(doc.remarks) ? doc.remarks : []).map((r) => {
+          const p = Number(r.page);
+          if (Number.isFinite(p) && p > deletedPageId) {
+            return { ...r, page: String(p - 1) };
+          }
+          return r;
+        });
+        await annotationsCollection.insertOne({
+          ...rest,
+          remarks: shiftedRemarks,
+          pageId: doc.pageId - 1,
+          updatedAt: hkNow(),
+        });
+        shiftedCount++;
+      }
+    }
+
+    // Also drop redo history for the deleted page so stale actions can't be replayed.
+    if (annotationsRedoCollection) {
+      await annotationsRedoCollection.deleteOne({
+        userId,
+        subjectId: scope.subjectId,
+        bookId: scope.bookId,
+        sectionId: scope.sectionId,
+        pageId: deletedPageId,
+      });
+    }
+
+    console.log(`[remarks/delete-page-shift] user=${userId.slice(0,6)} scope=${scope.subjectId}/${scope.bookId}/§${scope.sectionId} deletedPage=${deletedPageId} deleted=${deleteResult.deletedCount} shifted=${shiftedCount}`);
+    response.json({ ok: true, deletedCount: deleteResult.deletedCount, shiftedCount });
+  } catch (err) {
+    console.error('[remarks/delete-page-shift] error:', err.message);
+    response.status(500).json({ error: 'Failed to delete page and shift later pages', deletedCount: 0, shiftedCount: 0 });
+  }
+}));
+
 // ── Batch add/delete actions (offline-queue support) ──────
 app.post('/api/remarks/actions', requireValidUserId(true), asyncRoute(async (request, response) => {
   try {
