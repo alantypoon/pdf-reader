@@ -397,6 +397,16 @@ function buildQrUrlRewriteMap(chapter) {
   return new Map(entries);
 }
 
+// Reverse a pageMap (oldPage -> newPage) so undo can put content back.
+function invertPageMap(pageMap) {
+  const inverse = {};
+  if (!pageMap) return inverse;
+  Object.entries(pageMap).forEach(([from, to]) => {
+    inverse[to] = Number(from);
+  });
+  return inverse;
+}
+
 function hasRenderableSource(source) {
   if (Array.isArray(source)) return source.length > 0;
   return typeof source === 'string' && source.trim().length > 0;
@@ -910,8 +920,10 @@ function App() {
   const lastReaderModeRef = useRef('textbook');
   const lastPastPaperSubjectRef = useRef('');
 
-  // My Paper: blank annotation pages; count persisted in localStorage
-  const MY_PAPER_MAX_PAGES = 1000;
+  // My Paper: blank annotation pages; count persisted in localStorage.
+  // Raised above the 1000-page floor below so insert-page always has
+  // headroom (the lazy virtual-scroll window keeps DOM size small regardless).
+  const MY_PAPER_MAX_PAGES = 2000;
   const MY_PAPER_PAGE_COUNT_KEY = 'pdfReaderMyPaperPageCount';
   const [myPaperPageCount, setMyPaperPageCount] = useState(() => {
     try { 
@@ -991,10 +1003,18 @@ function App() {
     const currentOrder = myPaperOrderRef.current;
     if (currentCount <= 1) return;
     if (displayPos < 1 || displayPos > currentOrder.length) return;
-    myPaperHistoryRef.current = [...myPaperHistoryRef.current.slice(-19), { count: currentCount, order: currentOrder }];
-    myPaperRedoStackRef.current = [];
     const deletedSlot = currentOrder[displayPos - 1];
     const nextCount = currentCount - 1;
+    // Map applied by this delete: every page after the deleted one shifts up
+    // one slot. Stored in the undo snapshot so undo/redo can re-key the
+    // annotations back (the deleted page's own annotations are gone server-side).
+    const shiftMap = {};
+    currentOrder.forEach((slot) => {
+      const p = Number(slot);
+      if (p > deletedSlot) shiftMap[p] = p - 1;
+    });
+    myPaperHistoryRef.current = [...myPaperHistoryRef.current.slice(-19), { count: currentCount, order: currentOrder, pageMap: shiftMap }];
+    myPaperRedoStackRef.current = [];
     // Remove the deleted page and shift every later page number down by one,
     // keeping the order array a valid permutation of 1..nextCount.
     const nextOrder = currentOrder
@@ -1038,38 +1058,116 @@ function App() {
     }
   }, [applyMyPaperState, userId, selectedBook]);
 
+  // Re-key My Paper annotations through pageMap (oldPage -> newPage): update
+  // local remarks optimistically and persist to the server. My Paper renders
+  // pages in identity order (1..count), so moving a page's annotations is what
+  // makes a drag actually reorder content on screen.
+  const rekeyMyPaperPages = useCallback((pageMap) => {
+    if (!pageMap || !Object.keys(pageMap).length) return;
+    setRemarks((prev) => prev.map((r) => {
+      if (r.langId !== 'my-paper') return r;
+      const p = Number(r.page);
+      if (Number.isFinite(p) && pageMap[p] != null && pageMap[p] !== p) {
+        return { ...r, page: String(pageMap[p]) };
+      }
+      return r;
+    }));
+    const scope = myPaperScopeRef.current;
+    if (scope && userId) {
+      fetchJson('api/remarks/reorder-page-shift', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          subjectId: selectedBook,
+          bookId: scope.bookId,
+          sectionId: scope.sectionId,
+          pageMap,
+        }),
+      }).catch((err) => console.error('[myPaper] reorder-page-shift failed:', err));
+    }
+  }, [userId, selectedBook]);
+
   const handleMyPaperReorderPage = useCallback((fromPos, toPos) => {
     if (fromPos === toPos) return;
-    const currentOrder = myPaperOrderRef.current;
-    if (toPos < 1 || toPos > currentOrder.length) return;
-    const nextOrder = [...currentOrder];
-    const [moved] = nextOrder.splice(fromPos - 1, 1);
-    nextOrder.splice(toPos - 1, 0, moved);
-    myPaperHistoryRef.current = [...myPaperHistoryRef.current.slice(-19), { count: myPaperPageCountRef.current, order: currentOrder }];
+    const currentCount = myPaperPageCountRef.current;
+    if (toPos < 1 || toPos > currentCount) return;
+    if (fromPos < 1 || fromPos > currentCount) return;
+    // Build oldPage -> newPage map for the drag. My Paper renders slots in
+    // identity order, so this is the permutation induced by moving the slot
+    // at fromPos to toPos (the caller already applied removal compensation).
+    const pageMap = {};
+    if (fromPos < toPos) {
+      for (let p = fromPos + 1; p <= toPos; p++) pageMap[p] = p - 1;
+      pageMap[fromPos] = toPos;
+    } else {
+      for (let p = toPos; p < fromPos; p++) pageMap[p] = p + 1;
+      pageMap[fromPos] = toPos;
+    }
+    myPaperHistoryRef.current = [...myPaperHistoryRef.current.slice(-19), {
+      count: currentCount,
+      order: Array.from({ length: currentCount }, (_, i) => i + 1),
+      pageMap,
+    }];
     myPaperRedoStackRef.current = [];
-    applyMyPaperState(myPaperPageCountRef.current, nextOrder);
+    rekeyMyPaperPages(pageMap);
+    // Display order stays identity — the re-key moved the content.
+    applyMyPaperState(currentCount, Array.from({ length: currentCount }, (_, i) => i + 1));
     setMyPaperPage(toPos);
-  }, [applyMyPaperState]);
+  }, [applyMyPaperState, rekeyMyPaperPages]);
+
+  // Insert a blank page BEFORE displayPos: every page at/after displayPos
+  // shifts up by one to make room. Reuses rekeyMyPaperPages (same server
+  // endpoint as reorder) so existing annotations move with their pages.
+  const handleMyPaperInsertPageAt = useCallback((displayPos) => {
+    const currentCount = myPaperPageCountRef.current;
+    if (currentCount >= MY_PAPER_MAX_PAGES) return;
+    const insertPos = Math.max(1, Math.min(displayPos, currentCount + 1));
+    const nextCount = currentCount + 1;
+    const pageMap = {};
+    for (let p = insertPos; p <= currentCount; p++) pageMap[p] = p + 1;
+    myPaperHistoryRef.current = [...myPaperHistoryRef.current.slice(-19), {
+      count: currentCount,
+      order: Array.from({ length: currentCount }, (_, i) => i + 1),
+      pageMap,
+    }];
+    myPaperRedoStackRef.current = [];
+    rekeyMyPaperPages(pageMap);
+    applyMyPaperState(nextCount, Array.from({ length: nextCount }, (_, i) => i + 1));
+    setMyPaperPage(insertPos);
+  }, [applyMyPaperState, rekeyMyPaperPages]);
 
   const handleMyPaperUndo = useCallback(() => {
     const stack = myPaperHistoryRef.current;
     if (!stack.length) return;
     const snapshot = stack[stack.length - 1];
     myPaperHistoryRef.current = stack.slice(0, -1);
-    myPaperRedoStackRef.current = [...myPaperRedoStackRef.current, { count: myPaperPageCountRef.current, order: myPaperOrderRef.current }];
-    applyMyPaperState(snapshot.count, snapshot.order);
+    const inverseMap = invertPageMap(snapshot.pageMap);
+    myPaperRedoStackRef.current = [...myPaperRedoStackRef.current, {
+      count: myPaperPageCountRef.current,
+      order: myPaperOrderRef.current,
+      pageMap: inverseMap,
+    }];
+    rekeyMyPaperPages(inverseMap);
+    applyMyPaperState(snapshot.count, snapshot.order || Array.from({ length: snapshot.count }, (_, i) => i + 1));
     setMyPaperPage((prev) => Math.min(prev, snapshot.count));
-  }, [applyMyPaperState]);
+  }, [applyMyPaperState, rekeyMyPaperPages]);
 
   const handleMyPaperRedo = useCallback(() => {
     const stack = myPaperRedoStackRef.current;
     if (!stack.length) return;
     const snapshot = stack[stack.length - 1];
     myPaperRedoStackRef.current = stack.slice(0, -1);
-    myPaperHistoryRef.current = [...myPaperHistoryRef.current, { count: myPaperPageCountRef.current, order: myPaperOrderRef.current }];
-    applyMyPaperState(snapshot.count, snapshot.order);
+    const forwardMap = invertPageMap(snapshot.pageMap);
+    myPaperHistoryRef.current = [...myPaperHistoryRef.current, {
+      count: myPaperPageCountRef.current,
+      order: myPaperOrderRef.current,
+      pageMap: forwardMap,
+    }];
+    rekeyMyPaperPages(forwardMap);
+    applyMyPaperState(snapshot.count, snapshot.order || Array.from({ length: snapshot.count }, (_, i) => i + 1));
     setMyPaperPage((prev) => Math.min(prev, snapshot.count));
-  }, [applyMyPaperState]);
+  }, [applyMyPaperState, rekeyMyPaperPages]);
 
   // Scope for My Paper annotations: priority 1=past-paper, 2=textbook, 3=general
   const myPaperScope = useMemo(() => {
@@ -2720,6 +2818,17 @@ function App() {
 
   const handleSubjectChange = async (newBook) => {
     if (!newBook || String(newBook) === String(selectedBook)) return;
+    if (typeof window === 'undefined') return;
+    // Changing the course scope discards the current book/section/page view.
+    const result = await Swal.fire({
+      title: _('confirmScopeChange'),
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: _('confirm'),
+      cancelButtonText: _('cancel'),
+      focusCancel: true,
+    });
+    if (!result.isConfirmed) return;
     setSelectedBook(newBook);
     setLastSubjectId(newBook);
     setSelectedChapter('');
@@ -9476,22 +9585,7 @@ function App() {
           </label>
         )}
 
-        {/* ── My Paper: Add Page button ────────────────────────── */}
-        {selectedViews.includes(VIEW_MY_PAPER) && (
-          <button
-            type="button"
-            className="sidebar-my-paper-add-btn"
-            onClick={() => { handleMyPaperAdd(1); setTimeout(() => myPaperFillRef.current?.(), 0); }}
-            title={_('addMyPaperPage')}
-            aria-label={_('addMyPaperPage')}
-          >
-            <svg viewBox="0 0 24 24" width="16" height="16" role="presentation" focusable="false">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 7V3.5L18.5 9H13z" fill="currentColor" opacity=".7"/>
-              <path d="M12 18v-4M10 16h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-            </svg>
-            {!sidebarCollapsed && <span>{_('addMyPaperPage')}</span>}
-          </button>
-        )}
+        {/* ── My Paper: Add Page button (hidden per request) ───── */}
 
         {/* ── PP Related controls ───────────────────────────────── */}
         {!sidebarCollapsed && selectedViews.includes(VIEW_PP_RELATED) && materialMode === MATERIAL_TEXTBOOK && (
@@ -10116,6 +10210,7 @@ function App() {
                       onMyPaperViewportNeed={isMyPaper ? handleMyPaperViewportNeed : null}
                       onMyPaperDeletePage={isMyPaper ? handleMyPaperDeletePageAt : null}
                       onMyPaperMovePage={isMyPaper ? handleMyPaperReorderPage : null}
+                      onMyPaperInsertPage={isMyPaper ? handleMyPaperInsertPageAt : null}
                     />
                     </div>
                   );
@@ -10173,6 +10268,7 @@ function App() {
                       onMyPaperViewportNeed={isMyPaper ? handleMyPaperViewportNeed : null}
                       onMyPaperDeletePage={isMyPaper ? handleMyPaperDeletePageAt : null}
                       onMyPaperMovePage={isMyPaper ? handleMyPaperReorderPage : null}
+                      onMyPaperInsertPage={isMyPaper ? handleMyPaperInsertPageAt : null}
                     />
                     </div>
                   );
@@ -10230,6 +10326,7 @@ function App() {
                 onMyPaperViewportNeed={isMyPaper ? handleMyPaperViewportNeed : null}
                 onMyPaperDeletePage={isMyPaper ? handleMyPaperDeletePageAt : null}
                 onMyPaperMovePage={isMyPaper ? handleMyPaperReorderPage : null}
+                onMyPaperInsertPage={isMyPaper ? handleMyPaperInsertPageAt : null}
               />
               </div>
             );

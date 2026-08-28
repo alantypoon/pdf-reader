@@ -612,6 +612,7 @@ function PdfPane({
   myPaperFillRef = null,
   onMyPaperDeletePage = null,
   onMyPaperMovePage = null,
+  onMyPaperInsertPage = null,
   // 'textbook' | 'past-paper' | 'my-paper' — namespaces shared module-level
   // bilingual/scroll state so panes of different content types never
   // read or write each other's flags, even if syncGroup strings collide.
@@ -3460,7 +3461,14 @@ function PdfPane({
       indicator.className = 'my-paper-drop-indicator';
       const r = targetEl.getBoundingClientRect();
       const mountR = mount.getBoundingClientRect();
-      indicator.style.top = `${(above ? r.top : r.bottom) - mountR.top + mount.scrollTop}px`;
+      // Offset by half the inter-page margin (10px) so the line sits in the
+      // gap between pages rather than on the page border itself.
+      const edge = (above ? r.top : r.bottom) - mountR.top + mount.scrollTop;
+      indicator.style.top = `${edge + (above ? -10 : 10)}px`;
+      // Size/position to the target page's own width, not the pane —
+      // the page is a narrow centered element inside a much wider pane.
+      indicator.style.left = `${r.left - mountR.left}px`;
+      indicator.style.width = `${r.width}px`;
       mount.querySelector('.pdf-content')?.appendChild(indicator) || mount.appendChild(indicator);
     };
 
@@ -3500,8 +3508,13 @@ function PdfPane({
       onMyPaperMovePage(from, Math.max(1, toPos));
     };
 
+    // Register the window listener in the CAPTURE phase so the drag starts
+    // BEFORE the portal button's React onPointerDown (which stopPropagation's
+    // in the bubble phase). React 17+ attaches its handlers at the root, so a
+    // bubble-phase window listener here never fired for the portal handle and
+    // the drag silently never began.
     mount.addEventListener('pointerdown', onPointerDown);
-    window.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('pointerdown', onPointerDown, true);
     window.addEventListener('pointermove', onPointerMove);
     window.addEventListener('pointerup', onPointerUp);
     window.addEventListener('pointercancel', () => { dragFrom = null; removeIndicator(); mount.querySelectorAll('.my-paper-dragging').forEach((el) => el.classList.remove('my-paper-dragging')); });
@@ -3509,7 +3522,7 @@ function PdfPane({
     return () => {
       removeIndicator();
       mount.removeEventListener('pointerdown', onPointerDown);
-      window.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('pointerdown', onPointerDown, true);
       window.removeEventListener('pointermove', onPointerMove);
       window.removeEventListener('pointerup', onPointerUp);
     };
@@ -3517,7 +3530,7 @@ function PdfPane({
 
   // ── Track My Paper page positions for portal-rendered action buttons ──
   useEffect(() => {
-    if (contentType !== 'my-paper' || (!onMyPaperDeletePage && !onMyPaperMovePage)) { setMyPaperPageRects([]); return; }
+    if (contentType !== 'my-paper' || (!onMyPaperDeletePage && !onMyPaperMovePage && !onMyPaperInsertPage)) { setMyPaperPageRects([]); return; }
     const mount = scrollRef.current;
     if (!mount) { console.log('[myPaper] rectTrack: no mount'); return; }
 
@@ -3543,7 +3556,7 @@ function PdfPane({
       ro.disconnect();
       setMyPaperPageRects([]);
     };
-  }, [onMyPaperDeletePage, onMyPaperMovePage, images]);
+  }, [onMyPaperDeletePage, onMyPaperMovePage, onMyPaperInsertPage, images]);
 
   // ── Apply zoom to image-mode scrolling via .pdf-content width ─
   useEffect(() => {
@@ -4130,7 +4143,15 @@ function PdfPane({
     {myPaperPageRects.length > 0 && createPortal(
       <div className="my-paper-portal-actions" aria-hidden="false">
         {myPaperPageRects.map(({ page, top, right }) => (
-          <div key={page} className="my-paper-page-actions" style={{ position: 'fixed', top: top + 8, left: right - 76, zIndex: 9999 }}>
+          <div key={page} className="my-paper-page-actions" style={{ position: 'fixed', top: top + 8, left: right - (onMyPaperInsertPage ? 112 : 76), zIndex: 9999 }}>
+            {onMyPaperInsertPage && (
+              <button className="my-paper-action-btn my-paper-action-insert" title="Insert page before this one"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => { e.stopPropagation(); onMyPaperInsertPage(page); }}
+              >
+                <svg viewBox="0 0 24 24"><path d="M11 3h2v8h8v2h-8v8h-2v-8H3v-2h8V3z"/></svg>
+              </button>
+            )}
             {onMyPaperMovePage && (
               <button className="my-paper-action-btn my-paper-drag-handle" title="Drag to reorder" data-drag-handle="true" data-page={String(page)}
                 onPointerDown={(e) => e.stopPropagation()}

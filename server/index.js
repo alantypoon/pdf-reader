@@ -1159,6 +1159,98 @@ app.post('/api/remarks/delete-page-shift', requireValidUserId(true), asyncRoute(
   }
 }));
 
+// POST /api/remarks/reorder-page-shift  { subjectId, bookId, sectionId, pageMap }
+// Re-key My Paper annotations so content follows a dragged page. pageMap is a
+// bijection oldPage -> newPage (a permutation of 1..N). Every annotation doc's
+// pageId AND each remark's `page` field are renumbered through the map.
+// Scoped to langId='my-paper' so textbook annotations are never touched.
+app.post('/api/remarks/reorder-page-shift', requireValidUserId(true), asyncRoute(async (request, response) => {
+  try {
+    if (!annotationsCollection) {
+      response.status(500).json({ error: 'MongoDB not connected', rekeyedCount: 0 });
+      return;
+    }
+    const userId = request.validatedUserId;
+    const { subjectId, bookId, sectionId, pageMap } = request.body || {};
+    if (!pageMap || typeof pageMap !== 'object' || Array.isArray(pageMap)) {
+      response.status(400).json({ error: 'pageMap must be an object', rekeyedCount: 0 });
+      return;
+    }
+    const map = {};
+    let changeCount = 0;
+    for (const [key, value] of Object.entries(pageMap)) {
+      const from = Number(key);
+      const to = Number(value);
+      if (Number.isInteger(from) && from >= 1 && Number.isInteger(to) && to >= 1 && from !== to) {
+        map[from] = to;
+        changeCount++;
+      }
+    }
+    if (changeCount === 0) {
+      response.json({ ok: true, rekeyedCount: 0 });
+      return;
+    }
+    const scope = {
+      userId,
+      subjectId: String(subjectId || '').trim(),
+      bookId: String(bookId || '').trim(),
+      sectionId: Number(sectionId),
+      langId: 'my-paper',
+    };
+
+    // Read all My Paper docs in scope, then re-insert them with renumbered
+    // pageIds. Reading into memory and deleting first avoids pageId collisions
+    // (the map is a permutation, but in-place updates would clobber targets).
+    const docs = await annotationsCollection.find(scope).toArray();
+    let rekeyedCount = 0;
+    if (docs.length > 0) {
+      await annotationsCollection.deleteMany({ _id: { $in: docs.map((doc) => doc._id) } });
+      for (const doc of docs) {
+        const { _id, ...rest } = doc;
+        const from = Number(doc.pageId);
+        const to = map[from];
+        const renumber = Number.isInteger(to) && to !== from;
+        // The client renders annotations by the `page` field stored inside each
+        // remark, so renumber that along with the document's pageId.
+        const shiftedRemarks = (Array.isArray(doc.remarks) ? doc.remarks : []).map((r) => {
+          const p = Number(r.page);
+          if (Number.isFinite(p) && map[p] != null && map[p] !== p) {
+            return { ...r, page: String(map[p]) };
+          }
+          return r;
+        });
+        await annotationsCollection.insertOne({
+          ...rest,
+          remarks: shiftedRemarks,
+          pageId: renumber ? to : doc.pageId,
+          updatedAt: hkNow(),
+        });
+        if (renumber) rekeyedCount++;
+      }
+    }
+
+    // Stale annotation-redo actions reference old page numbers — drop them so
+    // they can't be replayed onto different pages after the re-key.
+    if (annotationsRedoCollection && changeCount > 0) {
+      const affectedPages = new Set();
+      Object.keys(map).forEach((from) => { affectedPages.add(Number(from)); affectedPages.add(map[from]); });
+      await annotationsRedoCollection.deleteMany({
+        userId,
+        subjectId: scope.subjectId,
+        bookId: scope.bookId,
+        sectionId: scope.sectionId,
+        pageId: { $in: [...affectedPages] },
+      });
+    }
+
+    console.log(`[remarks/reorder-page-shift] user=${userId.slice(0,6)} scope=${scope.subjectId}/${scope.bookId}/§${scope.sectionId} pages=${changeCount} docs=${docs.length} rekeyed=${rekeyedCount}`);
+    response.json({ ok: true, rekeyedCount });
+  } catch (err) {
+    console.error('[remarks/reorder-page-shift] error:', err.message);
+    response.status(500).json({ error: 'Failed to re-key My Paper annotations', rekeyedCount: 0 });
+  }
+}));
+
 // ── Batch add/delete actions (offline-queue support) ──────
 app.post('/api/remarks/actions', requireValidUserId(true), asyncRoute(async (request, response) => {
   try {
