@@ -9,6 +9,16 @@ export default defineConfig({
     port: 5174,
     allowedHosts: ['ai-edu.dedyn.io'],
     proxy: {
+      '/pdf-reader/api': {
+        target: 'http://localhost:3007',
+        changeOrigin: true,
+        // App fetches use relative 'api/...' URLs, which resolve to
+        // '/pdf-reader/api/...' under the /pdf-reader/ base — rewrite to the
+        // server's actual /api/ mount (mirrors the nginx prod config).
+        rewrite: (path) => path.replace(/^\/pdf-reader\/api/, '/api'),
+        timeout: 180000,
+        proxyTimeout: 180000
+      },
       '/api': {
         target: 'http://localhost:3007',
         changeOrigin: true,

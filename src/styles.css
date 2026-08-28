@@ -1770,6 +1770,18 @@ button, input, select {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.book-stage.bilingual-layout.pane-count-5 {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.book-stage.bilingual-layout.pane-count-6 {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.book-stage.bilingual-layout.pane-count-7 {
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
 /* Stacked bilingual layout (portrait or medium-width 817–1040px):
    header bar gets natural height, both language panes split the
    remaining vertical space equally. */
@@ -2098,6 +2110,15 @@ button, input, select {
 }
 .book-stage.scrolling.bilingual-layout.pane-count-4 {
   grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.book-stage.scrolling.bilingual-layout.pane-count-5 {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+.book-stage.scrolling.bilingual-layout.pane-count-6 {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+.book-stage.scrolling.bilingual-layout.pane-count-7 {
+  grid-template-columns: repeat(7, minmax(0, 1fr));
 }
 
 /* Prevent native iOS scroll on the PDF scroll containers when using
