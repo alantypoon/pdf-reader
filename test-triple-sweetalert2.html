@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3-Level SweetAlert2 Overlay Demo</title>
+    <!-- Include SweetAlert2 CSS from CDN -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f4f7f6;
+        }
+        .btn {
+            padding: 12px 24px;
+            font-size: 16px;
+            color: white;
+            background-color: #3085d6;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .btn:hover {
+            background-color: #2b76bc;
+        }
+
+        /* Generic overlay container style */
+        .custom-sub-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 5px;
+            animation: fadeIn 0.2s ease-out;
+        }
+
+        /* Level 2 overlay layer */
+        .overlay-level-2 {
+            background-color: rgba(0, 0, 0, 0.75);
+            z-index: 10;
+        }
+
+        /* Level 3 overlay layer */
+        .overlay-level-3 {
+            background-color: rgba(0, 0, 0, 0.88);
+            z-index: 20;
+        }
+
+        .overlay-content {
+            background: #fff;
+            padding: 24px;
+            border-radius: 8px;
+            text-align: center;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            color: #333;
+            max-width: 80%;
+        }
+
+        .action-btn {
+            padding: 8px 16px;
+            margin: 6px;
+            border: none;
+            border-radius: 4px;
+            color: white;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+
+    <button class="btn" onclick="openSweetAlert()">Open Level 1 Alert</button>
+
+    <!-- Include SweetAlert2 JS from CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script>
+        // --- LEVEL 1: Main SweetAlert2 Modal ---
+        function openSweetAlert() {
+            Swal.fire({
+                title: 'Level 1: Main Dialog',
+                text: 'This is the base SweetAlert2 dialog.',
+                icon: 'info',
+                showCancelButton: true,
+                confirmButtonText: 'Open Level 2 Overlay',
+                cancelButtonText: 'Close All',
+                didOpen: (popup) => {
+                    // Set relative positioning so absolute children align properly
+                    popup.style.position = 'relative';
+                },
+                preConfirm: () => {
+                    showLevel2Overlay();
+                    return false; // Keep Level 1 open
+                }
+            });
+        }
+
+        // --- LEVEL 2: Intermediate Overlay ---
+        function showLevel2Overlay() {
+            const popup = Swal.getPopup();
+            if (!popup || document.getElementById('overlay-level-2')) return;
+
+            const level2 = document.createElement('div');
+            level2.id = 'overlay-level-2';
+            level2.className = 'custom-sub-overlay overlay-level-2';
+            level2.innerHTML = `
+                <div class="overlay-content">
+                    <h3 style="margin-top: 0; color: #2563eb;">Level 2: Second Layer</h3>
+                    <p>You are now inside the second level.</p>
+                    <button id="open-level3-btn" class="action-btn" style="background-color: #059669;">
+                        Open Level 3
+                    </button>
+                    <button id="close-level2-btn" class="action-btn" style="background-color: #dc2626;">
+                        Back to Level 1
+                    </button>
+                </div>
+            `;
+
+            popup.appendChild(level2);
+
+            // Level 2 Event Listeners
+            document.getElementById('open-level3-btn').addEventListener('click', showLevel3Overlay);
+            document.getElementById('close-level2-btn').addEventListener('click', () => level2.remove());
+        }
+
+        // --- LEVEL 3: Top Overlay ---
+        function showLevel3Overlay() {
+            const popup = Swal.getPopup();
+            if (!popup || document.getElementById('overlay-level-3')) return;
+
+            const level3 = document.createElement('div');
+            level3.id = 'overlay-level-3';
+            level3.className = 'custom-sub-overlay overlay-level-3';
+            level3.innerHTML = `
+                <div class="overlay-content">
+                    <h3 style="margin-top: 0; color: #059669;">Level 3: Deepest Layer</h3>
+                    <p>This is the top-most dialog layer.</p>
+                    <button id="close-level3-btn" class="action-btn" style="background-color: #dc2626;">
+                        Back to Level 2
+                    </button>
+                </div>
+            `;
+
+            popup.appendChild(level3);
+
+            // Level 3 Event Listener
+            document.getElementById('close-level3-btn').addEventListener('click', () => level3.remove());
+        }
+    </script>
+</body>
+</html>

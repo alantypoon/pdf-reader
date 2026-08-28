@@ -1840,6 +1840,9 @@ button, input, select {
    overflow:hidden rules; otherwise the vertical scrollbar disappears once the
    user zooms in (free-zoom) with the hand tool selected. */
 .page-frame[data-annotation-language="my-paper"] .pdf-scroll-pages {
+  /* Containing block for the drop indicator, so it is positioned relative to
+     this container (not an ancestor) and never drifts with page scroll. */
+  position: relative;
   overflow-y: auto !important;
   overflow-x: hidden !important;
   scrollbar-gutter: stable;

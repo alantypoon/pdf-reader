@@ -3459,12 +3459,31 @@ function PdfPane({
       removeIndicator();
       indicator = document.createElement('div');
       indicator.className = 'my-paper-drop-indicator';
-      const r = targetEl.getBoundingClientRect();
       const mountR = mount.getBoundingClientRect();
-      // Offset by half the inter-page margin (10px) so the line sits in the
-      // gap between pages rather than on the page border itself.
-      const edge = (above ? r.top : r.bottom) - mountR.top + mount.scrollTop;
-      indicator.style.top = `${edge + (above ? -10 : 10)}px`;
+      const targetPage = parseInt(targetEl.dataset.page, 10);
+      // The line sits EXACTLY in the middle of the gap between the target page
+      // and its neighbour in the drop direction, from live rects (no hardcoded
+      // offset). The indicator is anchored to this scroll container (position:
+      // relative) whose padding box scrolls with its content, so the rendered
+      // position is top - scrollTop — add scrollTop to land on the gap centre.
+      const edge = (el, which) => {
+        const rr = el.getBoundingClientRect();
+        return which === 'top' ? rr.top : rr.bottom;
+      };
+      const neighborNum = above ? targetPage - 1 : targetPage + 1;
+      const neighbor = mount.querySelector(`.my-paper-page[data-page="${neighborNum}"]`);
+      const r = targetEl.getBoundingClientRect();
+      let y;
+      if (neighbor) {
+        y = above
+          ? (edge(neighbor, 'bottom') + edge(targetEl, 'top')) / 2
+          : (edge(targetEl, 'bottom') + edge(neighbor, 'top')) / 2;
+      } else {
+        // First/last page with no rendered neighbour — offset half a gap
+        // from the page edge.
+        y = (above ? r.top : r.bottom) + (above ? -10 : 10);
+      }
+      indicator.style.top = `${y - mountR.top + mount.scrollTop}px`;
       // Size/position to the target page's own width, not the pane —
       // the page is a narrow centered element inside a much wider pane.
       indicator.style.left = `${r.left - mountR.left}px`;
@@ -3487,6 +3506,13 @@ function PdfPane({
       if (!targetEl) return;
       const r = targetEl.getBoundingClientRect();
       const above = e.clientY < (r.top + r.bottom) / 2;
+      const targetPage = parseInt(targetEl.dataset.page, 10);
+      // The indicator must always sit in a gap between two pages (never on a page).
+      // Skip rendering when the drop would be a no-op (dragging page back to its
+      // own slot) — those positions land the line on top of the dragged page.
+      let toPos = above ? targetPage : targetPage + 1;
+      if (toPos > dragFrom) toPos -= 1;
+      if (toPos === dragFrom) { removeIndicator(); return; }
       showIndicator(targetEl, above);
     };
 

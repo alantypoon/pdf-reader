@@ -456,17 +456,17 @@ function normalizeSelectedViewsForMaterial(material, views) {
   // Always return views in the canonical ALL_VIEW_IDS order, regardless of selection order.
   const sortByCanonical = (arr) => [...arr].sort((a, b) => ALL_VIEW_IDS.indexOf(a) - ALL_VIEW_IDS.indexOf(b));
   if (material === MATERIAL_PP_TOPICS || material === MATERIAL_PP_YEARS) {
-    // Past-paper materials can be shown alongside textbook English student and My Paper.
-    // Only exclude views that are inherently textbook-alternative/special-purpose.
+    // Past-paper materials can be shown alongside textbook English student (by-topics only)
+    // and My Paper. PP-years shows only Past Paper + My Paper (English Student is hidden).
+    // Past Paper may be deselected (e.g. show only My Paper); it is only forced back in as
+    // a default when nothing at all is selected, to avoid a blank stage.
     const filtered = next.filter((view) => (
       view === VIEW_PAST_PAPER
       || view === VIEW_MY_PAPER
-      || view === VIEW_EN_STUDENT
+      || (material === MATERIAL_PP_TOPICS && view === VIEW_EN_STUDENT)
     ));
-    const ensured = filtered.includes(VIEW_PAST_PAPER)
-      ? filtered
-      : [VIEW_PAST_PAPER, ...filtered];
-    return sortByCanonical(ensured);
+    if (!filtered.length) filtered.unshift(VIEW_PAST_PAPER);
+    return sortByCanonical(filtered);
   }
   // In textbook mode: allow textbook views, My Paper, and PP-related; exclude past-paper only
   const filtered = next.filter((view) => view !== VIEW_PAST_PAPER);
@@ -9545,7 +9545,8 @@ function App() {
             </span>
             <div className="toggle-group multi-toggle-group">
               {normalizeSelectedViewsForMaterial(materialMode, ALL_VIEW_IDS).filter((viewId) => {
-                if (materialMode === MATERIAL_PP_TOPICS) {
+                // Both PP modes only offer Past Paper + My Paper (no English Student).
+                if (materialMode === MATERIAL_PP_TOPICS || materialMode === MATERIAL_PP_YEARS) {
                   return viewId === VIEW_PAST_PAPER || viewId === VIEW_MY_PAPER;
                 }
                 return true;
@@ -9558,7 +9559,9 @@ function App() {
                   : viewId === VIEW_PP_RELATED ? ppRelatedTopics.length === 0
                   : viewId === VIEW_PAST_PAPER ? !hasRenderableSource(effectivePageSources['past-paper:student'])
                   : false;
-                const disabled = modeDisabled || noSource;
+                // An already-active view can always be toggled off (even without a source);
+                // only disable enabling a view that currently has no content.
+                const disabled = modeDisabled || (noSource && !active);
                 return (
                   <button
                     key={viewId}
