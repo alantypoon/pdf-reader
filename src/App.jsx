@@ -886,6 +886,14 @@ function App() {
   const showThumbnails = displayMode === 'thumbnails';
   const displayModeRef = useRef(displayMode);
   const selectedPageRef = useRef(selectedPage);
+  // Remembers the last textbook page so switching back from a past-paper
+  // mode restores where the user left off (selectedPage is shared across
+  // materials, so without this the textbook would inherit the paper's page).
+  const textbookPageRef = useRef(
+    Number.isFinite(Number(savedPrefs.textbookPage)) && Number(savedPrefs.textbookPage) > 0
+      ? Number(savedPrefs.textbookPage)
+      : selectedPage
+  );
   const selectedFileRef = useRef(selectedFile);
   const zoomLevelRef = useRef(null);   // synced via useEffect — always reflects active material zoom
   const zoomSettingsRef = useRef(null);
@@ -1839,21 +1847,11 @@ function App() {
         setActiveBookId(bookId);
         setSelectedBook(book || bookId);
         setStructure(chapters);
-        const effectiveBook = book || bookId;
         const apiLangs = Array.isArray(data.availableLanguages) && data.availableLanguages.length > 0
           ? data.availableLanguages
           : ['en', 'tc'];
-        // chem.w only has English content — select English and disable tc/bilingual
-        const langs = effectiveBook === 'chemistry-winter'
-          ? apiLangs.filter((l) => l === 'en')
-          : apiLangs;
-        setBookAvailableLanguages(langs);
-        const apiAudiences = parseBookAvailableAudiences(data.availableAudiences);
-        setBookAvailableAudiences(
-          effectiveBook === 'chemistry-winter'
-            ? { en: apiAudiences.en || ['contents'], tc: [] }
-            : apiAudiences
-        );
+        setBookAvailableLanguages(apiLangs);
+        setBookAvailableAudiences(parseBookAvailableAudiences(data.availableAudiences));
         setAudiencesReady(true);
         // Auto-fallback effect handles language selection — don't force
         // setSelectedLanguage here because it triggers a second loadPages
@@ -2650,11 +2648,35 @@ function App() {
     return () => { cancelled = true; };
   }, [selectedViews, materialMode, selectedBook, ppRelatedTopics, ppRelatedLanguage]);
 
-  // Load past-paper pages when selection changes
+  // Delete the Past Paper pane's saved scroll position.  Its cache key does
+  // not include the topic/year, so a stale saved page would otherwise be
+  // restored right after the page-1 reset and pull the reader back to the
+  // previous selection's page.
+  const clearPastPaperScrollPos = useCallback(() => {
+    const book = selectedBookRef.current;
+    const chapter = selectedChapterRef.current;
+    const file = selectedFileRef.current;
+    if (typeof window === 'undefined' || !book || !chapter || file == null || file === '') return;
+    deleteScrollKeys([
+      `img:${book}:${chapter}:${file}:past-paper:student`,
+      `scroll-${book}-${chapter}-${file}`,
+    ]);
+  }, []);
+
+  // Reset to page 1 (and clear the pane's saved scroll position) whenever
+  // the past-paper selection changes.  The first run after mount is skipped
+  // so a page reload still resumes where the user left off — entering a
+  // paper mode is handled by handleMaterialModeChange instead.
+  const lastPastPaperSelectionRef = useRef('');
   useEffect(() => {
     if (materialMode !== MATERIAL_PP_TOPICS && materialMode !== MATERIAL_PP_YEARS) return;
+    const signature = `${materialMode}|${pastPaperTopic}|${pastPaperYear}|${pastPaperYearType}|${pastPaperPaperType}`;
+    const previous = lastPastPaperSelectionRef.current;
+    lastPastPaperSelectionRef.current = signature;
+    if (!previous || previous === signature) return;
     setSelectedPage(1);
-  }, [pastPaperTopic, pastPaperYear, pastPaperYearType, pastPaperPaperType]);
+    clearPastPaperScrollPos();
+  }, [materialMode, pastPaperTopic, pastPaperYear, pastPaperYearType, pastPaperPaperType, clearPastPaperScrollPos]);
 
   // Load past-paper pages when selection changes
   useEffect(() => {
@@ -2807,19 +2829,12 @@ function App() {
       setSelectedBook(nextSubjectId);
       setLastSubjectId(nextSubjectId);
       setStructure(nextStructure);
-      if (nextSubjectId === 'chemistry-winter') {
-        setSelectedLanguage('en');
-        setBookAvailableLanguages(['en']);
-        setBookAvailableAudiences({ en: ['contents'], tc: [] });
-        setAudiencesReady(true);
-      } else {
-        const apiLangs = Array.isArray(data.availableLanguages) && data.availableLanguages.length > 0
-          ? data.availableLanguages
-          : ['en', 'tc'];
-        setBookAvailableLanguages(apiLangs);
-        setBookAvailableAudiences(parseBookAvailableAudiences(data.availableAudiences));
-        setAudiencesReady(true);
-      }
+      const apiLangs = Array.isArray(data.availableLanguages) && data.availableLanguages.length > 0
+        ? data.availableLanguages
+        : ['en', 'tc'];
+      setBookAvailableLanguages(apiLangs);
+      setBookAvailableAudiences(parseBookAvailableAudiences(data.availableAudiences));
+      setAudiencesReady(true);
     }
 
     const chapter = (nextStructure || []).find((item) => String(item.id) === nextBookId);
@@ -2947,27 +2962,21 @@ function App() {
     // updated by applySubjectSelection once the catalog loads.  Resetting them
     // to 1 here would cause a flash AND corrupt the saved section/page for
     // the new subject before the saved selections can be restored.
-    // chem.w only has English content — select English and disable tc/bilingual
     setAudiencesReady(false);
-    if (newBook === 'chemistry-winter') {
-      setSelectedLanguage('en');
-      setBookAvailableLanguages(['en']);
-      setBookAvailableAudiences({ en: ['contents'], tc: [] });
-    } else {
-      setBookAvailableLanguages(['en', 'tc']);
-      setBookAvailableAudiences({ en: ['contents'], tc: ['contents'] });
-    }
+    // Optimistic defaults until the catalog reports which views actually exist.
+    setBookAvailableLanguages(['en', 'tc']);
+    setBookAvailableAudiences({ en: ['contents'], tc: ['contents'] });
     try {
       const data = await fetchJson(`api/catalog?book=${encodeURIComponent(newBook)}`);
       const chapters = data.chapters || [];
       setDataBooks(Array.isArray(data.books) ? data.books : []);
       setActiveBookId(typeof data.activeBookId === 'string' ? data.activeBookId : newBook);
       setStructure(chapters);
-      if (newBook === 'chemistry-winter') {
-        setBookAvailableAudiences({ en: ['contents'], tc: [] });
-      } else {
-        setBookAvailableAudiences(parseBookAvailableAudiences(data.availableAudiences));
-      }
+      const apiLangs = Array.isArray(data.availableLanguages) && data.availableLanguages.length > 0
+        ? data.availableLanguages
+        : ['en', 'tc'];
+      setBookAvailableLanguages(apiLangs);
+      setBookAvailableAudiences(parseBookAvailableAudiences(data.availableAudiences));
       setAudiencesReady(true);
       if (chapters.length) {
         applySubjectSelection(newBook, chapters, newBook);
@@ -3206,6 +3215,13 @@ function App() {
     selectedPageRef.current = selectedPage;
   }, [selectedPage]);
 
+  // Keep the remembered textbook page up to date while reading the textbook.
+  useEffect(() => {
+    if (materialMode === MATERIAL_TEXTBOOK) {
+      textbookPageRef.current = selectedPage;
+    }
+  }, [materialMode, selectedPage]);
+
   useEffect(() => {
     zoomLevelRef.current = zoomSettings[activeZoomBucket].zoom;
     zoomSettingsRef.current = zoomSettings;
@@ -3305,6 +3321,7 @@ function App() {
         selectedChapter: selectedChapterRef.current,
         selectedFile: selectedFileRef.current,
         selectedPage: selectedPageRef.current,
+        textbookPage: textbookPageRef.current,
         displayMode: displayModeRef.current,
         selectedLanguage: selectedLanguageRef.current,
         selectedRoleMode: selectedRoleModeRef.current,
@@ -9434,9 +9451,18 @@ function App() {
   // PP-years), the Past Paper view is enabled by default, while My Paper
   // (and any other compatible view) follows the previous selection instead
   // of being forced on or off.
+  // Page behaviour on switch:
+  //   → textbook:       restore the page the user was reading when they left
+  //   → past-paper mode: always begin at page 1 (the topic/year is restored
+  //     separately from its own saved preferences)
   const handleMaterialModeChange = (mode) => {
     if (mode === MATERIAL_TEXTBOOK) {
+      if (materialMode === MATERIAL_TEXTBOOK) return;
+      // Drop any scroll position the paper pane left behind so the textbook
+      // pane doesn't restore it over the textbook page being restored here.
+      clearPastPaperScrollPos();
       setMaterialMode(MATERIAL_TEXTBOOK);
+      setSelectedPage(textbookPageRef.current || 1);
       return;
     }
     setSelectedViews((current) => {
@@ -9445,6 +9471,12 @@ function App() {
         : [...current, VIEW_PAST_PAPER];
       return normalizeSelectedViewsForMaterial(mode, withPastPaper);
     });
+    if (mode !== materialMode) {
+      // Papers always begin at page 1; clear any saved position first so
+      // the pane cannot restore an old page over the reset.
+      clearPastPaperScrollPos();
+      setSelectedPage(1);
+    }
     setMaterialMode(mode);
   };
 
@@ -9647,7 +9679,7 @@ function App() {
             <button
               type="button"
               className={`toggle-btn ${materialMode === MATERIAL_TEXTBOOK ? 'active' : ''}`}
-              onClick={() => setMaterialMode(MATERIAL_TEXTBOOK)}
+              onClick={() => handleMaterialModeChange(MATERIAL_TEXTBOOK)}
               aria-pressed={materialMode === MATERIAL_TEXTBOOK}
             >
               {_('textbook')}

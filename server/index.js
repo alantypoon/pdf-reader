@@ -799,16 +799,21 @@ app.get('/api/catalog', asyncRoute(async (request, response) => {
         };
       })
   );
+  // View availability comes purely from filesystem detection at load time:
+  //   {lang}/contents    → English/Chinese Student views
+  //   {lang}/contents.tn → English/Chinese Teacher views
+  const availableLanguages = [...bookAvailableLanguages].sort();
+  const availableAudiences = {
+    en: [...bookAvailableAudiences.en].sort(),
+    tc: [...bookAvailableAudiences.tc].sort(),
+  };
   console.log('[catalog] returning', chapters.length, 'chapters');
   response.json({
     chapters,
     books,
     activeBookId,
-    availableLanguages: [...bookAvailableLanguages].sort(),
-    availableAudiences: {
-      en: [...bookAvailableAudiences.en].sort(),
-      tc: [...bookAvailableAudiences.tc].sort(),
-    },
+    availableLanguages,
+    availableAudiences,
   });
 }));
 
