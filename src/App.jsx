@@ -535,6 +535,19 @@ function getViewLabelKey(viewId) {
   return viewId;
 }
 
+/** Parse the catalog's availableAudiences ({ en: [...], tc: [...] }) into a
+ *  safe { en, tc } shape.  Missing language keys default to ['contents'] so a
+ *  catalog from an older server doesn't disable student views. */
+function parseBookAvailableAudiences(data) {
+  const result = { en: ['contents'], tc: ['contents'] };
+  if (!data || typeof data !== 'object') return result;
+  for (const lang of ['en', 'tc']) {
+    if (!Array.isArray(data[lang])) continue;
+    result[lang] = data[lang].filter((audience) => audience === 'contents' || audience === 'contents.tn');
+  }
+  return result;
+}
+
 function getScrollCacheKeyForSource(source) {
   if (typeof source === 'string' && source.startsWith('img:')) {
     const parts = source.split(':');
@@ -848,6 +861,12 @@ function App() {
   const [dataBooks, setDataBooks] = useState([]);
   const [activeBookId, setActiveBookId] = useState('');
   const [bookAvailableLanguages, setBookAvailableLanguages] = useState(['en', 'tc']);
+  // Which audiences have content per language for the current subject:
+  // { en: ['contents', 'contents.tn'], tc: [...] } — loaded from /api/catalog.
+  const [bookAvailableAudiences, setBookAvailableAudiences] = useState({ en: ['contents'], tc: ['contents'] });
+  // True once the catalog has reported audience info for the current subject —
+  // prevents auto-deselecting saved views before the catalog has loaded.
+  const [audiencesReady, setAudiencesReady] = useState(false);
   const [physicsChapterCatalog, setPhysicsChapterCatalog] = useState(null);
   const physicsChapterCatalogRef = useRef(null);
   useEffect(() => {
@@ -898,10 +917,20 @@ function App() {
   const [selectedRoleMode, setSelectedRoleMode] = useState(savedPrefs.selectedRoleMode || savedPrefs.selectedAudienceMode || 'student');
   const selectedRoleModeRef = useRef(selectedRoleMode);
   const [materialMode, setMaterialMode] = useState(savedPrefs.materialMode || MATERIAL_TEXTBOOK);
-  const [selectedViews, setSelectedViews] = useState(() => normalizeSelectedViewsForMaterial(
-    savedPrefs.materialMode || MATERIAL_TEXTBOOK,
-    savedPrefs.selectedViews || getDefaultViewsForMaterial(savedPrefs.materialMode || MATERIAL_TEXTBOOK)
-  ));
+  const [selectedViews, setSelectedViews] = useState(() => {
+    const savedMaterial = savedPrefs.materialMode || MATERIAL_TEXTBOOK;
+    const savedViews = Array.isArray(savedPrefs.selectedViews) && savedPrefs.selectedViews.length > 0
+      ? savedPrefs.selectedViews
+      : getDefaultViewsForMaterial(savedMaterial);
+    // Past-paper modes always enable the Past Paper view by default — even when
+    // restoring from a previous session where it was manually deselected.
+    // My Paper (and any other compatible view) follows the saved selection.
+    const withPastPaper = (savedMaterial === MATERIAL_PP_TOPICS || savedMaterial === MATERIAL_PP_YEARS)
+      && !savedViews.includes(VIEW_PAST_PAPER)
+      ? [...savedViews, VIEW_PAST_PAPER]
+      : savedViews;
+    return normalizeSelectedViewsForMaterial(savedMaterial, withPastPaper);
+  });
   const [readerMode, setReaderMode] = useState(mapMaterialToLegacyReaderMode(savedPrefs.materialMode || MATERIAL_TEXTBOOK));
   // Past-papers data
   const [pastPaperCatalog, setPastPaperCatalog] = useState(null);
@@ -1210,6 +1239,40 @@ function App() {
       setSelectedLanguage('en');
     }
   }, [bookAvailableLanguages, selectedLanguage]);
+
+  // Whether a textbook view has content for the current subject:
+  // student views need {lang}/contents, teacher views need {lang}/contents.tn.
+  const isTextViewAvailable = useCallback((viewId) => {
+    const audiencesFor = (lang) => bookAvailableAudiences[lang] || [];
+    if (viewId === VIEW_EN_STUDENT) return audiencesFor('en').includes('contents');
+    if (viewId === VIEW_TC_STUDENT) return audiencesFor('tc').includes('contents');
+    if (viewId === VIEW_EN_TEACHER) return audiencesFor('en').includes('contents.tn');
+    if (viewId === VIEW_TC_TEACHER) return audiencesFor('tc').includes('contents.tn');
+    return true;
+  }, [bookAvailableAudiences]);
+
+  // Drop selected textbook views whose content isn't available for this subject
+  // (e.g. Teacher views when the subject has no contents.tn data).  Gated on
+  // audiencesReady so saved selections aren't discarded before the catalog loads.
+  useEffect(() => {
+    if (materialMode !== MATERIAL_TEXTBOOK || !audiencesReady) return;
+    setSelectedViews((current) => {
+      const next = current.filter((viewId) => {
+        if (viewId === VIEW_MY_PAPER || viewId === VIEW_PP_RELATED || viewId === VIEW_PAST_PAPER) return true;
+        return isTextViewAvailable(viewId);
+      });
+      // Avoid a blank stage: when every textbook view was filtered out (e.g. a
+      // subject whose content lives only in contents.tn), select the first
+      // available textbook view instead of leaving the reader empty.
+      if (!next.length) {
+        const fallback = [VIEW_EN_STUDENT, VIEW_TC_STUDENT, VIEW_EN_TEACHER, VIEW_TC_TEACHER]
+          .find((viewId) => isTextViewAvailable(viewId));
+        if (fallback) next.push(fallback);
+      }
+      const changed = next.length !== current.length || next.some((viewId, index) => viewId !== current[index]);
+      return changed ? next : current;
+    });
+  }, [materialMode, audiencesReady, isTextViewAvailable]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(Boolean(savedPrefs.sidebarCollapsed));
   const [sidebarHidden, setSidebarHidden] = useState(Boolean(savedPrefs.sidebarHidden));
   const [pageSources, setPageSources] = useState({});
@@ -1785,6 +1848,13 @@ function App() {
           ? apiLangs.filter((l) => l === 'en')
           : apiLangs;
         setBookAvailableLanguages(langs);
+        const apiAudiences = parseBookAvailableAudiences(data.availableAudiences);
+        setBookAvailableAudiences(
+          effectiveBook === 'chemistry-winter'
+            ? { en: apiAudiences.en || ['contents'], tc: [] }
+            : apiAudiences
+        );
+        setAudiencesReady(true);
         // Auto-fallback effect handles language selection — don't force
         // setSelectedLanguage here because it triggers a second loadPages
         // run on reload (the first already ran with the localStorage language),
@@ -2461,6 +2531,25 @@ function App() {
     }
   }, [materialMode, pastPaperYearOptions, pastPaperYear]);
 
+  // Paper types available for the currently selected year.
+  const pastPaperYearAvailableTypes = useMemo(() => {
+    if (materialMode !== MATERIAL_PP_YEARS) return [];
+    const types = pastPaperCatalog?.byYears?.availableTypesByYear?.[pastPaperYear];
+    return Array.isArray(types) ? types : [];
+  }, [materialMode, pastPaperCatalog, pastPaperYear]);
+
+  // Keep the selected paper type valid for the current year.  Physics years
+  // before 2025 use p1a/p1b instead of p1 — if the type stayed at the "p1"
+  // default, the pages request would match nothing and the reader would show
+  // "Loading page…" forever after selecting a year.
+  useEffect(() => {
+    if (materialMode !== MATERIAL_PP_YEARS) return;
+    if (!pastPaperYearAvailableTypes.length) return;
+    if (!pastPaperYearAvailableTypes.includes(pastPaperYearType)) {
+      setPastPaperYearType(pastPaperYearAvailableTypes[0]);
+    }
+  }, [materialMode, pastPaperYearAvailableTypes, pastPaperYearType]);
+
   // Load past-paper catalog when subject changes
   useEffect(() => {
     if (!selectedBook) return;
@@ -2580,6 +2669,13 @@ function App() {
     }
     if (!selectedBook || !pastPaperCatalog) { setPastPaperImages([]); setPastPaperLoaded(false); return; }
 
+    // Discard in-flight results when the selection changes again before the
+    // fetch resolves — otherwise a stale response (e.g. the empty result for
+    // the default type "p1" while the type is being corrected to "p1a") can
+    // overwrite the newer, valid result and leave the reader stuck on
+    // "Loading page…".
+    let cancelled = false;
+
     if (materialMode === MATERIAL_PP_TOPICS) {
       if (!pastPaperTopic) { setPastPaperImages([]); setPastPaperLoaded(false); return; }
       const paper = pastPaperPaperType ? pastPaperPaperType.replace('paper-', '') : '';
@@ -2590,9 +2686,13 @@ function App() {
       (async () => {
         try {
           const data = await fetchJson(`api/past-papers/pages?${params}`);
+          if (cancelled) return;
           setPastPaperImages(data.images || []);
-        } catch { setPastPaperImages([]); }
-        setPastPaperLoaded(true);
+        } catch {
+          if (cancelled) return;
+          setPastPaperImages([]);
+        }
+        if (!cancelled) setPastPaperLoaded(true);
       })();
     } else if (materialMode === MATERIAL_PP_YEARS) {
       if (!pastPaperYear || !pastPaperYearType) { setPastPaperImages([]); setPastPaperLoaded(false); return; }
@@ -2603,16 +2703,22 @@ function App() {
       (async () => {
         try {
           const data = await fetchJson(`api/past-papers/pages?${params}`);
+          if (cancelled) return;
           if (data.url) {
             // by-years returns a single PDF URL
             setPastPaperImages([data.url]);
           } else {
             setPastPaperImages(data.images || []);
           }
-        } catch { setPastPaperImages([]); }
-        setPastPaperLoaded(true);
+        } catch {
+          if (cancelled) return;
+          setPastPaperImages([]);
+        }
+        if (!cancelled) setPastPaperLoaded(true);
       })();
     }
+
+    return () => { cancelled = true; };
   }, [materialMode, selectedBook, pastPaperCatalog, pastPaperPaperType, pastPaperTopic, pastPaperYear, pastPaperYearType, pastPaperLanguage]);
 
   useEffect(() => {
@@ -2704,11 +2810,15 @@ function App() {
       if (nextSubjectId === 'chemistry-winter') {
         setSelectedLanguage('en');
         setBookAvailableLanguages(['en']);
+        setBookAvailableAudiences({ en: ['contents'], tc: [] });
+        setAudiencesReady(true);
       } else {
         const apiLangs = Array.isArray(data.availableLanguages) && data.availableLanguages.length > 0
           ? data.availableLanguages
           : ['en', 'tc'];
         setBookAvailableLanguages(apiLangs);
+        setBookAvailableAudiences(parseBookAvailableAudiences(data.availableAudiences));
+        setAudiencesReady(true);
       }
     }
 
@@ -2820,15 +2930,15 @@ function App() {
     if (!newBook || String(newBook) === String(selectedBook)) return;
     if (typeof window === 'undefined') return;
     // Changing the course scope discards the current book/section/page view.
-    const result = await Swal.fire({
-      title: _('confirmScopeChange'),
-      icon: 'warning',
-      showCancelButton: true,
-      confirmButtonText: _('confirm'),
-      cancelButtonText: _('cancel'),
-      focusCancel: true,
-    });
-    if (!result.isConfirmed) return;
+    // const result = await Swal.fire({
+    //   title: _('confirmScopeChange'),
+    //   icon: 'warning',
+    //   showCancelButton: true,
+    //   confirmButtonText: _('confirm'),
+    //   cancelButtonText: _('cancel'),
+    //   focusCancel: true,
+    // });
+    // if (!result.isConfirmed) return;
     setSelectedBook(newBook);
     setLastSubjectId(newBook);
     setSelectedChapter('');
@@ -2838,11 +2948,14 @@ function App() {
     // to 1 here would cause a flash AND corrupt the saved section/page for
     // the new subject before the saved selections can be restored.
     // chem.w only has English content — select English and disable tc/bilingual
+    setAudiencesReady(false);
     if (newBook === 'chemistry-winter') {
       setSelectedLanguage('en');
       setBookAvailableLanguages(['en']);
+      setBookAvailableAudiences({ en: ['contents'], tc: [] });
     } else {
       setBookAvailableLanguages(['en', 'tc']);
+      setBookAvailableAudiences({ en: ['contents'], tc: ['contents'] });
     }
     try {
       const data = await fetchJson(`api/catalog?book=${encodeURIComponent(newBook)}`);
@@ -2850,6 +2963,12 @@ function App() {
       setDataBooks(Array.isArray(data.books) ? data.books : []);
       setActiveBookId(typeof data.activeBookId === 'string' ? data.activeBookId : newBook);
       setStructure(chapters);
+      if (newBook === 'chemistry-winter') {
+        setBookAvailableAudiences({ en: ['contents'], tc: [] });
+      } else {
+        setBookAvailableAudiences(parseBookAvailableAudiences(data.availableAudiences));
+      }
+      setAudiencesReady(true);
       if (chapters.length) {
         applySubjectSelection(newBook, chapters, newBook);
       } else {
@@ -9311,6 +9430,24 @@ function App() {
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
   }, []);
 
+  // Switch material mode.  When entering a past-paper mode (PP-topics or
+  // PP-years), the Past Paper view is enabled by default, while My Paper
+  // (and any other compatible view) follows the previous selection instead
+  // of being forced on or off.
+  const handleMaterialModeChange = (mode) => {
+    if (mode === MATERIAL_TEXTBOOK) {
+      setMaterialMode(MATERIAL_TEXTBOOK);
+      return;
+    }
+    setSelectedViews((current) => {
+      const withPastPaper = current.includes(VIEW_PAST_PAPER)
+        ? current
+        : [...current, VIEW_PAST_PAPER];
+      return normalizeSelectedViewsForMaterial(mode, withPastPaper);
+    });
+    setMaterialMode(mode);
+  };
+
   return (
     <div
       className={`app-shell ${displayMode === 'scrolling' ? 'scrolling-mode' : ''} ${sidebarHidden ? 'sidebar-hidden' : ''} ${sidebarCollapsed && !sidebarHidden ? 'sidebar-collapsed' : ''} ${isFullscreen ? 'fullscreen-active' : ''}`}
@@ -9518,7 +9655,7 @@ function App() {
             <button
               type="button"
               className={`toggle-btn ${materialMode === MATERIAL_PP_TOPICS ? 'active' : ''}`}
-              onClick={() => setMaterialMode(MATERIAL_PP_TOPICS)}
+              onClick={() => handleMaterialModeChange(MATERIAL_PP_TOPICS)}
               aria-pressed={materialMode === MATERIAL_PP_TOPICS}
             >
               {_('papersByTopics')}
@@ -9526,7 +9663,7 @@ function App() {
             <button
               type="button"
               className={`toggle-btn ${materialMode === MATERIAL_PP_YEARS ? 'active' : ''}`}
-              onClick={() => setMaterialMode(MATERIAL_PP_YEARS)}
+              onClick={() => handleMaterialModeChange(MATERIAL_PP_YEARS)}
               aria-pressed={materialMode === MATERIAL_PP_YEARS}
             >
               {_('papersByYears')}
@@ -9553,12 +9690,13 @@ function App() {
               }).map((viewId) => {
                 const active = selectedViews.includes(viewId);
                 const modeDisabled = (materialMode !== MATERIAL_TEXTBOOK) && !(viewId === VIEW_PAST_PAPER || viewId === VIEW_MY_PAPER);
-                // Only check source availability for non-textbook views; textbook sources
-                // are loaded on-demand per selected view so absence ≠ unavailable.
+                // Disable views whose content isn't available: past-paper needs
+                // loaded past-paper images, textbook views need the matching
+                // {lang}/contents (student) or {lang}/contents.tn (teacher) data.
                 const noSource = viewId === VIEW_MY_PAPER ? false
                   : viewId === VIEW_PP_RELATED ? ppRelatedTopics.length === 0
                   : viewId === VIEW_PAST_PAPER ? !hasRenderableSource(effectivePageSources['past-paper:student'])
-                  : false;
+                  : !isTextViewAvailable(viewId);
                 // An already-active view can always be toggled off (even without a source);
                 // only disable enabling a view that currently has no content.
                 const disabled = modeDisabled || (noSource && !active);
@@ -9651,7 +9789,6 @@ function App() {
                   const sectionId = item?._sectionId ?? String(value || '').split('::')[1];
                   handleCombinedBookSectionSelect(bookId, sectionId);
                 }}
-                noSelectionHighlight
               />
               <button type="button" className="selector-stepper-btn" onClick={() => {
                 if (currentCombinedSteppableIndex >= 0 && currentCombinedSteppableIndex < combinedSteppableOptions.length - 1) {
@@ -9757,8 +9894,7 @@ function App() {
                     currentSection={pastPaperTopicOptions.find(o => o.id === pastPaperTopic) || null}
                     language={selectedLanguage}
                     getSectionName={(item) => item?.label || item?.id || ''}
-                    onSelect={(id) => { setPastPaperTopic(id); }}
-                    noSelectionHighlight
+                    onSelect={(id) => { setPastPaperTopic(String(id)); }}
                   />
                   <button type="button" className="selector-stepper-btn" onClick={() => {
                     const idx = pastPaperTopicOptions.findIndex(o => o.id === pastPaperTopic);
@@ -9814,8 +9950,7 @@ function App() {
                   currentSection={pastPaperYearOptions.find(o => o.id === pastPaperYear) || null}
                   language={selectedLanguage}
                   getSectionName={(item) => item?.label || ''}
-                  onSelect={(id) => { setPastPaperYear(id); }}
-                  noSelectionHighlight
+                  onSelect={(id) => { setPastPaperYear(String(id)); }}
                 />
                 <button type="button" className="selector-stepper-btn" onClick={() => {
                   const idx = pastPaperYearOptions.findIndex(o => o.id === pastPaperYear);
@@ -9832,7 +9967,7 @@ function App() {
                 {_('paperType')}
               </span>
               <div className="toggle-group">
-                {(pastPaperCatalog?.byYears?.availableTypesByYear?.[pastPaperYear] || ['p1', 'p2', 'ans', 'per']).map((type) => (
+                {(pastPaperYearAvailableTypes.length ? pastPaperYearAvailableTypes : ['p1', 'p2', 'ans', 'per']).map((type) => (
                   <button
                     key={type}
                     type="button"
@@ -11433,7 +11568,6 @@ function App() {
                 }}
                 onOpenChange={(open) => { if (!open) setCollapsedDropdownId(null); }}
                 alwaysOpen
-                noSelectionHighlight
               />
             </div>
           )}

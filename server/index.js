@@ -1,5 +1,15 @@
 import dotenv from 'dotenv';
 dotenv.config({ override: true });  // override any system env vars with .env values
+// dotenv doesn't interpolate ${VAR} references — expand them ourselves
+// (e.g. PATH_TEXTBOOKS=${PATH_DATA}/textbooks in .env).
+for (let pass = 0; pass < 3; pass += 1) {
+  for (const key of Object.keys(process.env)) {
+    const value = process.env[key];
+    if (typeof value === 'string' && value.includes('${')) {
+      process.env[key] = value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name) => process.env[name] ?? match);
+    }
+  }
+}
 import express from 'express';
 import fs from 'node:fs/promises';
 import { createReadStream, existsSync, readFileSync } from 'node:fs';
@@ -22,7 +32,9 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const port = 3007;
 
-const DATA_PATH = process.env.DATA_PATH || path.resolve(__dirname, '../data');
+const PATH_DATA = process.env.PATH_DATA || path.resolve(__dirname, '../data');
+const PATH_TEXTBOOKS = process.env.PATH_TEXTBOOKS || path.join(PATH_DATA, 'textbooks');
+const PATH_PASTPAPERS = process.env.PATH_PASTPAPERS || path.join(PATH_DATA, 'past-papers');
 const DEFAULT_BOOK = process.env.DEFAULT_BOOK || 'biology-oup';
 const ETT_MAX_IMAGE_DIM = 1536;   // max px on longest side for images sent to ETT/vLLM
 const DSE_AUTH_CONFIG_PATH = process.env.DSE_AUTH_CONFIG_PATH || path.resolve(__dirname, '../../../dse-auth-config.php');
@@ -44,7 +56,7 @@ function hkNow() {
 /** Resolve the data root for a given book ID */
 function getDataRoot(book) {
   const safeBook = String(book || DEFAULT_BOOK).replace(/\.\./g, '').replace(/[^a-zA-Z0-9_-]/g, '');
-  return path.join(DATA_PATH, safeBook || DEFAULT_BOOK);
+  return path.join(PATH_TEXTBOOKS, safeBook || DEFAULT_BOOK);
 }
 
 // ── MongoDB ───────────────────────────────────────────────
@@ -169,11 +181,11 @@ function parseAiRequestIdentity(source, { includePage = true } = {}) {
 
 async function buildBookSubjectIndex() {
   const index = new Map();
-  const subjectEntries = await fs.readdir(DATA_PATH, { withFileTypes: true });
+  const subjectEntries = await fs.readdir(PATH_TEXTBOOKS, { withFileTypes: true });
   for (const subjectEntry of subjectEntries) {
     if (!subjectEntry.isDirectory()) continue;
     const subjectId = subjectEntry.name;
-    const subjectDir = path.join(DATA_PATH, subjectId);
+    const subjectDir = path.join(PATH_TEXTBOOKS, subjectId);
     let bookEntries = [];
     try {
       bookEntries = await fs.readdir(subjectDir, { withFileTypes: true });
@@ -279,7 +291,9 @@ async function connectMongo() {
   }
 }
 
-console.log('[server] DATA_PATH:', DATA_PATH);
+console.log('[server] PATH_DATA:', PATH_DATA);
+console.log('[server] PATH_TEXTBOOKS:', PATH_TEXTBOOKS);
+console.log('[server] PATH_PASTPAPERS:', PATH_PASTPAPERS);
 console.log('[server] DEFAULT_BOOK:', DEFAULT_BOOK);
 
 app.use(express.json({ limit: '2mb' }));
@@ -678,7 +692,7 @@ app.get('/api/catalog', asyncRoute(async (request, response) => {
     return;
   }
   const activeBookId = path.basename(dataRoot);
-  const dataFolders = await fs.readdir(DATA_PATH, { withFileTypes: true });
+  const dataFolders = await fs.readdir(PATH_TEXTBOOKS, { withFileTypes: true });
   const books = dataFolders
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
@@ -687,21 +701,70 @@ app.get('/api/catalog', asyncRoute(async (request, response) => {
     .sort((a, b) => compareNaturalIds(a.name, b.name));
   console.log('[catalog] folders found:', folders.map(f => f.name));
 
-  /** Detect which languages have content for a chapter */
+  /** Detect which languages have content for a chapter (any audience:
+   *  student pages in contents/ or teacher pages in contents.tn/). */
   async function detectLanguages(chapterDir) {
     const langs = [];
     for (const lang of ['en', 'tc']) {
-      const pagesDir = path.join(dataRoot, chapterDir, lang, 'contents', 'pages');
-      try {
-        const stat = await fs.stat(pagesDir);
-        if (stat.isDirectory()) langs.push(lang);
-      } catch { /* dir doesn't exist */ }
+      // Split page images first (either audience counts as available)
+      let found = false;
+      for (const audienceDirName of ['contents', 'contents.tn']) {
+        const pagesDir = path.join(dataRoot, chapterDir, lang, audienceDirName, 'pages');
+        try {
+          const stat = await fs.stat(pagesDir);
+          if (stat.isDirectory()) {
+            langs.push(lang);
+            found = true;
+            break;
+          }
+        } catch { /* dir doesn't exist */ }
+      }
+      if (found) continue;
+      // Fall back to single-PDF chapters
+      for (const audienceDirName of ['contents', 'contents.tn']) {
+        const audienceDir = path.join(dataRoot, chapterDir, lang, audienceDirName);
+        try {
+          const files = await fs.readdir(audienceDir);
+          if (files.some((f) => f.toLowerCase().endsWith('.pdf'))) {
+            langs.push(lang);
+            break;
+          }
+        } catch { /* dir doesn't exist */ }
+      }
     }
     return langs;
   }
 
+  /** Detect which audiences (contents = student, contents.tn = teacher) have
+   *  content for a chapter/language.  Mirrors the /api/page serving logic:
+   *  split pages/ images first, single PDFs as fallback. */
+  async function detectAudiences(chapterDir, lang) {
+    const audiences = [];
+    for (const audienceDirName of ['contents', 'contents.tn']) {
+      const audienceDir = path.join(dataRoot, chapterDir, lang, audienceDirName);
+      const pagesDir = path.join(audienceDir, 'pages');
+      try {
+        const files = await fs.readdir(pagesDir);
+        if (files.some((f) => /\.(png|jpg|jpeg|webp)$/i.test(f))) {
+          audiences.push(audienceDirName);
+          continue;
+        }
+      } catch { /* no pages dir */ }
+      // Fall back to PDF presence (single-PDF chapters without split pages)
+      try {
+        const files = await fs.readdir(audienceDir);
+        if (files.some((f) => f.toLowerCase().endsWith('.pdf'))) {
+          audiences.push(audienceDirName);
+        }
+      } catch { /* dir doesn't exist */ }
+    }
+    return audiences;
+  }
+
   /** Scan all chapters and return the union of available languages across the book */
   const bookAvailableLanguages = new Set();
+  /** Union of available audiences per language across the book */
+  const bookAvailableAudiences = { en: new Set(), tc: new Set() };
 
   const chapters = await Promise.all(
     folders
@@ -719,6 +782,12 @@ app.get('/api/catalog', asyncRoute(async (request, response) => {
         const { nameEn, nameZh } = getBookNamesFromContents(contents);
         const availableLanguages = await detectLanguages(chapterDir);
         availableLanguages.forEach((l) => bookAvailableLanguages.add(l));
+        const availableAudiences = {
+          en: await detectAudiences(chapterDir, 'en'),
+          tc: await detectAudiences(chapterDir, 'tc'),
+        };
+        availableAudiences.en.forEach((a) => bookAvailableAudiences.en.add(a));
+        availableAudiences.tc.forEach((a) => bookAvailableAudiences.tc.add(a));
         return {
           id: chapterDir,
           name: formatBookLabel(chapterDir, nameEn || nameZh),
@@ -726,6 +795,7 @@ app.get('/api/catalog', asyncRoute(async (request, response) => {
           nameZh,
           contents: chapterContents,
           availableLanguages,
+          availableAudiences,
         };
       })
   );
@@ -735,6 +805,10 @@ app.get('/api/catalog', asyncRoute(async (request, response) => {
     books,
     activeBookId,
     availableLanguages: [...bookAvailableLanguages].sort(),
+    availableAudiences: {
+      en: [...bookAvailableAudiences.en].sort(),
+      tc: [...bookAvailableAudiences.tc].sort(),
+    },
   });
 }));
 
@@ -746,7 +820,7 @@ app.get('/api/past-papers/catalog', asyncRoute(async (request, response) => {
     return;
   }
   const mappedSubject = mapSubjectToPastPaperRoot(subject);
-  const baseDir = path.resolve(__dirname, '../data/past-papers', mappedSubject);
+  const baseDir = path.join(PATH_PASTPAPERS, mappedSubject);
   const result = { byTopics: null, byYears: null };
   // by-topics
   const byTopicsFile = path.join(baseDir, 'by-topics', 'contents.json');
@@ -778,7 +852,7 @@ app.get('/api/past-papers/section-topic-map', asyncRoute(async (request, respons
     return;
   }
   const mappedSubject = mapSubjectToPastPaperRoot(subject);
-  const mapFile = path.resolve(__dirname, '../data/past-papers', mappedSubject, 'section-topic-map.json');
+  const mapFile = path.join(PATH_PASTPAPERS, mappedSubject, 'section-topic-map.json');
   try {
     const raw = await fs.readFile(mapFile, 'utf8');
     response.json(JSON.parse(raw));
@@ -801,7 +875,7 @@ app.get('/api/past-papers/pages', asyncRoute(async (request, response) => {
     const safeTopic = sanitizePastPaperPathPart(topic);
     // Directory names use "paper-1", "paper-2" but data field may be "1", "2".
     const paperDir = safePaper ? `paper-${safePaper}` : '';
-    const rootDir = path.resolve(__dirname, '../data/past-papers', safeSubject, 'by-topics', safeLang);
+    const rootDir = path.join(PATH_PASTPAPERS, safeSubject, 'by-topics', safeLang);
     let pagesDir;
     let publicBaseUrl;
     if (paperDir) {
@@ -825,13 +899,13 @@ app.get('/api/past-papers/pages', asyncRoute(async (request, response) => {
   } else if (mode === 'by-years') {
     const safeYear = sanitizePastPaperPathPart(request.query.year);
     const safeType = sanitizePastPaperPathPart(request.query.type, 'p1');
-    const pagesDir = path.resolve(__dirname, `../data/past-papers/${safeSubject}/by-years/${safeLang}/${safeYear}/pages`);
+    const pagesDir = path.join(PATH_PASTPAPERS, safeSubject, 'by-years', safeLang, safeYear, 'pages');
     try {
       const images = (await listPastPaperPageImages(
         pagesDir,
         `/pdf-reader/data/past-papers/${safeSubject}/by-years/${safeLang}/${safeYear}/pages`
       )).filter((url) => url.split('/').at(-1)?.startsWith(`${safeType}-`));
-      response.json({ images, availableTypes: await listAvailablePastPaperYearTypes(path.resolve(__dirname, '../data/past-papers', safeSubject), safeYear) });
+      response.json({ images, availableTypes: await listAvailablePastPaperYearTypes(path.join(PATH_PASTPAPERS, safeSubject), safeYear) });
     } catch {
       response.status(404).json({ error: 'Pages not found', images: [] });
     }
@@ -1771,8 +1845,7 @@ app.use(express.static(distPath, {
 
 // Serve textbook data (page images, mp3, htmls) with aggressive caching.
 // These are static resources that never change — browser can cache indefinitely.
-const dataPath = path.resolve(__dirname, '../data');
-const dataStatic = express.static(dataPath, {
+const dataStatic = express.static(PATH_DATA, {
   setHeaders: (res, filePath) => {
     if (res.locals.noCache) {
       res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');

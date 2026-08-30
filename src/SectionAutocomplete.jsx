@@ -1,13 +1,13 @@
 import React, { useMemo } from 'react';
 import AutocompleteDropdown from './components/AutocompleteDropdown';
 
-function SectionAutocomplete({ sections, onSelect, getSectionName, currentSection, language, onOpenChange, alwaysOpen, hideFilter, noSelectionHighlight }) {
+function SectionAutocomplete({ sections, onSelect, getSectionName, currentSection, language, onOpenChange, alwaysOpen, hideFilter }) {
   const currentSectionName = useMemo(() => {
     if (!currentSection || !language) return '';
     if (typeof currentSection.label === 'string' && currentSection.label.trim()) {
       return currentSection.label.trim();
     }
-    const sectionId = String(currentSection.section || currentSection.page || '').trim();
+    const sectionId = String(currentSection.section ?? currentSection.page ?? currentSection.id ?? '').trim();
     let sectionLabel = '';
     if (language === 'bilingual') {
       const en = getSectionName(currentSection, 'en');
@@ -51,15 +51,16 @@ function SectionAutocomplete({ sections, onSelect, getSectionName, currentSectio
           _sectionId: item._sectionId,
         };
       }
-      const rawPage = item.page || item.section;
+      const rawPage = item.page ?? item.section ?? item.id;
       const num = Number(rawPage);
-      const pageVal = isNaN(num) ? String(rawPage) : num;
+      const pageVal = Number.isNaN(num) ? String(rawPage ?? '') : num;
+      const itemId = String(item.section ?? item.page ?? item.id ?? '');
       return {
-        id: String(item.section || item.page || ''),
-        badge: String(item.section || item.page || ''),
+        id: itemId,
+        badge: itemId,
         primary: getPrimarySectionName(item),
         secondary: getSecondarySectionName(item),
-        searchText: [item.section, item.page, getSectionName(item, 'en'), getSectionName(item, 'tc')].filter(Boolean).join('\n'),
+        searchText: [item.section, item.page, item.id, getSectionName(item, 'en'), getSectionName(item, 'tc')].filter(Boolean).join('\n'),
         _page: pageVal,
       };
     })
@@ -68,7 +69,7 @@ function SectionAutocomplete({ sections, onSelect, getSectionName, currentSectio
   return (
     <AutocompleteDropdown
       items={dropdownItems}
-      value={String(currentSection?.section || currentSection?.page || '')}
+      value={String(currentSection?.section ?? currentSection?.page ?? currentSection?.id ?? '')}
       onSelect={(id, item) => {
         if (item?.disabled) return;
         const val = item?._page;
@@ -82,7 +83,6 @@ function SectionAutocomplete({ sections, onSelect, getSectionName, currentSectio
       onOpenChange={onOpenChange}
       alwaysOpen={alwaysOpen}
       hideFilter={hideFilter}
-      noSelectionHighlight={noSelectionHighlight}
     />
   );
 }

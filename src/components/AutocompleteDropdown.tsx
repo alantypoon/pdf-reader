@@ -25,7 +25,6 @@ function AutocompleteDropdown({
 	showStepper = false,
 	hideFilter = false,
 	alwaysOpen = false,
-	noSelectionHighlight = false,
 	disablePrev,
 	disableNext,
 	onPrev,
@@ -58,6 +57,10 @@ function AutocompleteDropdown({
 	}, [filtered, dropdownFilter]);
 
 	const resolvedPlaceholder = query ? placeholder : (placeholder || '');
+
+	// Key of the currently selected item (derived from the value prop).
+	// Declared early — used by the scroll-to-selected effect below.
+	const selectedKey = String(value ?? '');
 
 	// Notify parent when open state changes (e.g. for cleanup after click-outside dismiss)
 	// When alwaysOpen, never report false — the parent portal controls visibility.
@@ -107,18 +110,32 @@ function AutocompleteDropdown({
 		};
 	}, [open, updateDropdownPosition]);
 
-	// Scroll the selected item to the center of the list when the dropdown opens
+	// Scroll the selected item to the center of the list when the dropdown opens.
+	// The .selected class is always applied to the matching item; matching by
+	// data-item-id also covers lists where the selected item is filtered out.
 	useEffect(() => {
 		if (!open) return;
-		// Wait for the DOM to render the list
-		const timer = setTimeout(() => {
-			const selectedEl = listRef.current?.querySelector('.autocomplete-item.selected');
+		let retryTimer = null;
+		const scrollToSelected = () => {
+			const list = listRef.current;
+			if (!list) return;
+			const selectedEl = list.querySelector('.autocomplete-item.selected')
+				|| (selectedKey ? list.querySelector(`.autocomplete-item[data-item-id="${CSS.escape(selectedKey)}"]`) : null);
 			if (selectedEl) {
 				selectedEl.scrollIntoView({ block: 'center', behavior: 'instant' });
 			}
+		};
+		// Wait for the DOM to render the list
+		const timer = setTimeout(() => {
+			scrollToSelected();
+			// Retry once — the list can render a frame after the dropdown opens.
+			retryTimer = setTimeout(scrollToSelected, 60);
 		}, 0);
-		return () => clearTimeout(timer);
-	}, [open, dropdownFiltered]);
+		return () => {
+			clearTimeout(timer);
+			if (retryTimer) clearTimeout(retryTimer);
+		};
+	}, [open, dropdownFiltered, selectedKey]);
 
 	const handleSelect = (item) => {
 		if (item?.disabled) return;
@@ -235,8 +252,6 @@ function AutocompleteDropdown({
 			});
 		}
 	};
-
-	const selectedKey = String(value ?? '');
 
 	return (
 		<div className={`section-autocomplete ${containerClassName}`.trim()} ref={containerRef}>
@@ -364,7 +379,7 @@ function AutocompleteDropdown({
 							<ul className="autocomplete-list" role="listbox" ref={listRef}>
 								{dropdownFiltered.map((item, index) => {
 									const itemKey = String(item.id ?? '');
-								const isSelected = !noSelectionHighlight && !query && !dropdownFilter && itemKey === selectedKey;
+								const isSelected = !query && !dropdownFilter && itemKey === selectedKey;
 									const isHighlighted = !item.disabled && index === highlightIndex;
 									const classNames = [
 										'autocomplete-item',
@@ -375,6 +390,7 @@ function AutocompleteDropdown({
 									return (
 										<li
 											key={itemKey}
+											data-item-id={itemKey}
 											className={classNames}
 											role="option"
 											aria-disabled={item.disabled ? 'true' : undefined}

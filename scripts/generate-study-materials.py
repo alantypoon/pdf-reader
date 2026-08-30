@@ -39,15 +39,15 @@ _MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB sanity cap
 # ── Paths ──────────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR.parent
-DATA_DIR = Path(os.environ.get('DATA_PATH', str(PROJECT_DIR / 'data')))
 ENV_FILE = PROJECT_DIR / '.env'
 
 # ── Load .env (always prefer .env values for our config keys) ──
-_CONFIG_KEYS = {'DATA_PATH', 'MONGODB_URI',
+_CONFIG_KEYS = {'PATH_DATA', 'PATH_TEXTBOOKS', 'PATH_PASTPAPERS', 'MONGODB_URI',
                 'VLLM_API_URL', 'VLLM_PROVIDER', 'VLLM_MODEL', 'VLLM_APIKEY',
                 'OLLAMA_PROVIDER', 'OLLAMA_MODEL', 'OLLAMA_APIKEY',
                 'AVAILABLE_MODELS_PATH'}
 if ENV_FILE.exists():
+    env_vals = {}
     with open(ENV_FILE, encoding='utf-8') as fh:
         for line in fh:
             line = line.rstrip('\n\r')
@@ -85,7 +85,23 @@ if ENV_FILE.exists():
                 val = val.strip().strip('"').strip("'")
 
             if val:
-                os.environ[key] = val
+                env_vals[key] = val
+
+    # Expand ${VAR} references (dotenv-style; e.g. PATH_TEXTBOOKS=${PATH_DATA}/textbooks)
+    _env_table = {**os.environ, **env_vals}
+    for _ in range(3):
+        for _key in list(env_vals):
+            env_vals[_key] = re.sub(
+                r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}',
+                lambda _m: _env_table.get(_m.group(1), _m.group(0)),
+                env_vals[_key],
+            )
+    for _key, _val in env_vals.items():
+        os.environ[_key] = _val
+
+PATH_DATA = Path(os.environ.get('PATH_DATA', str(PROJECT_DIR / 'data')))
+PATH_PASTPAPERS = Path(os.environ.get('PATH_PASTPAPERS', str(PATH_DATA / 'past-papers')))
+PATH_TEXTBOOKS = Path(os.environ.get('PATH_TEXTBOOKS', str(PATH_DATA / 'textbooks')))
 
 MONGO_URI = os.environ.get('MONGODB_URI', 'mongodb://localhost:27017/pdf-reader')
 
@@ -1004,7 +1020,7 @@ def _read_image_for_ett(image_path):
 
 def _find_page_images(subject, book, section_num, page_num, language):
     """Locate the image file(s) for a given page."""
-    book_dir = DATA_DIR / subject / book
+    book_dir = PATH_TEXTBOOKS / subject / book
     pages_dir = book_dir / language / 'contents' / 'pages'
     label = f'{subject}/{book}/{section_num}/{page_num} [{language}]'
 
@@ -1447,7 +1463,7 @@ def _looks_like_book_dir(book_dir):
 
 def _infer_sections_from_page_assets(subject, book):
     """Infer section IDs from PDF names or generated page images when contents.json is absent."""
-    book_dir = DATA_DIR / subject / book
+    book_dir = PATH_TEXTBOOKS / subject / book
     sections = set()
 
     for lang in ('en', 'tc'):
@@ -1478,7 +1494,7 @@ def _infer_sections_from_page_assets(subject, book):
 def discover_subjects():
     """Return sorted list of subject directories (those containing book dirs)."""
     subjects = []
-    for entry in sorted(DATA_DIR.iterdir()):
+    for entry in sorted(PATH_TEXTBOOKS.iterdir()):
         if not entry.is_dir() or entry.name.startswith('.') or entry.name.startswith('_'):
             continue
         # Include subjects with metadata-backed books and PDF/page-backed books
@@ -1492,7 +1508,7 @@ def discover_subjects():
 
 def discover_books(subject):
     """Return sorted list of book IDs under a subject."""
-    subject_dir = DATA_DIR / subject
+    subject_dir = PATH_TEXTBOOKS / subject
     books = []
     for entry in sorted(subject_dir.iterdir(), key=lambda p: _natural_id_sort_key(p.name)):
         if entry.is_dir() and not entry.name.startswith('.'):
@@ -1503,7 +1519,7 @@ def discover_books(subject):
 
 def discover_sections(subject, book):
     """Return list of {section, en_name, tc_name} from contents.json or page assets."""
-    contents_file = DATA_DIR / subject / book / 'contents.json'
+    contents_file = PATH_TEXTBOOKS / subject / book / 'contents.json'
     if not contents_file.is_file():
         return _infer_sections_from_page_assets(subject, book)
 
@@ -1531,10 +1547,10 @@ def _extract_name(item, lang):
 
 def discover_pages(subject, book, section_num):
     """Count how many sub-page images exist for a section."""
-    pages_dir = DATA_DIR / subject / book / 'en' / 'contents' / 'pages'
+    pages_dir = PATH_TEXTBOOKS / subject / book / 'en' / 'contents' / 'pages'
     if not pages_dir.is_dir():
         # Check for a single PDF instead
-        pdf = DATA_DIR / subject / book / 'en' / 'contents' / f'{section_num}.pdf'
+        pdf = PATH_TEXTBOOKS / subject / book / 'en' / 'contents' / f'{section_num}.pdf'
         return 1 if pdf.is_file() else 0
 
     prefix = f'{section_num}-'
@@ -1662,7 +1678,7 @@ def _run_simplified_chinese_detection(args):
 def _resolve_section_name(subject, book, section_num):
     """Look up the English section name from contents.json. Falls back to a generic label."""
     try:
-        contents_file = DATA_DIR / subject / book / 'contents.json'
+        contents_file = PATH_TEXTBOOKS / subject / book / 'contents.json'
         if contents_file.is_file():
             with open(contents_file, encoding='utf-8') as fh:
                 data = json.load(fh)
@@ -1672,7 +1688,7 @@ def _resolve_section_name(subject, book, section_num):
                     if name:
                         return name
         # Also check for contents-*.json files in _out directory (for physics-oup-xxx style)
-        out_dir = DATA_DIR.parent / '_out' if (DATA_DIR.parent / '_out').is_dir() else None
+        out_dir = PROJECT_DIR / '_out' if (PROJECT_DIR / '_out').is_dir() else None
     except Exception:
         pass
     return f'Section {section_num}'
@@ -1738,8 +1754,8 @@ def main():
         print('ERROR: OLLAMA_APIKEY is not set.  Configure it in your .env file.')
         sys.exit(1)
 
-    if not DATA_DIR.is_dir():
-        print(f'ERROR: DATA_DIR does not exist: {DATA_DIR}')
+    if not PATH_TEXTBOOKS.is_dir():
+        print(f'ERROR: PATH_TEXTBOOKS does not exist: {PATH_TEXTBOOKS}')
         sys.exit(1)
 
     # Apply debug/verbose flags BEFORE anything else so all code paths see them.
@@ -1764,12 +1780,12 @@ def main():
         subjects = discover_subjects()
 
     if not subjects:
-        print(f'No subjects found under {DATA_DIR}')
+        print(f'No subjects found under {PATH_TEXTBOOKS}')
         sys.exit(1)
 
     active_url = VLLM_DEBUG_URL if DEBUG else VLLM_URL
     print(f'Subjects  : {", ".join(subjects)}')
-    print(f'Data dir  : {DATA_DIR}')
+    print(f'Data dir  : {PATH_TEXTBOOKS}')
     print(f'VLLM URL  : {active_url}')
     print(f'VLLM prov : {VLLM_PROVIDER}  |  model: {VLLM_MODEL}')
     print(f'Ollama    : {OLLAMA_PROVIDER}  |  model: {OLLAMA_MODEL}')
