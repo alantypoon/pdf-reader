@@ -6,8 +6,34 @@ import { t, uiLang } from './i18n';
 import { isDebugLoadingPageImages, isDebugScrollingPersistence, isDebugZooming } from './debug';
 import { mySetScrollTop, mySetScrollLeft, myScrollTo, getScrollPos } from './MyScroll';
 import { loadScrollPos, saveScrollPos, flushScrollStorage } from './myLocalStorage';
+import { cacheGet } from './pageCache';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
+
+// ── IndexedDB cache-aware source resolution ────────────────
+// Object URLs created for cached blobs are reused for the session so the
+// same cached page never creates duplicate blobs.
+const _cachedObjectUrls = new Map();
+
+/**
+ * Resolve a page/PDF URL to the best available source:
+ * the cached blob's object URL when present, otherwise the original URL.
+ */
+export async function resolveCachedPageUrl(url) {
+  if (!url) return url;
+  try {
+    const blob = await cacheGet(url);
+    if (blob) {
+      let objectUrl = _cachedObjectUrls.get(url);
+      if (!objectUrl) {
+        objectUrl = URL.createObjectURL(blob);
+        _cachedObjectUrls.set(url, objectUrl);
+      }
+      return objectUrl;
+    }
+  } catch { /* cache unavailable — fall through to network URL */ }
+  return url;
+}
 
 /**
  * Returns true when the page URL contains ?test=1, enabling in-UI
@@ -38,6 +64,8 @@ function safeDevicePixelRatio(viewportWidth, viewportHeight) {
  */
 function withTimestamp(url) {
   if (typeof window === 'undefined') return url;
+  // Blob/object URLs from the IndexedDB cache are already local — no busting.
+  if (url && url.startsWith('blob:')) return url;
   try {
     const params = new URLSearchParams(window.location.search);
     if (!params.has('timestamp')) return url;
@@ -633,6 +661,8 @@ function PdfPane({
   const [thumbFocusIndex, setThumbFocusIndex] = useState(-1);
   const [showLoadingOverlay, setShowLoadingOverlay] = useState(true);
   const [loadDebugText, setLoadDebugText] = useState('init');
+  // Pagination-mode image: resolved (possibly cached) src keyed by raw URL.
+  const [paginationCacheSrc, setPaginationCacheSrc] = useState({ url: '', resolved: '' });
 
   // Safety timeout: dismiss loading overlay after 5s regardless of mode.
   // Covers Chrome iOS where pagination-mode images may not fire onLoad.
@@ -833,12 +863,41 @@ function PdfPane({
     setNumPages(images.length);
     setRenderedPage((prev) => Math.max(1, Math.min(prev, images.length)));
     setThumbFocusIndex(-1);
-    const thumbData = images.map((item, i) => ({
+    let cancelled = false;
+    const rawThumbData = images.map((item, i) => ({
       page: i + 1,
       url: typeof item === 'string' ? item : item?.url || ''
     }));
-    setThumbs(thumbData);
+    // Resolve cached copies first so thumbnails also skip the network
+    // once the user has cached the section.
+    Promise.all(rawThumbData.map(async (thumb) => {
+      if (!thumb.url) return thumb;
+      try {
+        return { ...thumb, url: await resolveCachedPageUrl(thumb.url) };
+      } catch {
+        return thumb;
+      }
+    })).then((thumbData) => {
+      if (!cancelled) setThumbs(thumbData);
+    });
+    return () => { cancelled = true; };
   }, [isImageMode, images]);
+
+  // ── Pagination-mode image: resolve the current page through the cache ──
+  useEffect(() => {
+    if (!isImageMode || mode !== 'pagination') return;
+    let cancelled = false;
+    const imgItem = images[Math.max(0, Math.min(images.length - 1, currentPage - 1))];
+    const url = typeof imgItem === 'string' ? imgItem : imgItem?.url || '';
+    if (!url) {
+      setPaginationCacheSrc({ url: '', resolved: '' });
+      return;
+    }
+    resolveCachedPageUrl(url).then((resolved) => {
+      if (!cancelled) setPaginationCacheSrc({ url, resolved });
+    }).catch(() => { /* keep network URL */ });
+    return () => { cancelled = true; };
+  }, [isImageMode, mode, images, currentPage]);
 
   // Keep renderedPage in sync with currentPage
   useEffect(() => {
@@ -903,7 +962,13 @@ function PdfPane({
     const load = async () => {
       try {
         setLoadError(null);
-        const task = pdfjsLib.getDocument({ url: source });
+        // Prefer the IndexedDB-cached copy (cache button) when available —
+        // pdfjs loads a local blob: URL instantly, skipping the network.
+        let docUrl = source;
+        try {
+          docUrl = await resolveCachedPageUrl(source);
+        } catch { /* keep network URL */ }
+        const task = pdfjsLib.getDocument({ url: docUrl });
         const doc = await task.promise;
         if (!isMounted) return;
         setPdfDoc(doc);
@@ -1878,7 +1943,10 @@ function PdfPane({
         if (!url || img.src) continue;
         img.onload = () => { img.style.minHeight = ''; img.style.opacity = '1'; };
         img.onerror = () => { img.style.opacity = '0'; };
-        img.src = url;
+        resolveCachedPageUrl(url).then((resolved) => {
+          if (!img.isConnected) return;
+          img.src = resolved;
+        }).catch(() => { img.src = url; });
       }
     }
   }, [mode, currentPage, source]);
@@ -2273,7 +2341,6 @@ function PdfPane({
           if (ph) ph.replaceWith(el);
           else mount.appendChild(el);
         }
-        el.src = withTimestamp(url);
         const isBilingualHere = maxPagesInGroup > 0;
         const done = () => {
           busy--;
@@ -2298,8 +2365,17 @@ function PdfPane({
           // Keep expanding outward while this pane remains current.
           loadVisibleLite(lastVisiblePageLite);
         };
+        // Attach listeners BEFORE setting src so the (possibly instant)
+        // cached blob: URL load can't slip past the once-listeners.
         el.addEventListener('load', done, { once: true });
         el.addEventListener('error', done, { once: true });
+        resolveCachedPageUrl(url).then((resolved) => {
+          if (!el.isConnected) { done(); return; }
+          el.src = withTimestamp(resolved);
+        }).catch(() => {
+          if (el.isConnected) el.src = withTimestamp(url);
+          else done();
+        });
         return true;
       };
       const loadVisibleLite = (center) => {
@@ -2765,8 +2841,7 @@ function PdfPane({
           }
         }
       }
-      img.src = withTimestamp(url);
-      img.onload = () => {
+      const onImageLoad = () => {
         loading--;
         const wasFirst = !_firstImageLoaded;
         _firstImageLoaded = true;
@@ -2801,7 +2876,7 @@ function PdfPane({
         }
         if (!disposed) loadVisibleRange(lastVisiblePage);
       };
-      img.onerror = () => {
+      const onImageError = () => {
         loading--;
         if (!_firstImageLoaded) _firstImageLoaded = true;
         if (isDebugLoadingPageImages()) {
@@ -2810,6 +2885,17 @@ function PdfPane({
         img.style.opacity = '0';
         if (!disposed) loadVisibleRange(lastVisiblePage);
       };
+      // Attach handlers BEFORE setting src so cached blob: URL loads
+      // (which may complete synchronously) are always caught.
+      img.onload = onImageLoad;
+      img.onerror = onImageError;
+      resolveCachedPageUrl(url).then((resolved) => {
+        if (!img.isConnected) { onImageError(); return; }
+        img.src = withTimestamp(resolved);
+      }).catch(() => {
+        if (img.isConnected) img.src = withTimestamp(url);
+        else onImageError();
+      });
       return true;
     };
 
@@ -4106,6 +4192,9 @@ function PdfPane({
               const isBlankPage = currentPage > images.length || !images[currentPage - 1];
               const imgItem = !isBlankPage ? images[currentPage - 1] : null;
               const imgSrc = typeof imgItem === 'string' ? imgItem : imgItem?.url || '';
+              // Use the cache-resolved object URL only for THIS raw URL —
+              // stale resolutions for a previous page must never render.
+              const resolvedImgSrc = imgSrc && paginationCacheSrc.url === imgSrc ? paginationCacheSrc.resolved : '';
               const imageStyle = fitMode === 'height'
                 ? {
                     width: 'auto',
@@ -4139,7 +4228,7 @@ function PdfPane({
               ) : imgSrc ? (
                 <img
                   ref={imgRef}
-                  src={withTimestamp(imgSrc)}
+                  src={withTimestamp(resolvedImgSrc || imgSrc)}
                   alt={`${_('pageN')} ${currentPage}`}
                   className="page-img"
                   onLoad={handleImageLoad}

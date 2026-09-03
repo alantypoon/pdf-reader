@@ -17,6 +17,7 @@ import { isDebugScrollingMomentum, isDebugScrollingPersistence, isDebugZooming, 
 import { myScrollBy, myScrollTo } from './MyScroll';
 import { loadScrollPos, deleteScrollKeys } from './myLocalStorage';
 import { initQueue, enqueue, updateScope, getPendingCount } from './annotationQueue';
+import { cacheUrls as cacheUrlsToDb, cacheAllKeys } from './pageCache';
 
 const PREFERENCES_KEY = 'pdfReaderPreferences';
 const COPY_DIALOG_DEFAULTS_KEY = 'pdfReaderCopyDialogDefaults';
@@ -688,6 +689,56 @@ async function fetchJson(url, options) {
   return data;
 }
 
+/**
+ * Download + Cache icon buttons shared by the Book+Section row (textbook
+ * mode) and the past-paper rows (PP modes).
+ */
+function SectionActionButtons({
+  language,
+  downloadBusy = false,
+  downloadDisabled = false,
+  cacheStatus = 'none',
+  cacheBusy = false,
+  cacheDisabled = false,
+  onDownload,
+  onCache,
+}) {
+  const _ = (key) => t(key, uiLang(language));
+  return (
+    <span className="sidebar-label-actions">
+      <button
+        type="button"
+        className={`section-action-btn${downloadBusy ? ' busy' : ''}`}
+        onClick={onDownload}
+        disabled={downloadBusy || downloadDisabled}
+        title={_('downloadPdf')}
+        aria-label={_('downloadPdf')}
+      >
+        <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+          <path d="M12 3v10.17l-3.59-3.58L7 11l5 5 5-5-1.41-1.41L12 13.17V3h-2zM6 19h12v-2H6v2z" />
+        </svg>
+      </button>
+      <button
+        type="button"
+        className={`section-action-btn cache-action-btn${cacheStatus === 'cached' ? ' cached' : ''}${cacheStatus === 'partial' ? ' partial' : ''}`}
+        onClick={onCache}
+        disabled={cacheBusy || cacheDisabled}
+        title={cacheStatus === 'cached' ? _('cacheCachedTitle') : cacheStatus === 'partial' ? _('cachePartialTitle') : _('cachePages')}
+        aria-label={cacheStatus === 'cached' ? _('cacheCachedTitle') : cacheStatus === 'partial' ? _('cachePartialTitle') : _('cachePages')}
+      >
+        <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+          {cacheStatus === 'cached' ? (
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
+          ) : (
+            <path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z" />
+          )}
+        </svg>
+        {cacheStatus === 'partial' && <span className="cache-btn-dot" aria-hidden="true" />}
+      </button>
+    </span>
+  );
+}
+
 function FloatingAudioPlayer({ url, name, onClose }) {
   const playerRef = useRef(null);
   const dragState = useRef({ dragging: false, startX: 0, startY: 0 });
@@ -1286,6 +1337,13 @@ function App() {
   const [pageSources, setPageSources] = useState({});
   const pageSourcesRef = useRef({});
   const [pageLoading, setPageLoading] = useState(false);
+  // ── Section download + IndexedDB page cache ──────────────
+  const [cacheProgress, setCacheProgress] = useState(null); // null | { total, done, stored, phase: 'caching'|'done'|'error' }
+  const [downloadBusy, setDownloadBusy] = useState(false);
+  const cacheAbortRef = useRef(null);
+  // Cache-button state for the current section's selected views.
+  const [sectionCacheStatus, setSectionCacheStatus] = useState('none'); // 'none' | 'partial' | 'cached'
+  const cachedKeysRef = useRef(new Set());
   const [remarks, setRemarks] = useState([]);
   const [pageAnnotations, setPageAnnotations] = useState([]);
   const [tool, setTool] = useState(() => {
@@ -2034,6 +2092,296 @@ function App() {
   }, [visiblePanes]);
   const visiblePaneKeysRef = useRef(visiblePaneKeys);
 
+  // Derive matched topics for the current section from the mapping.
+  // Declared BEFORE collectSelectedViewSources because that callback lists
+  // it as a dependency (referencing it later would hit the TDZ).
+  const ppRelatedTopics = useMemo(() => {
+    if (!sectionTopicMap || !selectedChapter || !selectedFile) return [];
+    const chapterMap = sectionTopicMap[selectedChapter];
+    if (!chapterMap) return [];
+    const secKey = String(selectedFile);
+    return chapterMap[secKey] || [];
+  }, [sectionTopicMap, selectedChapter, selectedFile]);
+
+  // ── Download / Cache buttons (Book + Section row) ────────
+  /**
+   * Collect the currently selected views' sources:
+   *  - downloadViews:     textbook view ids that map to a PDF the server can zip
+   *  - cacheUrls:         every page-image / PDF URL to store in IndexedDB
+   *  - pastPaperDownload: past-paper download descriptor (PP modes), or null
+   */
+  const collectSelectedViewSources = useCallback(() => {
+    const views = normalizeSelectedViewsForMaterial(materialMode, selectedViews);
+    const viewToSourceKey = {
+      [VIEW_EN_STUDENT]: getPageSourceKey('en', 'student'),
+      [VIEW_TC_STUDENT]: getPageSourceKey('tc', 'student'),
+      [VIEW_EN_TEACHER]: getPageSourceKey('en', 'teacher'),
+      [VIEW_TC_TEACHER]: getPageSourceKey('tc', 'teacher'),
+    };
+    const downloadViews = [];
+    const cacheUrls = [];
+    views.forEach((viewId) => {
+      const sourceKey = viewToSourceKey[viewId];
+      if (!sourceKey) return;
+      const source = effectivePageSources[sourceKey];
+      if (Array.isArray(source)) {
+        const urls = source
+          .map((item) => (typeof item === 'string' ? item : item?.url))
+          .filter(Boolean);
+        if (urls.length) {
+          downloadViews.push(viewId);
+          cacheUrls.push(...urls);
+        }
+      } else if (typeof source === 'string' && source.trim()) {
+        downloadViews.push(viewId);
+        cacheUrls.push(source);
+      }
+    });
+    // Past-paper download descriptor — PP modes use the Past Paper view,
+    // textbook mode uses the PP-related view's matched topics.
+    let pastPaperDownload = null;
+    // PP-related pages (textbook mode): cache their images and zip the
+    // matched topics' PDFs.
+    if (views.includes(VIEW_PP_RELATED) && ppRelatedTopics.length > 0 && ppRelatedImages.length > 0) {
+      ppRelatedImages.forEach((item) => {
+        const url = typeof item === 'string' ? item : item?.url;
+        if (url) cacheUrls.push(url);
+      });
+      pastPaperDownload = {
+        mode: 'by-topics',
+        related: true,
+        subject: selectedBook,
+        lang: ppRelatedLanguage,
+        topics: ppRelatedTopics
+          .map((entry) => ({ topic: String(entry?.topicId || ''), paper: entry?.paper ? String(entry.paper) : '' }))
+          .filter((entry) => entry.topic),
+      };
+    }
+    // Past-paper view (PP modes): cache its page images and zip its PDF.
+    if ((materialMode === MATERIAL_PP_TOPICS || materialMode === MATERIAL_PP_YEARS)
+      && views.includes(VIEW_PAST_PAPER)) {
+      if (Array.isArray(pastPaperImages)) {
+        pastPaperImages.forEach((url) => {
+          if (typeof url === 'string' && url) cacheUrls.push(url);
+        });
+      }
+      // Build the download descriptor whenever the view is selected — even if
+      // the images haven't loaded yet — so the server can report a precise
+      // "no PDF" error instead of a misleading "nothing selected" message.
+      if (materialMode === MATERIAL_PP_TOPICS) {
+        pastPaperDownload = {
+          mode: 'by-topics',
+          subject: selectedBook,
+          lang: pastPaperLanguage,
+          paper: pastPaperPaperType ? pastPaperPaperType.replace('paper-', '') : '',
+          topic: pastPaperTopic,
+        };
+      } else {
+        pastPaperDownload = {
+          mode: 'by-years',
+          subject: selectedBook,
+          lang: pastPaperLanguage,
+          year: pastPaperYear,
+          type: pastPaperYearType,
+        };
+      }
+    }
+    return { downloadViews, cacheUrls, pastPaperDownload };
+  }, [
+    selectedViews,
+    materialMode,
+    effectivePageSources,
+    ppRelatedImages,
+    pastPaperImages,
+    pastPaperLanguage,
+    pastPaperPaperType,
+    pastPaperTopic,
+    pastPaperYear,
+    pastPaperYearType,
+    ppRelatedTopics,
+    ppRelatedLanguage,
+    selectedBook,
+  ]);
+
+  // Cache targets for the current section's selected views — used by the
+  // button's cached/partial indicator.
+  const selectedViewTargets = useMemo(
+    () => collectSelectedViewSources().cacheUrls,
+    [collectSelectedViewSources]
+  );
+
+  /**
+   * Re-read the IndexedDB key list and update the cache-button state for the
+   * given targets: none cached / partially cached / fully cached.
+   */
+  const recomputeCacheStatus = useCallback(async (targetUrls) => {
+    const urls = [...new Set((targetUrls || []).filter(Boolean))];
+    if (!urls.length) {
+      setSectionCacheStatus('none');
+      return;
+    }
+    try {
+      const keys = await cacheAllKeys();
+      const set = new Set(keys);
+      cachedKeysRef.current = set;
+      const cachedCount = urls.filter((url) => set.has(url)).length;
+      setSectionCacheStatus(cachedCount === 0 ? 'none' : cachedCount === urls.length ? 'cached' : 'partial');
+    } catch { /* keep previous status */ }
+  }, []);
+
+  // Keep the cached/partial indicator in sync whenever the section or the
+  // selected views change.  Reads all cached keys (one IndexedDB read) so
+  // sections cached in another tab are reflected as well.
+  useEffect(() => {
+    let cancelled = false;
+    const urls = [...new Set(selectedViewTargets)];
+    if (!urls.length) {
+      setSectionCacheStatus('none');
+      return () => { cancelled = true; };
+    }
+    cacheAllKeys().then((keys) => {
+      if (cancelled) return;
+      const set = new Set(keys);
+      cachedKeysRef.current = set;
+      const cachedCount = urls.filter((url) => set.has(url)).length;
+      setSectionCacheStatus(cachedCount === 0 ? 'none' : cachedCount === urls.length ? 'cached' : 'partial');
+    }).catch(() => { /* keep previous status */ });
+    return () => { cancelled = true; };
+  }, [selectedViewTargets]);
+
+  /** Download a zip containing the selected views' PDFs (textbook + past-paper). */
+  const handleDownloadSection = useCallback(async () => {
+    const { downloadViews, pastPaperDownload } = collectSelectedViewSources();
+    if (!downloadViews.length && !pastPaperDownload) {
+      Swal.fire({
+        icon: 'info',
+        title: _('downloadFailed'),
+        html: `<p>${_('nothingToCache')}</p>`,
+        confirmButtonText: 'OK',
+      });
+      return;
+    }
+    setDownloadBusy(true);
+    try {
+      const params = new URLSearchParams();
+      if (downloadViews.length) {
+        params.set('book', selectedBook || '');
+        params.set('chapter', selectedChapter || '');
+        params.set('section', String(selectedFile));
+        params.set('views', downloadViews.join(','));
+      }
+      if (pastPaperDownload) {
+        params.set('pp', '1');
+        params.set('ppSubject', pastPaperDownload.subject || '');
+        params.set('ppMode', pastPaperDownload.mode);
+        params.set('ppLang', pastPaperDownload.lang || 'en');
+        if (pastPaperDownload.mode === 'by-topics') {
+          if (Array.isArray(pastPaperDownload.topics) && pastPaperDownload.topics.length) {
+            // PP-related view: one or more matched topics (paper may be empty).
+            pastPaperDownload.topics.forEach(({ topic, paper }) => {
+              params.append('ppTopic', topic || '');
+              params.append('ppPaper', paper || '');
+            });
+          } else {
+            if (pastPaperDownload.paper) params.set('ppPaper', pastPaperDownload.paper);
+            params.set('ppTopic', pastPaperDownload.topic || '');
+          }
+        } else {
+          params.set('ppYear', pastPaperDownload.year || '');
+          params.set('ppType', pastPaperDownload.type || 'p1');
+        }
+      }
+      const response = await fetch(`api/section-pdfs.zip?${params.toString()}`);
+      if (!response.ok) {
+        let message = `HTTP ${response.status}`;
+        try {
+          const data = await response.json();
+          message = data?.error || message;
+        } catch { /* non-JSON error body */ }
+        throw new Error(message);
+      }
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = objectUrl;
+      anchor.download = downloadViews.length
+        ? `${selectedChapter}-${selectedFile}-pdfs.zip`
+        : pastPaperDownload?.related
+          ? `past-papers-${pastPaperDownload.subject}-related-pages.zip`
+          : `past-papers-${pastPaperDownload.subject}-${pastPaperDownload.mode}.zip`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 30000);
+    } catch (err) {
+      console.error('[download] failed:', err);
+      Swal.fire({
+        icon: 'error',
+        title: _('downloadFailed'),
+        html: `<p>${String(err?.message || err).replace(/</g, '&lt;')}</p>`,
+        confirmButtonText: 'OK',
+      });
+    } finally {
+      setDownloadBusy(false);
+    }
+  }, [selectedBook, selectedChapter, selectedFile, collectSelectedViewSources, _]);
+
+  /** Download every page image of the selected views into IndexedDB. */
+  const handleCacheSection = useCallback(async () => {
+    const { cacheUrls } = collectSelectedViewSources();
+    if (!cacheUrls.length) {
+      Swal.fire({
+        icon: 'info',
+        title: _('cachePages'),
+        html: `<p>${_('nothingToCache')}</p>`,
+        confirmButtonText: 'OK',
+      });
+      return;
+    }
+    // Already caching — ignore repeat clicks.
+    if (cacheProgress?.phase === 'caching') return;
+    const controller = new AbortController();
+    cacheAbortRef.current = controller;
+    setCacheProgress({ total: cacheUrls.length, done: 0, stored: 0, phase: 'caching' });
+    try {
+      await cacheUrlsToDb(cacheUrls, {
+        signal: controller.signal,
+        onProgress: (p) => setCacheProgress({ total: p.total, done: p.done, stored: p.stored, phase: 'caching' }),
+      });
+      if (controller.signal.aborted) {
+        setCacheProgress(null);
+        recomputeCacheStatus(cacheUrls);
+        return;
+      }
+      // Refresh the cached indicator — the section is now fully cached
+      // (the button icon switches to the filled/checked state).
+      recomputeCacheStatus(cacheUrls);
+      setCacheProgress((current) => (current && current.phase === 'caching'
+        ? { total: current.total, done: current.total, stored: current.stored, phase: 'done' }
+        : current));
+      // Let the "done" state linger briefly, then clear.
+      setTimeout(() => {
+        setCacheProgress((current) => (current?.phase === 'done' ? null : current));
+      }, 4000);
+    } catch (err) {
+      if (controller.signal.aborted) {
+        setCacheProgress(null);
+        recomputeCacheStatus(cacheUrls);
+        return;
+      }
+      console.error('[cache] failed:', err);
+      setCacheProgress({ total: cacheUrls.length, done: 0, stored: 0, phase: 'error' });
+      setTimeout(() => {
+        setCacheProgress((current) => (current?.phase === 'error' ? null : current));
+      }, 5000);
+    }
+  }, [collectSelectedViewSources, cacheProgress, recomputeCacheStatus, _]);
+
+  /** Stop an in-flight caching run. */
+  const handleCacheStop = useCallback(() => {
+    try { cacheAbortRef.current?.abort(); } catch { /* no-op */ }
+  }, []);
+
   // Active bucket for the toolbar: PP materials use past-paper, textbook+My Paper uses leading non-My-Paper pane
   const activeZoomBucket = (() => {
     if (materialMode === MATERIAL_PP_TOPICS || materialMode === MATERIAL_PP_YEARS) return 'past-paper';
@@ -2596,15 +2944,6 @@ function App() {
       }
     })();
   }, [selectedBook]);
-
-  // Derive matched topics for the current section from the mapping
-  const ppRelatedTopics = useMemo(() => {
-    if (!sectionTopicMap || !selectedChapter || !selectedFile) return [];
-    const chapterMap = sectionTopicMap[selectedChapter];
-    if (!chapterMap) return [];
-    const secKey = String(selectedFile);
-    return chapterMap[secKey] || [];
-  }, [sectionTopicMap, selectedChapter, selectedFile]);
 
   // Load PP-related pages when view is active and matched topics change
   useEffect(() => {
@@ -9731,21 +10070,31 @@ function App() {
                   : !isTextViewAvailable(viewId);
                 // An already-active view can always be toggled off (even without a source);
                 // only disable enabling a view that currently has no content.
-                const disabled = modeDisabled || (noSource && !active);
+                // The LAST active view can never be turned off — at least one
+                // view must always remain selected.
+                const lastActiveCount = normalizeSelectedViewsForMaterial(materialMode, selectedViews).length;
+                const isLastActive = active && lastActiveCount <= 1;
+                const disabled = modeDisabled || (noSource && !active) || isLastActive;
                 return (
                   <button
                     key={viewId}
                     type="button"
                     className={`toggle-btn ${active ? 'active' : ''}`}
                     disabled={disabled}
+                    title={isLastActive ? _('lastViewHint') : undefined}
                     onClick={() => {
                       setSelectedViews((current) => {
                         const normalized = normalizeSelectedViewsForMaterial(materialMode, current);
                         const exists = normalized.includes(viewId);
-                        const next = exists
-                          ? normalized.filter((item) => item !== viewId)
-                          : [...normalized, viewId];
-                        return normalizeSelectedViewsForMaterial(materialMode, next);
+                        if (!exists) {
+                          return normalizeSelectedViewsForMaterial(materialMode, [...normalized, viewId]);
+                        }
+                        // Never remove the last remaining view.
+                        if (normalized.length <= 1) return normalized;
+                        return normalizeSelectedViewsForMaterial(
+                          materialMode,
+                          normalized.filter((item) => item !== viewId)
+                        );
                       });
                     }}
                     aria-pressed={active}
@@ -9797,11 +10146,23 @@ function App() {
 
         {!sidebarCollapsed && materialMode === MATERIAL_TEXTBOOK && sectionOptionsCount > 0 && !(selectedBook === 'physics-oup' && physicsChapterOptions.length > 0) && (
           <label>
-            <span className="sidebar-label-icon">
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <path d="M4 4h16v3H4V4zm0 6h16v3H4v-3zm0 6h16v3H4v-3z" />
-              </svg>
-              {_('bookSection')}
+            <span className="sidebar-label-row">
+              <span className="sidebar-label-icon">
+                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                  <path d="M4 4h16v3H4V4zm0 6h16v3H4v-3zm0 6h16v3H4v-3z" />
+                </svg>
+                {_('bookSection')}
+              </span>
+              <SectionActionButtons
+                language={selectedLanguage}
+                downloadBusy={downloadBusy}
+                downloadDisabled={!selectedBook || !selectedChapter}
+                cacheStatus={sectionCacheStatus}
+                cacheBusy={cacheProgress?.phase === 'caching'}
+                cacheDisabled={!selectedBook || !selectedChapter}
+                onDownload={handleDownloadSection}
+                onCache={handleCacheSection}
+              />
             </span>
             <div className="selector-stepper-row" data-autocomplete-id="section-combined">
               <button type="button" className="selector-stepper-btn" onClick={() => {
@@ -9935,6 +10296,29 @@ function App() {
                 </div>
               </label>
             )}
+            {/* Download / Cache for the selected past paper */}
+            {selectedViews.includes(VIEW_PAST_PAPER) && pastPaperImages.length > 0 && (
+              <label>
+                <span className="sidebar-label-row">
+                  <span className="sidebar-label-icon">
+                    <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                      <path d="M12 3 4 7v5c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V7l-8-4zm-1 14.5-4-4 1.4-1.4L11 14.7l4.6-4.6L17 11.5l-6 6z" />
+                    </svg>
+                    {_('viewPastPaper')}
+                  </span>
+                  <SectionActionButtons
+                    language={selectedLanguage}
+                    downloadBusy={downloadBusy}
+                    downloadDisabled={false}
+                    cacheStatus={sectionCacheStatus}
+                    cacheBusy={cacheProgress?.phase === 'caching'}
+                    cacheDisabled={false}
+                    onDownload={handleDownloadSection}
+                    onCache={handleCacheSection}
+                  />
+                </span>
+              </label>
+            )}
           </>
         )}
 
@@ -10010,6 +10394,29 @@ function App() {
                 ))}
               </div>
             </label>
+            {/* Download / Cache for the selected past paper */}
+            {selectedViews.includes(VIEW_PAST_PAPER) && pastPaperImages.length > 0 && (
+              <label>
+                <span className="sidebar-label-row">
+                  <span className="sidebar-label-icon">
+                    <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                      <path d="M12 3 4 7v5c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V7l-8-4zm-1 14.5-4-4 1.4-1.4L11 14.7l4.6-4.6L17 11.5l-6 6z" />
+                    </svg>
+                    {_('viewPastPaper')}
+                  </span>
+                  <SectionActionButtons
+                    language={selectedLanguage}
+                    downloadBusy={downloadBusy}
+                    downloadDisabled={false}
+                    cacheStatus={sectionCacheStatus}
+                    cacheBusy={cacheProgress?.phase === 'caching'}
+                    cacheDisabled={false}
+                    onDownload={handleDownloadSection}
+                    onCache={handleCacheSection}
+                  />
+                </span>
+              </label>
+            )}
           </>
         )}
 
@@ -11773,6 +12180,48 @@ function App() {
           </div>
         </>,
         document.body
+      )}
+
+      {/* ── Page-cache progress toast (non-blocking, fixed corner) ── */}
+      {cacheProgress && (
+        <div className={`cache-toast phase-${cacheProgress.phase}`} role="status" aria-live="polite">
+          <svg viewBox="0 0 24 24" className="cache-toast-icon" role="presentation" focusable="false">
+            {cacheProgress.phase === 'done' ? (
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
+            ) : cacheProgress.phase === 'error' ? (
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" />
+            ) : (
+              <path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z" />
+            )}
+          </svg>
+          <div className="cache-toast-body">
+            <span className="cache-toast-title">
+              {cacheProgress.phase === 'caching' && _('caching')}
+              {cacheProgress.phase === 'done' && _('cacheDone').replace('{count}', String(cacheProgress.done))}
+              {cacheProgress.phase === 'error' && _('cacheFailed')}
+            </span>
+            <span className="cache-toast-detail">
+              {cacheProgress.phase === 'caching' && `${cacheProgress.done} / ${cacheProgress.total}`}
+            </span>
+            <div className="cache-toast-track">
+              <div
+                className={`cache-toast-fill ${cacheProgress.phase === 'error' ? 'error' : ''}`}
+                style={{ width: `${cacheProgress.total > 0 ? Math.round((cacheProgress.done / cacheProgress.total) * 100) : 100}%` }}
+              />
+            </div>
+          </div>
+          {cacheProgress.phase === 'caching' && (
+            <button
+              type="button"
+              className="cache-toast-stop"
+              onClick={handleCacheStop}
+              aria-label={_('cancel')}
+              title={_('cancel')}
+            >
+              ✕
+            </button>
+          )}
+        </div>
       )}
 
     </div>

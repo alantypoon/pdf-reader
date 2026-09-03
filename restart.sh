@@ -9,7 +9,7 @@
 
 clear
 
-./stop-service.sh
+# ./stop-service.sh
 
 set -euo pipefail
 
@@ -41,7 +41,7 @@ macos)
     # fi
 
     # Restart PDF Reader server
-    echo "[2/2] Restarting PDF Reader server..."
+    # echo "[2/2] Restarting PDF Reader server..."
     launchctl unload "$PLIST" 2>/dev/null || true
     sleep 1
     launchctl load "$PLIST"
@@ -49,7 +49,7 @@ macos)
     echo ""
     echo "=== Services restarted ==="
     echo ""
-    launchctl list | grep -E "com.mongodb.2700|com.pdf-reader"
+    # launchctl list | grep -E "com.mongodb.2700|com.pdf-reader"
     ;;
 
 linux)
@@ -64,4 +64,4 @@ linux)
     ;;
 esac
 
-./check.sh
+# ./check.sh

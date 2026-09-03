@@ -112,7 +112,6 @@ MONGOPLIST
 
     # Stop and unload any previous version
     launchctl unload "$PLIST" 2>/dev/null || true
-
     echo "  Installing PDF Reader service → $PLIST"
 
     cat > "$PLIST" <<PLISTEOF

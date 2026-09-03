@@ -140,6 +140,15 @@
   border-color: var(--accent);
 }
 
+:root.dark .toggle-btn.active:disabled {
+  opacity: 0.7;
+}
+
+:root.dark .toggle-btn.active:disabled:hover {
+  background: var(--accent);
+  color: #1a1a2e;
+}
+
 /* ── Hidden sidebar restore button ────────────────────── */
 :root.dark .hidden-sidebar-restore {
   background: rgba(26, 26, 46, 0.96);
@@ -920,6 +929,222 @@ button, input, select {
   stroke: currentColor;
 }
 
+/* ── Book + Section row: label + download/cache actions ── */
+.sidebar-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sidebar-label-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.section-action-btn {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #c9d7e3;
+  border-radius: 8px;
+  background: white;
+  color: #1f4d6c;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+  padding: 0;
+}
+
+.section-action-btn svg {
+  width: 15px;
+  height: 15px;
+  fill: currentColor;
+}
+
+.section-action-btn:hover:not(:disabled) {
+  background: #e8f0fe;
+  border-color: #9fb8cc;
+}
+
+.section-action-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.section-action-btn.busy {
+  animation: section-action-pulse 900ms ease-in-out infinite;
+}
+
+@keyframes section-action-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* Cache button states: fully cached (green check) / partially cached (dot) */
+.section-action-btn.cache-action-btn {
+  position: relative;
+}
+
+.section-action-btn.cache-action-btn.cached {
+  background: #e7f6ee;
+  border-color: #7fc9a0;
+  color: #2e9e5b;
+}
+
+.section-action-btn.cache-action-btn.cached:hover:not(:disabled) {
+  background: #d9f1e4;
+  border-color: #5bb786;
+}
+
+.section-action-btn.cache-action-btn.partial {
+  border-color: #7fc9a0;
+}
+
+.cache-btn-dot {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #2e9e5b;
+  border: 1.5px solid white;
+  pointer-events: none;
+}
+
+/* ── Page-cache progress toast (fixed, non-blocking) ────── */
+.cache-toast {
+  position: fixed;
+  right: 16px;
+  bottom: 96px;
+  z-index: 2500;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 210px;
+  max-width: 300px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.97);
+  border: 1px solid #c9d7e3;
+  border-radius: 12px;
+  box-shadow: 0 6px 24px rgba(18, 50, 74, 0.18);
+  pointer-events: auto;
+}
+
+.cache-toast-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  fill: #1f4d6c;
+}
+
+.cache-toast.phase-done .cache-toast-icon { fill: #2e9e5b; }
+.cache-toast.phase-error .cache-toast-icon { fill: #c0392b; }
+
+.cache-toast-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+.cache-toast-title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #12324a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cache-toast-detail {
+  font-size: 0.72rem;
+  color: #5d7184;
+}
+
+.cache-toast-track {
+  height: 4px;
+  width: 100%;
+  border-radius: 2px;
+  background: #e3ecf3;
+  overflow: hidden;
+}
+
+.cache-toast-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: #3f7fb5;
+  transition: width 160ms ease;
+}
+
+.cache-toast-fill.error { background: #c0392b; }
+
+.cache-toast-stop {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: #eef3f8;
+  color: #5d7184;
+  font-size: 0.7rem;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+
+.cache-toast-stop:hover { background: #dfe8f0; color: #12324a; }
+
+:root.dark .section-action-btn {
+  background: #23303d;
+  border-color: #3b4c5c;
+  color: #cfe0ee;
+}
+
+:root.dark .section-action-btn:hover:not(:disabled) {
+  background: #2e4052;
+  border-color: #54708a;
+}
+
+:root.dark .section-action-btn.cache-action-btn.cached {
+  background: #1f3a2c;
+  border-color: #3c6e52;
+  color: #67d391;
+}
+
+:root.dark .section-action-btn.cache-action-btn.cached:hover:not(:disabled) {
+  background: #274a37;
+  border-color: #4d8a68;
+}
+
+:root.dark .section-action-btn.cache-action-btn.partial {
+  border-color: #3c6e52;
+}
+
+:root.dark .cache-btn-dot {
+  border-color: #23303d;
+}
+
+:root.dark .cache-toast {
+  background: rgba(35, 48, 61, 0.97);
+  border-color: #3b4c5c;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+}
+
+:root.dark .cache-toast-title { color: #d8e6f2; }
+:root.dark .cache-toast-detail { color: #93a7b8; }
+:root.dark .cache-toast-track { background: #2b3a49; }
+:root.dark .cache-toast-stop { background: #2b3a49; color: #93a7b8; }
+:root.dark .cache-toast-stop:hover { background: #3a4d60; color: #d8e6f2; }
+
 /* ── Sidebar toggles ────────────────────────────────────── */
 
 .toggle-group {
@@ -998,8 +1223,20 @@ button, input, select {
   cursor: default;
 }
 
-.toggle-btn:disabled:hover {
+/* The last active view is disabled so it can't be turned off — keep its
+   selected background on hover instead of fading it to transparent, and
+   keep it readable instead of nearly invisible. */
+.toggle-btn:disabled:not(.active):hover {
   background: transparent;
+}
+
+.toggle-btn.active:disabled {
+  opacity: 0.7;
+}
+
+.toggle-btn.active:disabled:hover {
+  background: #1f4d6c;
+  color: #ffffff;
 }
 
 .toggle-btn.icon-only {

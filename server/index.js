@@ -1004,6 +1004,268 @@ app.get('/api/page', asyncRoute(async (request, response) => {
   }
 }));
 
+// ── Section PDF download (zip of the selected views' PDFs) ──
+// Mirrors /api/page's PDF resolution: exact "<section>.pdf" first,
+// then "<section>-*.pdf" prefix matches.  No external zip library —
+// PDFs are already compressed, so a STORE (no-compression) zip is
+// built in-memory with a minimal writer.
+const CRC32_TABLE = (() => {
+  const table = new Int32Array(256);
+  for (let n = 0; n < 256; n += 1) {
+    let c = n;
+    for (let k = 0; k < 8; k += 1) {
+      c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    }
+    table[n] = c;
+  }
+  return table;
+})();
+
+function crc32(buf) {
+  let crc = 0xFFFFFFFF;
+  for (let i = 0; i < buf.length; i += 1) {
+    crc = CRC32_TABLE[(crc ^ buf[i]) & 0xFF] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+/** DOS-format date/time for zip headers. */
+function dosDateTime(date = new Date()) {
+  const year = Math.max(1980, date.getFullYear());
+  return {
+    time: (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2),
+    date: ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate(),
+  };
+}
+
+/** Build a zip archive with uncompressed (STORE) entries. */
+function buildStoredZip(files) {
+  const encoder = new TextEncoder();
+  const chunks = [];
+  const central = [];
+  let offset = 0;
+  const { time, date } = dosDateTime();
+
+  files.forEach((file) => {
+    const data = Buffer.isBuffer(file.data) ? file.data : Buffer.from(file.data);
+    const nameBytes = Buffer.from(encoder.encode(file.name));
+    const crc = crc32(data);
+    const size = data.length;
+
+    // Local file header (30 bytes + name)
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);          // local file header signature
+    local.writeUInt16LE(20, 4);                  // version needed
+    local.writeUInt16LE(0x0800, 6);              // general purpose flags (UTF-8 names)
+    local.writeUInt16LE(0, 8);                   // compression method: stored
+    local.writeUInt16LE(time, 10);
+    local.writeUInt16LE(date, 12);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(size, 18);               // compressed size
+    local.writeUInt32LE(size, 22);               // uncompressed size
+    local.writeUInt16LE(nameBytes.length, 26);
+    local.writeUInt16LE(0, 28);                  // extra length
+    chunks.push(local, nameBytes, data);
+
+    // Central directory header (46 bytes + name)
+    const entry = Buffer.alloc(46);
+    entry.writeUInt32LE(0x02014b50, 0);          // central directory signature
+    entry.writeUInt16LE(20, 4);                  // version made by
+    entry.writeUInt16LE(20, 6);                  // version needed
+    entry.writeUInt16LE(0x0800, 8);              // flags
+    entry.writeUInt16LE(0, 10);                  // method
+    entry.writeUInt16LE(time, 12);
+    entry.writeUInt16LE(date, 14);
+    entry.writeUInt32LE(crc, 16);
+    entry.writeUInt32LE(size, 20);
+    entry.writeUInt32LE(size, 24);
+    entry.writeUInt16LE(nameBytes.length, 28);
+    entry.writeUInt16LE(0, 30);                  // extra length
+    entry.writeUInt16LE(0, 32);                  // comment length
+    entry.writeUInt16LE(0, 34);                  // disk number
+    entry.writeUInt16LE(0, 36);                  // internal attrs
+    entry.writeUInt32LE(0, 38);                  // external attrs
+    entry.writeUInt32LE(offset, 42);             // local header offset
+    central.push(entry, nameBytes);
+    offset += 30 + nameBytes.length + size;
+  });
+
+  const centralSize = central.reduce((sum, chunk) => sum + chunk.length, 0);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);              // end of central directory signature
+  end.writeUInt16LE(0, 4);                       // disk number
+  end.writeUInt16LE(0, 6);                       // central dir disk
+  end.writeUInt16LE(files.length, 8);            // entries on this disk
+  end.writeUInt16LE(files.length, 10);           // total entries
+  end.writeUInt32LE(centralSize, 12);
+  end.writeUInt32LE(offset, 16);
+  end.writeUInt16LE(0, 20);                      // comment length
+  central.push(end);
+
+  return Buffer.concat([...chunks, ...central]);
+}
+
+/** Find the PDF for a section inside a contents(.tn) directory. */
+async function findSectionPdf(contentsDir, sectionId) {
+  const pageId = String(sectionId || '').trim();
+  if (!pageId) return null;
+  const numericPage = /^\d+$/.test(pageId) ? Number(pageId) : NaN;
+  const candidates = [...new Set([
+    pageId,
+    Number.isFinite(numericPage) ? String(numericPage) : '',
+    Number.isFinite(numericPage) ? String(numericPage).padStart(2, '0') : '',
+    Number.isFinite(numericPage) ? String(numericPage).padStart(3, '0') : '',
+  ].filter(Boolean))];
+  let dirFiles = [];
+  try {
+    dirFiles = await fs.readdir(contentsDir);
+  } catch {
+    return null;
+  }
+  // Exact match first.
+  for (const candidate of candidates) {
+    const exact = `${candidate}.pdf`;
+    if (dirFiles.includes(exact)) return path.join(contentsDir, exact);
+  }
+  // Then prefix matches ("1" matches "1.1-sba-121.pdf").
+  const prefixMatches = dirFiles
+    .filter((f) => candidates.some((candidate) => f.startsWith(`${candidate}-`)) && f.toLowerCase().endsWith('.pdf'))
+    .sort(compareNaturalIds);
+  return prefixMatches.length ? path.join(contentsDir, prefixMatches[0]) : null;
+}
+
+app.get('/api/section-pdfs.zip', asyncRoute(async (request, response) => {
+  const requestedBook = request.query.book || DEFAULT_BOOK;
+  const dataRoot = getDataRoot(requestedBook);
+  const chapter = String(request.query.chapter || '').trim().replace(/\.\./g, '').replace(/[\\/]/g, '');
+  const section = String(request.query.section || '').trim();
+  const viewsParam = String(request.query.views || '');
+  const includePastPaper = String(request.query.pp || '') === '1';
+  const viewToDir = {
+    'en-student': { language: 'en', roleDir: 'contents' },
+    'tc-student': { language: 'tc', roleDir: 'contents' },
+    'en-teacher': { language: 'en', roleDir: 'contents.tn' },
+    'tc-teacher': { language: 'tc', roleDir: 'contents.tn' },
+  };
+  const views = viewsParam.split(',').map((view) => view.trim()).filter((view) => viewToDir[view]);
+  const includeTextbook = views.length > 0;
+  if (!includeTextbook && !includePastPaper) {
+    response.status(400).json({ error: 'views or pp are required' });
+    return;
+  }
+  if (includeTextbook && (!chapter || !section)) {
+    response.status(400).json({ error: 'chapter and section are required' });
+    return;
+  }
+  console.log(`[section-pdfs] book=${requestedBook} chapter=${chapter} section=${section} views=${views.join(',')} pp=${includePastPaper ? 1 : 0}`);
+
+  const files = [];
+  let downloadName = `${chapter}-${section}-pdfs.zip`;
+
+  // ── Textbook views ───────────────────────────────────────
+  for (const viewId of views) {
+    const { language, roleDir } = viewToDir[viewId];
+    const contentsDir = path.join(dataRoot, chapter, language, roleDir);
+    const pdfPath = await findSectionPdf(contentsDir, section);
+    if (!pdfPath) {
+      console.log(`[section-pdfs]   ${viewId}: no PDF found in ${contentsDir}`);
+      continue;
+    }
+    try {
+      const data = await fs.readFile(pdfPath);
+      files.push({ name: `${chapter}-${section}-${viewId}.pdf`, data });
+      console.log(`[section-pdfs]   ${viewId}: ${path.basename(pdfPath)} (${Math.round(data.length / 1024)} KB)`);
+    } catch (err) {
+      console.warn(`[section-pdfs]   ${viewId}: failed to read ${pdfPath}: ${err.message}`);
+    }
+  }
+
+  // ── Past-paper view ──────────────────────────────────────
+  if (includePastPaper) {
+    const ppSubject = sanitizePastPaperPathPart(mapSubjectToPastPaperRoot(request.query.ppSubject));
+    const ppMode = String(request.query.ppMode || '').trim();
+    const ppLang = sanitizePastPaperPathPart(request.query.ppLang, 'en');
+    let pdfDir = null;
+    let pdfId = '';
+    let zipLabel = '';
+    if (ppMode === 'by-topics') {
+      // Multiple ppTopic/ppPaper pairs are allowed (PP-related view can match
+      // several topics).  Keep empty papers so the arrays stay index-aligned.
+      const rawTopics = [].concat(request.query.ppTopic ?? []).filter(Boolean);
+      const rawPapers = [].concat(request.query.ppPaper ?? []);
+      const topics = rawTopics.map((topic) => sanitizePastPaperPathPart(topic)).filter(Boolean);
+      const papers = rawPapers.map((paper) => sanitizePastPaperPathPart(paper));
+      if (!topics.length) {
+        console.log('[section-pdfs]   past-paper by-topics: no topic');
+      } else {
+        for (let index = 0; index < topics.length; index += 1) {
+          const safeTopic = topics[index];
+          const safePaper = papers[index] || '';
+          let topicDir;
+          let topicLabel;
+          if (safePaper) {
+            // Paper layout: <subject>/by-topics/<lang>/paper-<n>/<topic>.pdf
+            topicDir = path.join(PATH_PASTPAPERS, ppSubject, 'by-topics', ppLang, `paper-${safePaper}`);
+            topicLabel = `pp-${ppSubject}-paper${safePaper}-${safeTopic}-${ppLang}`;
+          } else {
+            // Flat layout (e.g. physics): <subject>/by-topics/<lang>/<topic>.pdf
+            topicDir = path.join(PATH_PASTPAPERS, ppSubject, 'by-topics', ppLang);
+            topicLabel = `pp-${ppSubject}-${safeTopic}-${ppLang}`;
+          }
+          const pdfPath = await findSectionPdf(topicDir, safeTopic);
+          if (!pdfPath) {
+            console.log(`[section-pdfs]   past-paper: no PDF found in ${topicDir} for "${safeTopic}"`);
+            continue;
+          }
+          try {
+            const data = await fs.readFile(pdfPath);
+            files.push({ name: `${topicLabel}.pdf`, data });
+            console.log(`[section-pdfs]   past-paper: ${path.basename(pdfPath)} (${Math.round(data.length / 1024)} KB)`);
+            if (!includeTextbook) downloadName = `${topicLabel}.zip`;
+          } catch (err) {
+            console.warn(`[section-pdfs]   past-paper: failed to read ${pdfPath}: ${err.message}`);
+          }
+        }
+      }
+    } else if (ppMode === 'by-years') {
+      const safeYear = sanitizePastPaperPathPart(request.query.ppYear);
+      const safeType = sanitizePastPaperPathPart(request.query.ppType, 'p1');
+      pdfDir = path.join(PATH_PASTPAPERS, ppSubject, 'by-years', ppLang, safeYear);
+      pdfId = safeType;
+      zipLabel = `pp-${ppSubject}-${safeYear}-${safeType}-${ppLang}`;
+    } else {
+      console.log(`[section-pdfs]   past-paper: unknown mode "${ppMode}"`);
+    }
+    if (pdfDir && pdfId) {
+      const pdfPath = await findSectionPdf(pdfDir, pdfId);
+      if (!pdfPath) {
+        console.log(`[section-pdfs]   past-paper: no PDF found in ${pdfDir} for "${pdfId}"`);
+      } else {
+        try {
+          const data = await fs.readFile(pdfPath);
+          files.push({ name: `${zipLabel}.pdf`, data });
+          console.log(`[section-pdfs]   past-paper: ${path.basename(pdfPath)} (${Math.round(data.length / 1024)} KB)`);
+          if (!includeTextbook) downloadName = `${zipLabel}.zip`;
+        } catch (err) {
+          console.warn(`[section-pdfs]   past-paper: failed to read ${pdfPath}: ${err.message}`);
+        }
+      }
+    }
+  }
+
+  if (!files.length) {
+    response.status(404).json({ error: 'No PDFs found for this selection' });
+    return;
+  }
+
+  const zipBuffer = buildStoredZip(files);
+  response.setHeader('Content-Type', 'application/zip');
+  response.setHeader('Content-Disposition', `attachment; filename="${downloadName}"`);
+  response.setHeader('Content-Length', String(zipBuffer.length));
+  response.setHeader('Cache-Control', 'no-store');
+  response.send(zipBuffer);
+}));
+
 app.get('/api/remarks', requireValidUserId(true), asyncRoute(async (request, response) => {
   const userId = request.validatedUserId;
   // Never cache annotation data — erased strokes must disappear immediately
