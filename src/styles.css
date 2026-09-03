@@ -1084,6 +1084,20 @@ button, input, select {
 
 .cache-toast-fill.error { background: #c0392b; }
 
+.cache-toast-fill.indeterminate {
+  width: 42% !important;
+  animation: download-progress-indeterminate 1.2s ease-in-out infinite;
+}
+
+@keyframes download-progress-indeterminate {
+  0% { transform: translateX(-140%); }
+  100% { transform: translateX(330%); }
+}
+
+.download-toast { bottom: 150px; }
+.download-toast .cache-toast-fill { background: #2e9e5b; }
+.download-toast .cache-toast-fill.error { background: #c0392b; }
+
 .cache-toast-stop {
   width: 22px;
   height: 22px;

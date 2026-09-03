@@ -1340,6 +1340,7 @@ function App() {
   // ── Section download + IndexedDB page cache ──────────────
   const [cacheProgress, setCacheProgress] = useState(null); // null | { total, done, stored, phase: 'caching'|'done'|'error' }
   const [downloadBusy, setDownloadBusy] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(null); // null | { total, received, phase: 'downloading'|'done'|'error' }
   const cacheAbortRef = useRef(null);
   // Cache-button state for the current section's selected views.
   const [sectionCacheStatus, setSectionCacheStatus] = useState('none'); // 'none' | 'partial' | 'cached'
@@ -2262,6 +2263,7 @@ function App() {
       return;
     }
     setDownloadBusy(true);
+    setDownloadProgress({ total: 0, received: 0, phase: 'downloading' });
     try {
       const params = new URLSearchParams();
       if (downloadViews.length) {
@@ -2300,7 +2302,27 @@ function App() {
         } catch { /* non-JSON error body */ }
         throw new Error(message);
       }
-      const blob = await response.blob();
+      const total = Number(response.headers.get('content-length')) || 0;
+      let received = 0;
+      let blob;
+      if (response.body) {
+        const reader = response.body.getReader();
+        const chunks = [];
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) {
+            chunks.push(value);
+            received += value.byteLength;
+            setDownloadProgress({ total, received, phase: 'downloading' });
+          }
+        }
+        blob = new Blob(chunks, { type: response.headers.get('content-type') || 'application/zip' });
+      } else {
+        blob = await response.blob();
+        received = blob.size;
+        setDownloadProgress({ total: total || received, received, phase: 'downloading' });
+      }
       const objectUrl = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = objectUrl;
@@ -2313,8 +2335,20 @@ function App() {
       anchor.click();
       anchor.remove();
       setTimeout(() => URL.revokeObjectURL(objectUrl), 30000);
+      setDownloadProgress({ total: total || received, received, phase: 'done' });
+      setTimeout(() => {
+        setDownloadProgress((current) => (current?.phase === 'done' ? null : current));
+      }, 4000);
     } catch (err) {
       console.error('[download] failed:', err);
+      setDownloadProgress((current) => ({
+        total: current?.total || 0,
+        received: current?.received || 0,
+        phase: 'error',
+      }));
+      setTimeout(() => {
+        setDownloadProgress((current) => (current?.phase === 'error' ? null : current));
+      }, 4000);
       Swal.fire({
         icon: 'error',
         title: _('downloadFailed'),
@@ -12221,6 +12255,39 @@ function App() {
               ✕
             </button>
           )}
+        </div>
+      )}
+
+      {/* ── PDF download progress toast (non-blocking, fixed corner) ── */}
+      {downloadProgress && (
+        <div className={`cache-toast download-toast phase-${downloadProgress.phase}`} role="status" aria-live="polite">
+          <svg viewBox="0 0 24 24" className="cache-toast-icon" role="presentation" focusable="false">
+            {downloadProgress.phase === 'done' ? (
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
+            ) : downloadProgress.phase === 'error' ? (
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" />
+            ) : (
+              <path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z" />
+            )}
+          </svg>
+          <div className="cache-toast-body">
+            <span className="cache-toast-title">
+              {downloadProgress.phase === 'downloading' && _('downloading')}
+              {downloadProgress.phase === 'done' && _('downloadDone')}
+              {downloadProgress.phase === 'error' && _('downloadFailed')}
+            </span>
+            <span className="cache-toast-detail">
+              {downloadProgress.phase === 'downloading' && downloadProgress.total > 0
+                ? `${Math.round((downloadProgress.received / downloadProgress.total) * 100)}%`
+                : downloadProgress.phase === 'downloading' ? _('preparingDownload') : ''}
+            </span>
+            <div className="cache-toast-track">
+              <div
+                className={`cache-toast-fill ${downloadProgress.phase === 'error' ? 'error' : ''}${downloadProgress.phase === 'downloading' && downloadProgress.total <= 0 ? ' indeterminate' : ''}`}
+                style={{ width: `${downloadProgress.total > 0 ? Math.min(100, Math.round((downloadProgress.received / downloadProgress.total) * 100)) : downloadProgress.phase === 'done' ? 100 : 100}%` }}
+              />
+            </div>
+          </div>
         </div>
       )}
 
