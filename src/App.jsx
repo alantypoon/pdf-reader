@@ -17,7 +17,7 @@ import { isDebugScrollingMomentum, isDebugScrollingPersistence, isDebugZooming, 
 import { myScrollBy, myScrollTo } from './MyScroll';
 import { loadScrollPos, deleteScrollKeys } from './myLocalStorage';
 import { initQueue, enqueue, updateScope, getPendingCount } from './annotationQueue';
-import { cacheUrls as cacheUrlsToDb, cacheAllKeys } from './pageCache';
+import { cacheUrls as cacheUrlsToDb, cacheAllKeys, cacheDeleteKeys, cacheGetAllEntries } from './pageCache';
 
 const PREFERENCES_KEY = 'pdfReaderPreferences';
 const COPY_DIALOG_DEFAULTS_KEY = 'pdfReaderCopyDialogDefaults';
@@ -690,6 +690,187 @@ async function fetchJson(url, options) {
 }
 
 /**
+ * Parse a cached URL into a human-readable section label.
+ * URL patterns:
+ *   /pdf-reader/data/textbooks/{book}/{chapter}/{lang}/contents/pages/{section}-{page}.png
+ *   /pdf-reader/data/textbooks/{book}/{chapter}/{lang}/{role}/pages/{section}-{page}.png
+ *   /pdf-reader/data/past-papers/...
+ */
+const SUBJECT_SHORT_NAMES = {
+  'biology-oup': 'Biology',
+  'chemistry-aristo': 'Chemistry',
+  'chemistry-winter': 'Chemistry W',
+  'math-oup': 'Math',
+  'physics-oup': 'Physics',
+};
+
+function parseCacheUrlSection(url) {
+  const shortSubject = (id) => SUBJECT_SHORT_NAMES[id] || id;
+  // Textbook pages
+  const tbMatch = url.match(/\/data\/textbooks\/([^/]+)\/([^/]+)\/([^/]+)\/[^/]+\/pages\/([^-/]+)/);
+  if (tbMatch) {
+    return { group: `${shortSubject(tbMatch[1])} / ${tbMatch[2]} / ${tbMatch[3]}`, section: tbMatch[4], type: 'textbook' };
+  }
+  // Past-paper by-years
+  const ppYearMatch = url.match(/\/data\/past-papers\/([^/]+)\/by-years\/([^/]+)\/(\d{4})\/[^/]+\/pages\//);
+  if (ppYearMatch) {
+    return { group: `${shortSubject(ppYearMatch[1])} / ${ppYearMatch[2]} / ${ppYearMatch[3]}`, section: ppYearMatch[3], type: 'past-paper' };
+  }
+  // Past-paper by-topics
+  const ppTopicMatch = url.match(/\/data\/past-papers\/([^/]+)\/by-topics\/([^/]+)\/([^/]+)\/pages\//);
+  if (ppTopicMatch) {
+    return { group: `${shortSubject(ppTopicMatch[1])} / ${ppTopicMatch[2]} / ${ppTopicMatch[3]}`, section: ppTopicMatch[3], type: 'past-paper' };
+  }
+  // Generic fallback — use path up to last segment
+  try {
+    const parts = new URL(url, 'https://x').pathname.split('/').filter(Boolean);
+    const pagesIdx = parts.lastIndexOf('pages');
+    if (pagesIdx > 0) {
+      return { group: parts.slice(0, pagesIdx).join('/'), section: '', type: 'other' };
+    }
+    return { group: parts.slice(0, -1).join('/') || url, section: '', type: 'other' };
+  } catch {
+    return { group: url, section: '', type: 'other' };
+  }
+}
+
+/** Format bytes into a human-readable string. */
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * Cache Manager Modal — shows all cached sections with page counts & sizes,
+ * plus delete-section and add-current-section controls.
+ */
+function CacheManagerModal({ open, onClose, onAddCurrent, addCurrentDisabled, addCurrentBusy, language }) {
+  const _ = (key) => t(key, uiLang(language));
+  const [entries, setEntries] = useState(null); // null = loading
+  const [deleting, setDeleting] = useState(null); // group key being deleted
+
+  const load = useCallback(async () => {
+    setEntries(null);
+    const raw = await cacheGetAllEntries();
+    // Group by section path (everything before the filename)
+    const groups = new Map();
+    raw.forEach(({ url, size, savedAt }) => {
+      const { group } = parseCacheUrlSection(url);
+      if (!groups.has(group)) groups.set(group, { pages: 0, totalSize: 0, urls: [], savedAt });
+      const g = groups.get(group);
+      g.pages += 1;
+      g.totalSize += size;
+      g.urls.push(url);
+      if (savedAt > g.savedAt) g.savedAt = savedAt;
+    });
+    // Sort by group name
+    const sorted = [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    setEntries(sorted);
+  }, []);
+
+  useEffect(() => {
+    if (open) load();
+  }, [open, load]);
+
+  const prevBusyRef = useRef(false);
+  useEffect(() => {
+    if (prevBusyRef.current && !addCurrentBusy && open) load();
+    prevBusyRef.current = addCurrentBusy;
+  }, [addCurrentBusy, open, load]);
+
+  const handleDelete = useCallback(async (group, urls) => {
+    setDeleting(group);
+    await cacheDeleteKeys(urls);
+    setDeleting(null);
+    load();
+  }, [load]);
+
+  if (!open) return null;
+
+  const totalPages = entries ? entries.reduce((s, [, g]) => s + g.pages, 0) : 0;
+  const totalSize = entries ? entries.reduce((s, [, g]) => s + g.totalSize, 0) : 0;
+
+  return createPortal(
+    <div className="cache-mgr-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }} role="dialog" aria-modal="true" aria-label={_('cacheManagerTitle')}>
+      <div className="cache-mgr-dialog">
+        <div className="cache-mgr-header">
+          <h2 className="cache-mgr-title">{_('cacheManagerTitle')}</h2>
+          <button type="button" className="cache-mgr-close" onClick={onClose} aria-label={_('close') || 'Close'}>✕</button>
+        </div>
+
+        {entries === null ? (
+          <div className="cache-mgr-loading">{_('loading')}</div>
+        ) : entries.length === 0 ? (
+          <div className="cache-mgr-empty">{_('cacheManagerEmpty')}</div>
+        ) : (
+          <>
+            <div className="cache-mgr-summary">
+              {_('cacheManagerSummary')
+                .replace('{sections}', String(entries.length))
+                .replace('{pages}', String(totalPages))
+                .replace('{size}', formatBytes(totalSize))}
+            </div>
+            <div className="cache-mgr-table-wrap">
+              <table className="cache-mgr-table">
+                <thead>
+                  <tr>
+                    <th>{_('cacheManagerColSection')}</th>
+                    <th className="cache-mgr-num">{_('cacheManagerColPages')}</th>
+                    <th className="cache-mgr-num">{_('cacheManagerColSize')}</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {entries.map(([group, data]) => (
+                    <tr key={group}>
+                      <td className="cache-mgr-path" title={group}>{group}</td>
+                      <td className="cache-mgr-num">{data.pages}</td>
+                      <td className="cache-mgr-num">{formatBytes(data.totalSize)}</td>
+                      <td className="cache-mgr-actions-cell">
+                        <button
+                          type="button"
+                          className="cache-mgr-del-btn"
+                          onClick={() => handleDelete(group, data.urls)}
+                          disabled={deleting === group}
+                          title={_('cacheManagerDelete')}
+                          aria-label={`${_('cacheManagerDelete')}: ${group}`}
+                        >
+                          {deleting === group ? '…' : '🗑'}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+
+        <div className="cache-mgr-footer">
+          <button
+            type="button"
+            className={`cache-mgr-add-btn${addCurrentBusy ? ' busy' : ''}`}
+            onClick={onAddCurrent}
+            disabled={addCurrentDisabled || addCurrentBusy}
+            title={_('cacheManagerAddCurrent')}
+          >
+            <svg viewBox="0 0 24 24" focusable="false" role="presentation">
+              <path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z" />
+            </svg>
+            {addCurrentBusy ? _('caching') : _('cacheManagerAddCurrent')}
+          </button>
+          <button type="button" className="cache-mgr-close-btn" onClick={onClose}>
+            {_('close') || 'Close'}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+/**
  * Download + Cache icon buttons shared by the Book+Section row (textbook
  * mode) and the past-paper rows (PP modes).
  */
@@ -701,7 +882,7 @@ function SectionActionButtons({
   cacheBusy = false,
   cacheDisabled = false,
   onDownload,
-  onCache,
+  onCacheOpen,
 }) {
   const _ = (key) => t(key, uiLang(language));
   return (
@@ -721,8 +902,8 @@ function SectionActionButtons({
       <button
         type="button"
         className={`section-action-btn cache-action-btn${cacheStatus === 'cached' ? ' cached' : ''}${cacheStatus === 'partial' ? ' partial' : ''}`}
-        onClick={onCache}
-        disabled={cacheBusy || cacheDisabled}
+        onClick={onCacheOpen}
+        disabled={cacheBusy}
         title={cacheStatus === 'cached' ? _('cacheCachedTitle') : cacheStatus === 'partial' ? _('cachePartialTitle') : _('cachePages')}
         aria-label={cacheStatus === 'cached' ? _('cacheCachedTitle') : cacheStatus === 'partial' ? _('cachePartialTitle') : _('cachePages')}
       >
@@ -909,7 +1090,7 @@ function App() {
   const initialSubjectRestoreRef = useRef('');
   const restoringUserSelectsRef = useRef(false);
   const [structure, setStructure] = useState([]);
-  const [dataBooks, setDataBooks] = useState([]);
+  const [dataBooks, setDataBooks] = useState(['math-oup', 'physics-oup', 'chemistry-aristo', 'chemistry-winter', 'biology-oup']);
   const [activeBookId, setActiveBookId] = useState('');
   const [bookAvailableLanguages, setBookAvailableLanguages] = useState(['en', 'tc']);
   // Which audiences have content per language for the current subject:
@@ -1345,6 +1526,7 @@ function App() {
   // Cache-button state for the current section's selected views.
   const [sectionCacheStatus, setSectionCacheStatus] = useState('none'); // 'none' | 'partial' | 'cached'
   const cachedKeysRef = useRef(new Set());
+  const [cacheManagerOpen, setCacheManagerOpen] = useState(false);
   const [remarks, setRemarks] = useState([]);
   const [pageAnnotations, setPageAnnotations] = useState([]);
   const [tool, setTool] = useState(() => {
@@ -2414,6 +2596,10 @@ function App() {
   /** Stop an in-flight caching run. */
   const handleCacheStop = useCallback(() => {
     try { cacheAbortRef.current?.abort(); } catch { /* no-op */ }
+  }, []);
+
+  const handleOpenCacheManager = useCallback(() => {
+    setCacheManagerOpen(true);
   }, []);
 
   // Active bucket for the toolbar: PP materials use past-paper, textbook+My Paper uses leading non-My-Paper pane
@@ -10193,9 +10379,8 @@ function App() {
                 downloadDisabled={!selectedBook || !selectedChapter}
                 cacheStatus={sectionCacheStatus}
                 cacheBusy={cacheProgress?.phase === 'caching'}
-                cacheDisabled={!selectedBook || !selectedChapter}
                 onDownload={handleDownloadSection}
-                onCache={handleCacheSection}
+                onCacheOpen={handleOpenCacheManager}
               />
             </span>
             <div className="selector-stepper-row" data-autocomplete-id="section-combined">
@@ -10346,9 +10531,8 @@ function App() {
                     downloadDisabled={false}
                     cacheStatus={sectionCacheStatus}
                     cacheBusy={cacheProgress?.phase === 'caching'}
-                    cacheDisabled={false}
                     onDownload={handleDownloadSection}
-                    onCache={handleCacheSection}
+                    onCacheOpen={handleOpenCacheManager}
                   />
                 </span>
               </label>
@@ -10444,9 +10628,8 @@ function App() {
                     downloadDisabled={false}
                     cacheStatus={sectionCacheStatus}
                     cacheBusy={cacheProgress?.phase === 'caching'}
-                    cacheDisabled={false}
                     onDownload={handleDownloadSection}
-                    onCache={handleCacheSection}
+                    onCacheOpen={handleOpenCacheManager}
                   />
                 </span>
               </label>
@@ -12290,6 +12473,15 @@ function App() {
           </div>
         </div>
       )}
+
+      <CacheManagerModal
+        open={cacheManagerOpen}
+        onClose={() => { setCacheManagerOpen(false); recomputeCacheStatus(collectSelectedViewSources().cacheUrls); }}
+        onAddCurrent={handleCacheSection}
+        addCurrentDisabled={!selectedBook || !selectedChapter}
+        addCurrentBusy={cacheProgress?.phase === 'caching'}
+        language={selectedLanguage}
+      />
 
     </div>
   );

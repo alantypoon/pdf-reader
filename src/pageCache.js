@@ -124,6 +124,37 @@ export async function cacheClear() {
   }
 }
 
+/** Delete a specific set of URL keys from the cache. */
+export async function cacheDeleteKeys(keys) {
+  const list = [...new Set((keys || []).filter(Boolean))];
+  if (!list.length) return true;
+  try {
+    const db = await openDb();
+    const tx = db.transaction(STORE, 'readwrite');
+    const store = tx.objectStore(STORE);
+    list.forEach((key) => store.delete(key));
+    await txDone(tx);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Return all cached records as { url, size, savedAt }[]. */
+export async function cacheGetAllEntries() {
+  try {
+    const db = await openDb();
+    const all = await requestAsPromise(db.transaction(STORE, 'readonly').objectStore(STORE).getAll());
+    return (Array.isArray(all) ? all : []).map((rec) => ({
+      url: rec.url || '',
+      size: rec.blob instanceof Blob ? rec.blob.size : 0,
+      savedAt: rec.savedAt || 0,
+    }));
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Download every URL into the IndexedDB cache.
  *
@@ -172,4 +203,4 @@ export async function cacheUrls(urls, { onProgress, signal, concurrency = 4 } = 
   return { total, done, stored };
 }
 
-export default { cacheGet, cachePut, cacheHas, cacheCountCached, cacheAllKeys, cacheClear, cacheUrls };
+export default { cacheGet, cachePut, cacheHas, cacheCountCached, cacheAllKeys, cacheClear, cacheDeleteKeys, cacheGetAllEntries, cacheUrls };

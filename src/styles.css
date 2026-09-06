@@ -1159,6 +1159,209 @@ button, input, select {
 :root.dark .cache-toast-stop { background: #2b3a49; color: #93a7b8; }
 :root.dark .cache-toast-stop:hover { background: #3a4d60; color: #d8e6f2; }
 
+/* ── Cache Manager Modal ───────────────────────────────── */
+.cache-mgr-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.cache-mgr-dialog {
+  background: #fff;
+  border-radius: 14px;
+  box-shadow: 0 12px 48px rgba(18, 50, 74, 0.28);
+  width: 100%;
+  max-width: 640px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.cache-mgr-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid #e3ecf3;
+}
+
+.cache-mgr-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #12324a;
+  margin: 0;
+}
+
+.cache-mgr-close {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #5d7184;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.cache-mgr-close:hover { background: #eef3f8; color: #12324a; }
+
+.cache-mgr-loading,
+.cache-mgr-empty {
+  padding: 40px 20px;
+  text-align: center;
+  color: #5d7184;
+  font-size: 0.88rem;
+}
+
+.cache-mgr-summary {
+  padding: 10px 20px;
+  font-size: 0.82rem;
+  color: #5d7184;
+  background: #f6f9fc;
+  border-bottom: 1px solid #e3ecf3;
+}
+
+.cache-mgr-table-wrap {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.cache-mgr-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.cache-mgr-table th {
+  position: sticky;
+  top: 0;
+  background: #f6f9fc;
+  padding: 8px 12px;
+  text-align: left;
+  font-weight: 600;
+  color: #5d7184;
+  border-bottom: 1px solid #e3ecf3;
+  white-space: nowrap;
+}
+
+.cache-mgr-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid #f0f4f8;
+  color: #12324a;
+}
+
+.cache-mgr-table tbody tr:hover { background: #f6f9fc; }
+
+.cache-mgr-path {
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Mono', monospace;
+  font-size: 0.78rem;
+}
+
+.cache-mgr-num { text-align: right; white-space: nowrap; }
+
+.cache-mgr-actions-cell { text-align: center; }
+
+.cache-mgr-del-btn {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #e3ecf3;
+  border-radius: 8px;
+  background: white;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.cache-mgr-del-btn:hover:not(:disabled) {
+  background: #fce4e4;
+  border-color: #e89a9a;
+}
+
+.cache-mgr-del-btn:disabled { opacity: 0.5; cursor: default; }
+
+.cache-mgr-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 20px;
+  border-top: 1px solid #e3ecf3;
+}
+
+.cache-mgr-add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid #c9d7e3;
+  border-radius: 8px;
+  background: #e8f0fe;
+  color: #1f4d6c;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.cache-mgr-add-btn svg { width: 16px; height: 16px; fill: currentColor; }
+
+.cache-mgr-add-btn:hover:not(:disabled) { background: #d6e6fc; }
+
+.cache-mgr-add-btn:disabled { opacity: 0.5; cursor: default; }
+
+.cache-mgr-add-btn.busy { animation: section-action-pulse 900ms ease-in-out infinite; }
+
+.cache-mgr-close-btn {
+  padding: 6px 16px;
+  border: 1px solid #c9d7e3;
+  border-radius: 8px;
+  background: white;
+  color: #1f4d6c;
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.cache-mgr-close-btn:hover { background: #eef3f8; }
+
+/* ── Cache Manager: dark theme ── */
+:root.dark .cache-mgr-overlay { background: rgba(0, 0, 0, 0.6); }
+:root.dark .cache-mgr-dialog { background: #1a2530; box-shadow: 0 12px 48px rgba(0, 0, 0, 0.55); }
+:root.dark .cache-mgr-header { border-color: #2b3a49; }
+:root.dark .cache-mgr-title { color: #d8e6f2; }
+:root.dark .cache-mgr-close { color: #93a7b8; }
+:root.dark .cache-mgr-close:hover { background: #2b3a49; color: #d8e6f2; }
+:root.dark .cache-mgr-loading, :root.dark .cache-mgr-empty { color: #93a7b8; }
+:root.dark .cache-mgr-summary { background: #1f2d3a; border-color: #2b3a49; color: #93a7b8; }
+:root.dark .cache-mgr-table th { background: #1f2d3a; color: #93a7b8; border-color: #2b3a49; }
+:root.dark .cache-mgr-table td { border-color: #243140; color: #d8e6f2; }
+:root.dark .cache-mgr-table tbody tr:hover { background: #243140; }
+:root.dark .cache-mgr-path { color: #b0c4d8; }
+:root.dark .cache-mgr-del-btn { background: #23303d; border-color: #3b4c5c; }
+:root.dark .cache-mgr-del-btn:hover:not(:disabled) { background: #3a2020; border-color: #8a4a4a; }
+:root.dark .cache-mgr-footer { border-color: #2b3a49; }
+:root.dark .cache-mgr-add-btn { background: #23303d; border-color: #3b4c5c; color: #cfe0ee; }
+:root.dark .cache-mgr-add-btn:hover:not(:disabled) { background: #2e4052; }
+:root.dark .cache-mgr-close-btn { background: #23303d; border-color: #3b4c5c; color: #cfe0ee; }
+:root.dark .cache-mgr-close-btn:hover { background: #2e4052; }
+
 /* ── Sidebar toggles ────────────────────────────────────── */
 
 .toggle-group {
