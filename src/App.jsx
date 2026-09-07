@@ -1108,8 +1108,8 @@ function App() {
   const [lastSubjectId, setLastSubjectId] = useState('');
   const [sessionUserResolved, setSessionUserResolved] = useState(false);
   const [userSelectsLoaded, setUserSelectsLoaded] = useState(false);
-  const [selectedBook, setSelectedBook] = useState(savedPrefs.selectedBook || '');
-  const selectedBookRef = useRef(savedPrefs.selectedBook || '');
+  const [selectedBook, setSelectedBook] = useState(savedPrefs.selectedBook || 'math-oup');
+  const selectedBookRef = useRef(savedPrefs.selectedBook || 'math-oup');
   const [selectedChapter, setSelectedChapter] = useState(savedPrefs.selectedChapter || '');
   const [selectedFile, setSelectedFile] = useState(savedPrefs.selectedFile || 1);
   const [selectedPage, setSelectedPage] = useState(savedPrefs.selectedPage || 1);
@@ -2143,7 +2143,7 @@ function App() {
     };
 
     const storedSubjectId = typeof savedPrefs.selectedBook === 'string' ? savedPrefs.selectedBook : '';
-    const rememberedSubjectId = lastSubjectId || storedSubjectId || '';
+    const rememberedSubjectId = lastSubjectId || storedSubjectId || 'math-oup';
     loadCatalog(rememberedSubjectId);
   }, [applySubjectSelection, lastSubjectId, savedPrefs.selectedBook, sessionUserResolved, userId, userSelectsLoaded]);
 
