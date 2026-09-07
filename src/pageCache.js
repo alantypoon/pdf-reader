@@ -145,11 +145,13 @@ export async function cacheGetAllEntries() {
   try {
     const db = await openDb();
     const all = await requestAsPromise(db.transaction(STORE, 'readonly').objectStore(STORE).getAll());
-    return (Array.isArray(all) ? all : []).map((rec) => ({
-      url: rec.url || '',
-      size: rec.blob instanceof Blob ? rec.blob.size : 0,
-      savedAt: rec.savedAt || 0,
-    }));
+    return (Array.isArray(all) ? all : [])
+      .filter((rec) => rec.url)
+      .map((rec) => ({
+        url: rec.url,
+        size: rec.blob instanceof Blob ? rec.blob.size : 0,
+        savedAt: rec.savedAt || 0,
+      }));
   } catch {
     return [];
   }

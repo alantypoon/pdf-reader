@@ -764,8 +764,8 @@ function CacheManagerModal({ open, onClose, onAddCurrent, addCurrentDisabled, ad
       g.urls.push(url);
       if (savedAt > g.savedAt) g.savedAt = savedAt;
     });
-    // Sort by group name
-    const sorted = [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    // Sort by group name, skip blank groups
+    const sorted = [...groups.entries()].filter(([g]) => g).sort((a, b) => a[0].localeCompare(b[0]));
     setEntries(sorted);
   }, []);
 
@@ -818,7 +818,7 @@ function CacheManagerModal({ open, onClose, onAddCurrent, addCurrentDisabled, ad
                     <th>{_('cacheManagerColSection')}</th>
                     <th className="cache-mgr-num">{_('cacheManagerColPages')}</th>
                     <th className="cache-mgr-num">{_('cacheManagerColSize')}</th>
-                    <th></th>
+                    <th className="cache-mgr-actions-cell">{_('cacheManagerDelete')}</th>
                   </tr>
                 </thead>
                 <tbody>

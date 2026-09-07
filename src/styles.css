@@ -1271,9 +1271,11 @@ button, input, select {
   font-size: 0.78rem;
 }
 
-.cache-mgr-num { text-align: right; white-space: nowrap; }
+.cache-mgr-table th.cache-mgr-num,
+.cache-mgr-table td.cache-mgr-num { text-align: right; white-space: nowrap; }
 
-.cache-mgr-actions-cell { text-align: center; }
+.cache-mgr-table th.cache-mgr-actions-cell,
+.cache-mgr-table td.cache-mgr-actions-cell { text-align: center; white-space: nowrap; }
 
 .cache-mgr-del-btn {
   width: 28px;
