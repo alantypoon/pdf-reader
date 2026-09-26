@@ -5595,7 +5595,7 @@ function App() {
   };
 
   // Refs for collapsed sidebar buttons – used to position the autocomplete dropdowns
-  const collapsedBtnRefs = useRef({ subject: null, book: null, section: null, combined: null, page: null, language: null, displayMode: null, role: null });
+  const collapsedBtnRefs = useRef({ subject: null, book: null, section: null, combined: null, page: null, views: null, displayMode: null });
   const subjectBtnTextRef = useRef(null);
   const [collapsedDropdownId, setCollapsedDropdownId] = useState(null);
   const [collapsedDropdownPos, setCollapsedDropdownPos] = useState({ top: 0, left: 0 });
@@ -5684,6 +5684,25 @@ function App() {
         openAutocompleteTimerRef.current = null;
       }
     }
+  }, [collapsedDropdownId]);
+
+  // The collapsed "views" menu is multi-select and stays open while the user
+  // toggles checkboxes, so close it on any pointer-down outside the menu and
+  // its trigger button (the button itself toggles via openSidebarAutocomplete).
+  useEffect(() => {
+    if (collapsedDropdownId !== 'views') return;
+    const onPointerDown = (e) => {
+      const menu = document.querySelector('[data-collapsed-autocomplete="views"]');
+      const btn = collapsedBtnRefs.current.views;
+      if ((menu && menu.contains(e.target)) || (btn && btn.contains(e.target))) return;
+      setCollapsedDropdownId(null);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('touchstart', onPointerDown, { passive: true });
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('touchstart', onPointerDown);
+    };
   }, [collapsedDropdownId]);
 
   const openResource = (resource) => {
@@ -10039,6 +10058,53 @@ function App() {
     setMaterialMode(mode);
   };
 
+  // View options shared by the expanded "View" toggle group and the collapsed
+  // sidebar checkbox dropdown so both surfaces offer identical choices/state.
+  const viewToggleOptions = normalizeSelectedViewsForMaterial(materialMode, ALL_VIEW_IDS)
+    .filter((viewId) => {
+      // Both PP modes only offer Past Paper + My Paper (no English Student).
+      if (materialMode === MATERIAL_PP_TOPICS || materialMode === MATERIAL_PP_YEARS) {
+        return viewId === VIEW_PAST_PAPER || viewId === VIEW_MY_PAPER;
+      }
+      return true;
+    })
+    .map((viewId) => {
+      const active = selectedViews.includes(viewId);
+      const modeDisabled = (materialMode !== MATERIAL_TEXTBOOK) && !(viewId === VIEW_PAST_PAPER || viewId === VIEW_MY_PAPER);
+      // Disable views whose content isn't available: past-paper needs
+      // loaded past-paper images, textbook views need the matching
+      // {lang}/contents (student) or {lang}/contents.tn (teacher) data.
+      const noSource = viewId === VIEW_MY_PAPER ? false
+        : viewId === VIEW_PP_RELATED ? ppRelatedTopics.length === 0
+        : viewId === VIEW_PAST_PAPER ? !hasRenderableSource(effectivePageSources['past-paper:student'])
+        : !isTextViewAvailable(viewId);
+      // An already-active view can always be toggled off (even without a source);
+      // only disable enabling a view that currently has no content.
+      // The LAST active view can never be turned off — at least one
+      // view must always remain selected.
+      const lastActiveCount = normalizeSelectedViewsForMaterial(materialMode, selectedViews).length;
+      const isLastActive = active && lastActiveCount <= 1;
+      const disabled = modeDisabled || (noSource && !active) || isLastActive;
+      return { viewId, active, disabled, isLastActive };
+    });
+  const selectedViewCount = viewToggleOptions.filter((option) => option.active).length;
+
+  const toggleSelectedView = (viewId) => {
+    setSelectedViews((current) => {
+      const normalized = normalizeSelectedViewsForMaterial(materialMode, current);
+      const exists = normalized.includes(viewId);
+      if (!exists) {
+        return normalizeSelectedViewsForMaterial(materialMode, [...normalized, viewId]);
+      }
+      // Never remove the last remaining view.
+      if (normalized.length <= 1) return normalized;
+      return normalizeSelectedViewsForMaterial(
+        materialMode,
+        normalized.filter((item) => item !== viewId)
+      );
+    });
+  };
+
   return (
     <div
       className={`app-shell ${displayMode === 'scrolling' ? 'scrolling-mode' : ''} ${sidebarHidden ? 'sidebar-hidden' : ''} ${sidebarCollapsed && !sidebarHidden ? 'sidebar-collapsed' : ''} ${isFullscreen ? 'fullscreen-active' : ''}`}
@@ -10272,57 +10338,19 @@ function App() {
               {_('view')}
             </span>
             <div className="toggle-group multi-toggle-group">
-              {normalizeSelectedViewsForMaterial(materialMode, ALL_VIEW_IDS).filter((viewId) => {
-                // Both PP modes only offer Past Paper + My Paper (no English Student).
-                if (materialMode === MATERIAL_PP_TOPICS || materialMode === MATERIAL_PP_YEARS) {
-                  return viewId === VIEW_PAST_PAPER || viewId === VIEW_MY_PAPER;
-                }
-                return true;
-              }).map((viewId) => {
-                const active = selectedViews.includes(viewId);
-                const modeDisabled = (materialMode !== MATERIAL_TEXTBOOK) && !(viewId === VIEW_PAST_PAPER || viewId === VIEW_MY_PAPER);
-                // Disable views whose content isn't available: past-paper needs
-                // loaded past-paper images, textbook views need the matching
-                // {lang}/contents (student) or {lang}/contents.tn (teacher) data.
-                const noSource = viewId === VIEW_MY_PAPER ? false
-                  : viewId === VIEW_PP_RELATED ? ppRelatedTopics.length === 0
-                  : viewId === VIEW_PAST_PAPER ? !hasRenderableSource(effectivePageSources['past-paper:student'])
-                  : !isTextViewAvailable(viewId);
-                // An already-active view can always be toggled off (even without a source);
-                // only disable enabling a view that currently has no content.
-                // The LAST active view can never be turned off — at least one
-                // view must always remain selected.
-                const lastActiveCount = normalizeSelectedViewsForMaterial(materialMode, selectedViews).length;
-                const isLastActive = active && lastActiveCount <= 1;
-                const disabled = modeDisabled || (noSource && !active) || isLastActive;
-                return (
-                  <button
-                    key={viewId}
-                    type="button"
-                    className={`toggle-btn ${active ? 'active' : ''}`}
-                    disabled={disabled}
-                    title={isLastActive ? _('lastViewHint') : undefined}
-                    onClick={() => {
-                      setSelectedViews((current) => {
-                        const normalized = normalizeSelectedViewsForMaterial(materialMode, current);
-                        const exists = normalized.includes(viewId);
-                        if (!exists) {
-                          return normalizeSelectedViewsForMaterial(materialMode, [...normalized, viewId]);
-                        }
-                        // Never remove the last remaining view.
-                        if (normalized.length <= 1) return normalized;
-                        return normalizeSelectedViewsForMaterial(
-                          materialMode,
-                          normalized.filter((item) => item !== viewId)
-                        );
-                      });
-                    }}
-                    aria-pressed={active}
-                  >
-                    {_(getViewLabelKey(viewId))}
-                  </button>
-                );
-              })}
+              {viewToggleOptions.map(({ viewId, active, disabled, isLastActive }) => (
+                <button
+                  key={viewId}
+                  type="button"
+                  className={`toggle-btn ${active ? 'active' : ''}`}
+                  disabled={disabled}
+                  title={isLastActive ? _('lastViewHint') : undefined}
+                  onClick={() => toggleSelectedView(viewId)}
+                  aria-pressed={active}
+                >
+                  {_(getViewLabelKey(viewId))}
+                </button>
+              ))}
             </div>
           </label>
         )}
@@ -10813,62 +10841,23 @@ function App() {
                 </svg>
               )}
             </button>
+            {/* View selector – collapsed (multi-select checkbox dropdown) */}
             <button
-              className={`sidebar-icon-btn${pressedAutocompleteBtn === 'language' ? ' pressed' : ''}`}
-              ref={(el) => { collapsedBtnRefs.current.language = el; }}
-              onClick={() => openSidebarAutocomplete('language')}
-              data-tooltip={_('switchLanguage')}
-              aria-label={_('switchLanguage')}
+              className={`sidebar-icon-btn${pressedAutocompleteBtn === 'views' ? ' pressed' : ''}`}
+              ref={(el) => { collapsedBtnRefs.current.views = el; }}
+              onClick={() => openSidebarAutocomplete('views')}
+              data-tooltip={_('view')}
+              aria-label={_('view')}
+              aria-haspopup="true"
+              aria-expanded={collapsedDropdownId === 'views'}
             >
-              {selectedLanguage === 'en' ? (
-                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                  <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="1.5"/>
-                  <text x="12" y="16" textAnchor="middle" fontSize="11" fontWeight="700" fill="currentColor" fontFamily="system-ui, sans-serif">A</text>
-                </svg>
-              ) : selectedLanguage === 'tc' ? (
-                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                  <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="1.5"/>
-                  <text x="12" y="17" textAnchor="middle" fontSize="13" fontWeight="700" fill="currentColor" fontFamily="system-ui, sans-serif">文</text>
-                </svg>
-              ) : (
-                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                  <rect x="2" y="4" width="9" height="16" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.5"/>
-                  <rect x="13" y="4" width="9" height="16" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.5"/>
-                  <text x="6.5" y="16" textAnchor="middle" fontSize="8" fontWeight="700" fill="currentColor" fontFamily="system-ui, sans-serif">A</text>
-                  <text x="17.5" y="16" textAnchor="middle" fontSize="8" fontWeight="700" fill="currentColor" fontFamily="system-ui, sans-serif">文</text>
-                </svg>
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                <path d="M4 5h7v6H4V5zm9 0h7v6h-7V5zM4 13h7v6H4v-6zm9 0h7v6h-7v-6z" fill="currentColor" />
+              </svg>
+              {selectedViewCount > 0 && (
+                <span className="sidebar-icon-badge" aria-hidden="true">{selectedViewCount}</span>
               )}
             </button>
-            {selectedLanguage !== 'bilingual' && (
-              <button
-                className={`sidebar-icon-btn${pressedAutocompleteBtn === 'role' ? ' pressed' : ''}`}
-                ref={(el) => { collapsedBtnRefs.current.role = el; }}
-                onClick={() => openSidebarAutocomplete('role')}
-                data-tooltip={_('toggleRole')}
-                aria-label={_('toggleRole')}
-              >
-                {selectedRoleMode === 'teacher' ? (
-                  <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                    <rect x="3" y="3" width="18" height="13" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.6"/>
-                    <path d="M8 21l4-5 4 5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"/>
-                    <path d="M8 9h8M8 12h5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-                  </svg>
-                ) : selectedRoleMode === 'dual' ? (
-                  <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                    <circle cx="8" cy="8" r="3" fill="none" stroke="currentColor" strokeWidth="1.5"/>
-                    <path d="M2 19c0-2.76 2.69-5 6-5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                    <circle cx="16" cy="8" r="3" fill="none" stroke="currentColor" strokeWidth="1.5"/>
-                    <path d="M16 14c3.31 0 6 2.24 6 5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                    <path d="M11 19c0-2.76 2.24-5 5-5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                  </svg>
-                ) : (
-                  <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                    <circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" strokeWidth="1.6"/>
-                    <path d="M4 20c0-3.31 3.58-6 8-6s8 2.69 8 6" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
-                  </svg>
-                )}
-              </button>
-            )}
             <button
               className={`sidebar-icon-btn ${panelVisible ? 'active' : ''}`}
               onClick={() => setPanelVisible((current) => !current)}
@@ -12263,48 +12252,29 @@ function App() {
               />
             </div>
           )}
-          {collapsedDropdownId === 'language' && (
-            <div data-collapsed-autocomplete="language">
-              <AutocompleteDropdown
-                items={(() => {
-                  const items = [];
-                  const hasEn = bookAvailableLanguages.includes('en');
-                  const hasTc = bookAvailableLanguages.includes('tc');
-                  if (hasEn) items.push({ id: 'en', primary: _('english'), searchText: _('english') });
-                  if (hasTc) items.push({ id: 'tc', primary: _('chinese'), searchText: _('chinese') });
-                  if (hasEn && hasTc) items.push({ id: 'bilingual', primary: _('bilingual'), searchText: _('bilingual') });
-                  return items;
-                })()}
-                value={selectedLanguage}
-                onSelect={(id) => { setSelectedLanguage(id); setCollapsedDropdownId(null); }}
-                onOpenChange={(open) => { if (!open) setCollapsedDropdownId(null); }}
-                selectedDisplay={selectedLanguage === 'en' ? _('english') : selectedLanguage === 'tc' ? _('chinese') : _('bilingual')}
-                placeholder={_('language')}
-                emptyText=""
-                toggleAriaLabel={_('switchLanguage')}
-                hideFilter
-                alwaysOpen
-              />
-            </div>
-          )}
-          {collapsedDropdownId === 'role' && (
-            <div data-collapsed-autocomplete="role">
-              <AutocompleteDropdown
-                items={[
-                  { id: 'student', primary: 'Student', searchText: 'student' },
-                  { id: 'teacher', primary: 'Teacher', searchText: 'teacher' },
-                  { id: 'dual', primary: 'Dual', searchText: 'dual' },
-                ]}
-                value={selectedRoleMode}
-                onSelect={(id) => { setSelectedRoleMode(id); setCollapsedDropdownId(null); }}
-                onOpenChange={(open) => { if (!open) setCollapsedDropdownId(null); }}
-                selectedDisplay={selectedRoleMode === 'student' ? 'Student' : selectedRoleMode === 'teacher' ? 'Teacher' : 'Dual'}
-                placeholder={_('toggleRole') || 'Role'}
-                emptyText=""
-                toggleAriaLabel={_('toggleRole') || 'Role'}
-                hideFilter
-                alwaysOpen
-              />
+          {collapsedDropdownId === 'views' && (
+            <div
+              data-collapsed-autocomplete="views"
+              className="collapsed-views-menu"
+              role="group"
+              aria-label={_('view')}
+            >
+              {viewToggleOptions.map(({ viewId, active, disabled, isLastActive }) => (
+                <label
+                  key={viewId}
+                  className={`collapsed-views-item${active ? ' active' : ''}${disabled ? ' disabled' : ''}`}
+                  title={isLastActive ? _('lastViewHint') : undefined}
+                >
+                  <input
+                    type="checkbox"
+                    className="collapsed-views-checkbox"
+                    checked={active}
+                    disabled={disabled}
+                    onChange={() => toggleSelectedView(viewId)}
+                  />
+                  <span className="collapsed-views-label">{_(getViewLabelKey(viewId))}</span>
+                </label>
+              ))}
             </div>
           )}
           {collapsedDropdownId === 'displayMode' && (

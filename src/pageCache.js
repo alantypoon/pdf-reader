@@ -12,6 +12,24 @@ const DB_VERSION = 1;
 const STORE = 'pages';
 
 let _dbPromise = null;
+let _persistRequested = false;
+
+/** Request durable storage so the browser won't evict cached data.
+ *  No-op on browsers that don't support it (Safari/iOS). */
+async function requestPersistentStorage() {
+  if (_persistRequested) return;
+  _persistRequested = true;
+  try {
+    if (navigator?.storage?.persist) {
+      const granted = await navigator.storage.persist();
+      if (granted) {
+        console.log('[page-cache] persistent storage granted');
+      } else {
+        console.log('[page-cache] persistent storage denied — cache may be evicted by browser');
+      }
+    }
+  } catch { /* best-effort */ }
+}
 
 function openDb() {
   if (_dbPromise) return _dbPromise;
@@ -67,6 +85,7 @@ export async function cacheGet(url) {
 /** Store a Blob under the given URL key. Returns true on success. */
 export async function cachePut(url, blob) {
   try {
+    requestPersistentStorage();
     const db = await openDb();
     const tx = db.transaction(STORE, 'readwrite');
     tx.objectStore(STORE).put({ url, blob, savedAt: Date.now() }, url);
