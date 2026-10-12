@@ -1744,6 +1744,10 @@ def main():
         help='Print the gateway request payload (with redacted API key) and full '
              'response body for every AI call',
     )
+    parser.add_argument(
+        '--erase-topic-before-writing', action='store_true',
+        help='Delete all existing MongoDB records for each book before generating new ones',
+    )
     args = parser.parse_args()
 
     # ── Validate configuration ─────────────────────────────
@@ -1816,6 +1820,13 @@ def main():
             print(f'\n📚 Subject: {subj}  ({len(books)} books)')
 
             for bk in books:
+                # Erase existing records for this book if requested
+                if args.erase_topic_before_writing and not args.dry_run:
+                    coll = _get_collection()
+                    query = {'subjectId': str(subj), 'bookId': str(bk)}
+                    result = coll.delete_many(query)
+                    print(f'  🗑  Erased {result.deleted_count} record(s) for {subj}/{bk}')
+
                 all_sections = discover_sections(subj, bk)
                 # Filter out non-numeric section IDs (e.g. 'appendix')
                 numeric_sections = []
