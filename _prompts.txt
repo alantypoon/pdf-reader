@@ -572,3 +572,17 @@ when Chemistry is selected in subject, in material, add two more options (in-dep
 - pp-years
 
 add the subject Chem.W.2 on right of Chem.W that reads the pages in /private/var/www/html/pdf-reader/data/textbooks/chemistry-winter2
+
+
+////
+
+
+python add-section-for-winter.py
+
+after all the extractions to the sections folder, fill up the sections in contents.json at:
+
+/private/var/www/html/pdf-reader/data/textbooks/chemistry-winter/1/contents.json
+
+/private/var/www/html/pdf-reader/data/textbooks/chemistry-winter2/1/contents.json
+
+with page number, the key page-num for each section, so that the pdf-reader will show the setion names in the book+section dropdown and when they are selected, the page in the contents will jump to the corresponding page.

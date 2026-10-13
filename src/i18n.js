@@ -1,6 +1,6 @@
 const T = {
   en: {
-    appTitle: 'Book Reader',
+    appTitle: 'PDF Reader',
     subject: 'Subject',
     book: 'Book',
     chapter: 'Chapter',
@@ -226,7 +226,7 @@ const T = {
     loadingPage: 'Loading page…',
   },
   tc: {
-    appTitle: '書本閱讀器',
+    appTitle: 'PDF 閱讀器',
     subject: '科目',
     book: '書本',
     chapter: '章節',

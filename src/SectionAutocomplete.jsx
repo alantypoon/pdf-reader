@@ -49,19 +49,24 @@ function SectionAutocomplete({ sections, onSelect, getSectionName, currentSectio
           disabled: Boolean(item.disabled),
           _bookId: item._bookId,
           _sectionId: item._sectionId,
+          source: item.source || item,
         };
       }
       const rawPage = item.page ?? item.section ?? item.id;
       const num = Number(rawPage);
       const pageVal = Number.isNaN(num) ? String(rawPage ?? '') : num;
-      const itemId = String(item.section ?? item.page ?? item.id ?? '');
+      const sectionId = String(item.section ?? item.page ?? item.id ?? '');
+      const itemId = item?.['page-num'] != null && sectionId
+        ? `${String(rawPage ?? '')}#${sectionId}@${item['page-num']}`
+        : sectionId;
       return {
         id: itemId,
-        badge: itemId,
+        badge: sectionId,
         primary: getPrimarySectionName(item),
         secondary: getSecondarySectionName(item),
         searchText: [item.section, item.page, item.id, getSectionName(item, 'en'), getSectionName(item, 'tc')].filter(Boolean).join('\n'),
         _page: pageVal,
+        source: item,
       };
     })
   ), [sections, getSectionName, language]);
@@ -74,7 +79,7 @@ function SectionAutocomplete({ sections, onSelect, getSectionName, currentSectio
         if (item?.disabled) return;
         const val = item?._page;
         // Pass numeric page numbers as numbers, non-numeric (like "end") as strings
-        onSelect(typeof val === 'number' ? val : String(val ?? id), item);
+        onSelect(typeof val === 'number' ? val : String(val ?? id), item?.source || item);
       }}
       selectedDisplay={currentSectionName}
       placeholder="Search section..."

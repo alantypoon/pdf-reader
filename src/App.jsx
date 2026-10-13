@@ -368,6 +368,25 @@ function toFileId(raw) {
   return isNaN(num) ? String(raw) : num;
 }
 
+function getSectionFileId(section) {
+  return toFileId(section?.page ?? section?.section);
+}
+
+function getSectionOptionId(section) {
+  const fileId = getSectionFileId(section);
+  const pageNum = section?.['page-num'];
+  const sectionId = section?.section;
+  if (pageNum != null && sectionId != null) return `${fileId}#${sectionId}@${pageNum}`;
+  return fileId;
+}
+
+function parseSectionOptionId(value) {
+  const raw = String(value ?? '');
+  const match = raw.match(/^(.*?)#.*@(\d+)$/);
+  if (!match) return { fileId: toFileId(value), pageNum: null };
+  return { fileId: toFileId(match[1]), pageNum: Number(match[2]) };
+}
+
 function getSectionResources(section, language) {
   const value = section?.[language];
   if (!value || typeof value === 'string') return [];
@@ -2782,20 +2801,28 @@ function App() {
     if (!nextBookId) return;
     const nextBook = (structure || []).find((book) => String(book.id) === String(nextBookId));
     if (!nextBook) return;
-    const nextSection = nextBook.contents?.find((item) => String(toFileId(item.page ?? item.section)) === String(nextSectionId));
-    const normalizedSectionId = nextSection ? toFileId(nextSection.page ?? nextSection.section) : nextSectionId;
+    const parsed = parseSectionOptionId(nextSectionId);
+    const nextSection = nextBook.contents?.find((item) => String(getSectionOptionId(item)) === String(nextSectionId))
+      || nextBook.contents?.find((item) => String(getSectionFileId(item)) === String(parsed.fileId));
+    const normalizedSectionId = nextSection ? getSectionFileId(nextSection) : parsed.fileId;
+    const nextPageNum = Number(nextSection?.['page-num'] ?? parsed.pageNum);
     clearReaderLocationScrollKeys(selectedBook, nextBook.id, normalizedSectionId);
-    pendingSectionPageResetRef.current = true;
+    pendingSectionPageResetRef.current = Number.isFinite(nextPageNum) && nextPageNum > 0 ? nextPageNum : true;
     handleBookSelect(nextBook.id || '');
     setSelectedFile(normalizedSectionId);
+    setSelectedPage(Number.isFinite(nextPageNum) && nextPageNum > 0 ? nextPageNum : 1);
   }, [structure, handleBookSelect, selectedBook]);
 
-  const handleSectionSelect = useCallback((nextSectionId) => {
+  const handleSectionSelect = useCallback((nextSectionId, sectionItem = null) => {
     if (nextSectionId == null || nextSectionId === '') return;
+    const parsed = parseSectionOptionId(nextSectionId);
+    const normalizedSectionId = sectionItem ? getSectionFileId(sectionItem) : parsed.fileId;
+    const nextPageNum = Number(sectionItem?.['page-num'] ?? parsed.pageNum);
     // Clear saved scroll so PdfPane's initial-load restore can't overwrite page 1
-    clearReaderLocationScrollKeys(selectedBook, selectedChapter, nextSectionId);
-    pendingSectionPageResetRef.current = true;
-    setSelectedFile(nextSectionId);
+    clearReaderLocationScrollKeys(selectedBook, selectedChapter, normalizedSectionId);
+    pendingSectionPageResetRef.current = Number.isFinite(nextPageNum) && nextPageNum > 0 ? nextPageNum : true;
+    setSelectedFile(normalizedSectionId);
+    setSelectedPage(Number.isFinite(nextPageNum) && nextPageNum > 0 ? nextPageNum : 1);
   }, [selectedBook, selectedChapter]);
 
   const physicsBookChapterMeta = useMemo(() => {
@@ -2810,13 +2837,16 @@ function App() {
 
   const currentSection = useMemo(() => {
     if (!currentChapter?.contents?.length) return undefined;
-    return currentChapter.contents.find((item) => {
-      const itemId = toFileId(item.page ?? item.section);
-      const fileId = toFileId(selectedFile);
+    const fileId = toFileId(selectedFile);
+    return currentChapter.contents.find((item) => (
+      String(getSectionFileId(item)) === String(fileId) &&
+      item?.['page-num'] != null &&
+      Number(item['page-num']) === Number(selectedPage)
+    )) || currentChapter.contents.find((item) => {
       // Compare consistently: both as strings (handles numeric + "end" uniformly)
-      return String(itemId) === String(fileId);
+      return String(getSectionFileId(item)) === String(fileId);
     });
-  }, [currentChapter, selectedFile, isOnePdfForAllSections]);
+  }, [currentChapter, selectedFile, selectedPage, isOnePdfForAllSections]);
 
   const currentBookHeaderName = useMemo(() => {
     if (!currentChapter) return selectedChapter;
@@ -2863,7 +2893,8 @@ function App() {
       };
 
       const sectionItems = (book.contents || []).map((item) => {
-        const rawId = toFileId(item.page ?? item.section);
+        const rawId = getSectionFileId(item);
+        const optionId = getSectionOptionId(item);
         const sectionId = String(rawId);
         const displayBadge = String(item.section ?? item.page ?? '');
         const en = getSectionName(item, 'en');
@@ -2875,13 +2906,13 @@ function App() {
           ? (tc || '')
           : (selectedLanguage === 'tc' ? (en || '') : (tc || ''));
         return {
-          id: `${bookId}::${sectionId}`,
+          id: `${bookId}::${optionId}`,
           badge: displayBadge,
           primary: sectionLabel,
           secondary,
           searchText: [bookId, sectionId, displayBadge, en, tc, book.name, book.nameEn, book.nameZh].filter(Boolean).join('\n'),
           _bookId: bookId,
-          _sectionId: rawId,
+          _sectionId: optionId,
         };
       });
 
@@ -2891,10 +2922,10 @@ function App() {
 
   const currentCombinedBookSectionValue = useMemo(() => {
     const bookId = String(selectedChapter || '').trim();
-    const sectionId = String(selectedFile || '').trim();
+    const sectionId = String((currentSection && getSectionOptionId(currentSection)) || selectedFile || '').trim();
     if (!bookId || !sectionId) return '';
     return `${bookId}::${sectionId}`;
-  }, [selectedChapter, selectedFile]);
+  }, [selectedChapter, selectedFile, currentSection]);
 
   const currentCombinedBookSectionDisplay = useMemo(() => {
     const bookId = String(selectedChapter || '').trim();
@@ -2903,7 +2934,8 @@ function App() {
     const en = currentSection ? getSectionName(currentSection, 'en') : '';
     const tc = currentSection ? getSectionName(currentSection, 'tc') : '';
     const sectionName = selectedLanguage === 'tc' ? (tc || en) : (en || tc);
-    return `${sectionId}${sectionName ? `. ${sectionName}` : ''}`;
+    const displayId = currentSection?.section ?? sectionId;
+    return `${displayId}${sectionName ? `. ${sectionName}` : ''}`;
   }, [currentSection, selectedChapter, selectedFile, selectedLanguage]);
 
   const combinedSteppableOptions = useMemo(() => {
@@ -3600,12 +3632,13 @@ function App() {
 
   const sectionSelectOptions = useMemo(() => (
     (currentChapter?.contents || []).map((item) => {
-      const id = toFileId(item.page ?? item.section);
+      const id = getSectionOptionId(item);
       const en = getSectionName(item, 'en');
       const tc = getSectionName(item, 'tc');
+      const badge = item.section ?? getSectionFileId(item);
       const label = selectedLanguage === 'tc'
-        ? `${id} - ${tc || en || id}`
-        : `${id} - ${en || tc || id}`;
+        ? `${badge} - ${tc || en || badge}`
+        : `${badge} - ${en || tc || badge}`;
       const secondary = selectedLanguage === 'tc' ? (en || '') : (tc || '');
       return { id, label, secondary };
     })
@@ -3626,7 +3659,7 @@ function App() {
     const first = toFileId(rawFirst);
     setSelectedFile((current) => {
       const hasCurrent = currentChapter.contents.some((item) => {
-        const itemId = toFileId(item.page ?? item.section);
+        const itemId = getSectionFileId(item);
         return String(itemId) === String(current ?? '');
       });
       return hasCurrent ? current : first;
@@ -3637,8 +3670,9 @@ function App() {
   useEffect(() => {
     if (!pendingSectionPageResetRef.current) return;
     if (pendingReaderLocationRef.current) return;
+    const targetPage = pendingSectionPageResetRef.current;
     pendingSectionPageResetRef.current = false;
-    setSelectedPage(1);
+    setSelectedPage(Number.isFinite(Number(targetPage)) ? Number(targetPage) : 1);
   }, [selectedChapter, selectedFile]);
 
   const loadedTextbookPanesRef = useRef('');
@@ -12301,8 +12335,8 @@ function App() {
                 currentSection={currentSection}
                 language={selectedLanguage}
                 getSectionName={getSectionName}
-                onSelect={(sectionId) => {
-                  handleSectionSelect(sectionId);
+                onSelect={(sectionId, item) => {
+                  handleSectionSelect(sectionId, item);
                   setCollapsedDropdownId(null);
                 }}
                 onOpenChange={(open) => { if (!open) setCollapsedDropdownId(null); }}
