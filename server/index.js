@@ -95,7 +95,7 @@ function mapSubjectToPastPaperRoot(subjectId) {
   if (normalized === 'biology-oup') return 'biology';
   if (normalized === 'math-oup') return 'math';
   if (normalized === 'physics-oup') return 'physics';
-  if (normalized === 'chemistry-aristo' || normalized === 'chemistry-winter') return 'chemistry';
+  if (normalized === 'chemistry-aristo' || normalized === 'chemistry-winter' || normalized === 'chemistry-winter2') return 'chemistry';
   return normalized;
 }
 

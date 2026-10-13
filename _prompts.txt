@@ -550,3 +550,25 @@ in dark mode, the strokes cannot be seen with black pen because their constrast 
 ///
 
 handle onscroll on my paper, past paper and textbook pages in three separate set of code and they should be scrolling independently. never mix them together.
+
+
+////
+
+1. check why video-tutor's per-page ai study material has no contents right now. it should read database collection ai-generations like how pdf-reader does
+
+2. add language selector in pdf-reader: traditional chinese and english, all the labels should be translated to traditional chinese when the language is selected as chinese. e.g. in AI study material in pdf-reader: Summary, flash cards, mcq quiz.
+
+3. in pdf-reader, for the subject selection, change them to be:
+- Mathematics (Short form when the sidebar is too narrow: Math)
+- Physics (Phy)
+- Chemistry (Chem)
+- Biology (Bio)
+
+when Chemistry is selected in subject, in material, add two more options (in-depth and intensie) as follows
+- textbook
+- in-depth (i.e. chem.w)
+- intenive (i.e. chem.w.2)
+- pp-topics
+- pp-years
+
+add the subject Chem.W.2 on right of Chem.W that reads the pages in /private/var/www/html/pdf-reader/data/textbooks/chemistry-winter2

@@ -421,6 +421,8 @@ const MATERIAL_TEXTBOOK = 'textbook';
 const MATERIAL_PP_TOPICS = 'by-topics';
 const MATERIAL_PP_YEARS = 'by-years';
 
+const CHEMISTRY_SUBJECT_IDS = ['chemistry-aristo', 'chemistry-winter', 'chemistry-winter2'];
+
 const VIEW_EN_STUDENT = 'en-student';
 const VIEW_TC_STUDENT = 'tc-student';
 const VIEW_EN_TEACHER = 'en-teacher';
@@ -620,12 +622,17 @@ function getPageZoomAnchorElement(container, clientX, clientY) {
 function getSubjectLabel(subjectId, selectedLanguage = 'en') {
   const normalized = String(subjectId || '').trim().toLowerCase();
   const showChinese = selectedLanguage === 'tc';
-  if (normalized === 'biology-oup') return showChinese ? '生物' : 'Bio';
-  if (normalized === 'chemistry-aristo') return showChinese ? '化學' : 'Chem';
-  if (normalized === 'chemistry-winter') return showChinese ? '化學.W' : 'Chem.W';
-  if (normalized === 'math-oup') return showChinese ? '數學' : 'Math';
-  if (normalized === 'physics-oup') return showChinese ? '物理' : 'Phy';
+  if (normalized === 'biology-oup') return showChinese ? '生物' : 'Biology';
+  if (CHEMISTRY_SUBJECT_IDS.includes(normalized)) return showChinese ? '化學' : 'Chemistry';
+  if (normalized === 'math-oup') return showChinese ? '數學' : 'Mathematics';
+  if (normalized === 'physics-oup') return showChinese ? '物理' : 'Physics';
   return String(subjectId || '').trim();
+}
+
+function getSubjectGroupId(subjectId) {
+  const normalized = String(subjectId || '').trim().toLowerCase();
+  if (CHEMISTRY_SUBJECT_IDS.includes(normalized)) return 'chemistry-aristo';
+  return normalized;
 }
 
 /** Abbreviated label for the collapsed sidebar subject button. */
@@ -633,8 +640,7 @@ function getSubjectAbbreviation(subjectId, selectedLanguage = 'en') {
   const normalized = String(subjectId || '').trim().toLowerCase();
   let result;
   if (normalized === 'biology-oup') result = selectedLanguage === 'tc' ? '生物' : 'Bio';
-  else if (normalized === 'chemistry-aristo') result = selectedLanguage === 'tc' ? '化學' : 'Chem';
-  else if (normalized === 'chemistry-winter') result = selectedLanguage === 'tc' ? '化學' : 'CheW';
+  else if (CHEMISTRY_SUBJECT_IDS.includes(normalized)) result = selectedLanguage === 'tc' ? '化學' : 'Chem';
   else if (normalized === 'math-oup') result = selectedLanguage === 'tc' ? '數學' : 'Math';
   else if (normalized === 'physics-oup') result = selectedLanguage === 'tc' ? '物理' : 'Phy';
   else result = getSubjectLabel(subjectId, selectedLanguage);
@@ -700,6 +706,7 @@ const SUBJECT_SHORT_NAMES = {
   'biology-oup': 'Biology',
   'chemistry-aristo': 'Chemistry',
   'chemistry-winter': 'Chemistry W',
+  'chemistry-winter2': 'Chemistry W2',
   'math-oup': 'Math',
   'physics-oup': 'Physics',
 };
@@ -800,7 +807,7 @@ function CacheManagerModal({ open, onClose, onAddCurrent, addCurrentDisabled, ad
         </div>
 
         {entries === null ? (
-          <div className="cache-mgr-loading">{_('loading')}</div>
+          <div className="cache-mgr-empty">{_('loading')}</div>
         ) : entries.length === 0 ? (
           <div className="cache-mgr-empty">{_('cacheManagerEmpty')}</div>
         ) : (
@@ -1090,7 +1097,7 @@ function App() {
   const initialSubjectRestoreRef = useRef('');
   const restoringUserSelectsRef = useRef(false);
   const [structure, setStructure] = useState([]);
-  const [dataBooks, setDataBooks] = useState(['math-oup', 'physics-oup', 'chemistry-aristo', 'chemistry-winter', 'biology-oup']);
+  const [dataBooks, setDataBooks] = useState(['math-oup', 'physics-oup', 'chemistry-aristo', 'chemistry-winter', 'chemistry-winter2', 'biology-oup']);
   const [activeBookId, setActiveBookId] = useState('');
   const [bookAvailableLanguages, setBookAvailableLanguages] = useState(['en', 'tc']);
   // Which audiences have content per language for the current subject:
@@ -1154,6 +1161,7 @@ function App() {
   const regenSkipQuizRef = useRef(false);
   const [selectedLanguage, setSelectedLanguage] = useState(savedPrefs.selectedLanguage || 'bilingual');
   const selectedLanguageRef = useRef(selectedLanguage);
+  const [uiLanguage, setUiLanguage] = useState(savedPrefs.uiLanguage === 'tc' ? 'tc' : 'en');
   const [selectedRoleMode, setSelectedRoleMode] = useState(savedPrefs.selectedRoleMode || savedPrefs.selectedAudienceMode || 'student');
   const selectedRoleModeRef = useRef(selectedRoleMode);
   const [materialMode, setMaterialMode] = useState(savedPrefs.materialMode || MATERIAL_TEXTBOOK);
@@ -1731,7 +1739,7 @@ function App() {
     if (Array.isArray(savedPrefs.searchSubjects) && savedPrefs.searchSubjects.length > 0) {
       return savedPrefs.searchSubjects;
     }
-    return ['physics-oup', 'chemistry-aristo', 'chemistry-winter', 'biology-oup'];
+    return ['physics-oup', 'chemistry-aristo', 'chemistry-winter', 'chemistry-winter2', 'biology-oup'];
   });
   const [bookmarkSubjects, setBookmarkSubjects] = useState(() => {
     if (Array.isArray(savedPrefs.bookmarkSubjects) && savedPrefs.bookmarkSubjects.length > 0) {
@@ -1839,7 +1847,7 @@ function App() {
     };
   }, [colorPickerOpen]);
 
-  const lang = uiLang(selectedLanguage);
+  const lang = uiLanguage;
   const _ = (key) => t(key, lang);
   const logoutUrl = useMemo(() => {
     if (typeof window === 'undefined') {
@@ -3347,12 +3355,14 @@ function App() {
   };
 
   const subjectToggleOptions = useMemo(() => {
-    const desiredOrder = ['math-oup', 'physics-oup', 'chemistry-aristo', 'chemistry-winter', 'biology-oup'];
+    const desiredOrder = ['math-oup', 'physics-oup', 'chemistry-aristo', 'biology-oup'];
     const existing = new Set((dataBooks || []).map((item) => String(item)));
     return desiredOrder
-      .filter((id) => existing.has(id))
-      .map((id) => ({ id, label: getSubjectLabel(id, selectedLanguage) }));
-  }, [dataBooks, selectedLanguage]);
+      .filter((id) => id === 'chemistry-aristo'
+        ? CHEMISTRY_SUBJECT_IDS.some((chemId) => existing.has(chemId))
+        : existing.has(id))
+      .map((id) => ({ id, label: getSubjectLabel(id, uiLanguage) }));
+  }, [dataBooks, uiLanguage]);
 
   const subjectAutocompleteItems = useMemo(() => (
     subjectToggleOptions.map((item) => ({
@@ -3547,6 +3557,18 @@ function App() {
       }
     } catch (err) {
       console.error('[catalog] failed to step subject:', newBook, err);
+    }
+  };
+
+  const handleChemistryMaterialSelect = (bookId) => {
+    if (!CHEMISTRY_SUBJECT_IDS.includes(String(bookId || '').trim().toLowerCase())) return;
+    if (materialMode !== MATERIAL_TEXTBOOK) {
+      clearPastPaperScrollPos();
+      setMaterialMode(MATERIAL_TEXTBOOK);
+      setSelectedPage(textbookPageRef.current || 1);
+    }
+    if (String(bookId) !== String(selectedBook)) {
+      handleSubjectChange(bookId);
     }
   };
 
@@ -3883,6 +3905,7 @@ function App() {
         textbookPage: textbookPageRef.current,
         displayMode: displayModeRef.current,
         selectedLanguage: selectedLanguageRef.current,
+        uiLanguage,
         selectedRoleMode: selectedRoleModeRef.current,
         materialMode,
         selectedViews,
@@ -3937,6 +3960,7 @@ function App() {
     selectedPage,
     displayMode,
     selectedLanguage,
+    uiLanguage,
     selectedRoleMode,
     materialMode,
     selectedViews,
@@ -5592,6 +5616,10 @@ function App() {
     const index = order.indexOf(selectedLanguage);
     const next = order[(index + 1) % order.length];
     setSelectedLanguage(next);
+  };
+
+  const cycleUiLanguage = () => {
+    setUiLanguage((current) => (current === 'tc' ? 'en' : 'tc'));
   };
 
   // Refs for collapsed sidebar buttons – used to position the autocomplete dropdowns
@@ -9503,7 +9531,7 @@ function App() {
           if (selectedFile) params.set('sectionId', selectedFile);
           if (searchScopePage && selectedPage) params.set('pageId', selectedPage);
         } else {
-          const allSubjects = ['physics-oup', 'chemistry-aristo', 'chemistry-winter', 'biology-oup'];
+          const allSubjects = ['physics-oup', 'chemistry-aristo', 'chemistry-winter', 'chemistry-winter2', 'biology-oup'];
           const selectedSet = new Set(searchSubjects);
           const allSelected = allSubjects.every((id) => selectedSet.has(id));
           if (!allSelected && searchSubjects.length > 0) {
@@ -10264,15 +10292,39 @@ function App() {
               <button
                 key={item.id}
                 type="button"
-                className={`toggle-btn ${selectedBook === item.id ? 'active' : ''}`}
+                className={`toggle-btn ${getSubjectGroupId(selectedBook) === item.id ? 'active' : ''}`}
                 onClick={() => handleSubjectChange(item.id)}
-                aria-pressed={selectedBook === item.id}
+                aria-pressed={getSubjectGroupId(selectedBook) === item.id}
               >
                 {item.label}
               </button>
             ))}
           </div>
         </label>
+        {!sidebarCollapsed && (
+          <label>
+            <span className="sidebar-label-icon">
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                <path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zm6.9 8h-3.1a13.6 13.6 0 0 0-1.1-4.3A7.03 7.03 0 0 1 18.9 11zM12 5.1c.7 1 1.4 2.9 1.7 5.9h-3.4c.3-3 1-4.9 1.7-5.9zM5.1 13h3.1c.2 1.7.6 3.2 1.1 4.3A7.03 7.03 0 0 1 5.1 13zm3.1-2H5.1a7.03 7.03 0 0 1 4.2-4.3A13.6 13.6 0 0 0 8.2 11zm3.8 7.9c-.7-1-1.4-2.9-1.7-5.9h3.4c-.3 3-1 4.9-1.7 5.9zm2.7-1.6c.5-1.1.9-2.6 1.1-4.3h3.1a7.03 7.03 0 0 1-4.2 4.3z" />
+              </svg>
+              {_('uiLanguage')}
+            </span>
+            <div className="toggle-group">
+              <button
+                type="button"
+                className={`toggle-btn ${uiLanguage === 'en' ? 'active' : ''}`}
+                onClick={() => setUiLanguage('en')}
+                aria-pressed={uiLanguage === 'en'}
+              >{_('english')}</button>
+              <button
+                type="button"
+                className={`toggle-btn ${uiLanguage === 'tc' ? 'active' : ''}`}
+                onClick={() => setUiLanguage('tc')}
+                aria-pressed={uiLanguage === 'tc'}
+              >{_('traditionalChinese')}</button>
+            </div>
+          </label>
+        )}
         {isTestMode && !sidebarCollapsed && (
           <button
             type="button"
@@ -10303,12 +10355,32 @@ function App() {
             <div className="book-section-mode-toggle" role="group" aria-label="Material mode">
             <button
               type="button"
-              className={`toggle-btn ${materialMode === MATERIAL_TEXTBOOK ? 'active' : ''}`}
-              onClick={() => handleMaterialModeChange(MATERIAL_TEXTBOOK)}
-              aria-pressed={materialMode === MATERIAL_TEXTBOOK}
+              className={`toggle-btn ${materialMode === MATERIAL_TEXTBOOK && (!CHEMISTRY_SUBJECT_IDS.includes(String(selectedBook).toLowerCase()) || selectedBook === 'chemistry-aristo') ? 'active' : ''}`}
+              onClick={() => getSubjectGroupId(selectedBook) === 'chemistry-aristo' ? handleChemistryMaterialSelect('chemistry-aristo') : handleMaterialModeChange(MATERIAL_TEXTBOOK)}
+              aria-pressed={materialMode === MATERIAL_TEXTBOOK && (!CHEMISTRY_SUBJECT_IDS.includes(String(selectedBook).toLowerCase()) || selectedBook === 'chemistry-aristo')}
             >
               {_('textbook')}
             </button>
+            {getSubjectGroupId(selectedBook) === 'chemistry-aristo' && (
+              <>
+                <button
+                  type="button"
+                  className={`toggle-btn ${materialMode === MATERIAL_TEXTBOOK && selectedBook === 'chemistry-winter' ? 'active' : ''}`}
+                  onClick={() => handleChemistryMaterialSelect('chemistry-winter')}
+                  aria-pressed={materialMode === MATERIAL_TEXTBOOK && selectedBook === 'chemistry-winter'}
+                >
+                  {_('inDepth')}
+                </button>
+                <button
+                  type="button"
+                  className={`toggle-btn ${materialMode === MATERIAL_TEXTBOOK && selectedBook === 'chemistry-winter2' ? 'active' : ''}`}
+                  onClick={() => handleChemistryMaterialSelect('chemistry-winter2')}
+                  aria-pressed={materialMode === MATERIAL_TEXTBOOK && selectedBook === 'chemistry-winter2'}
+                >
+                  {_('intensive')}
+                </button>
+              </>
+            )}
             <button
               type="button"
               className={`toggle-btn ${materialMode === MATERIAL_PP_TOPICS ? 'active' : ''}`}
@@ -10402,7 +10474,7 @@ function App() {
                 {_('bookSection')}
               </span>
               <SectionActionButtons
-                language={selectedLanguage}
+                language={uiLanguage}
                 downloadBusy={downloadBusy}
                 downloadDisabled={!selectedBook || !selectedChapter}
                 cacheStatus={sectionCacheStatus}
@@ -10554,7 +10626,7 @@ function App() {
                     {_('viewPastPaper')}
                   </span>
                   <SectionActionButtons
-                    language={selectedLanguage}
+                    language={uiLanguage}
                     downloadBusy={downloadBusy}
                     downloadDisabled={false}
                     cacheStatus={sectionCacheStatus}
@@ -10651,7 +10723,7 @@ function App() {
                     {_('viewPastPaper')}
                   </span>
                   <SectionActionButtons
-                    language={selectedLanguage}
+                    language={uiLanguage}
                     downloadBusy={downloadBusy}
                     downloadDisabled={false}
                     cacheStatus={sectionCacheStatus}
@@ -10792,7 +10864,13 @@ function App() {
               onClick={() => openSidebarAutocomplete('subject')}
               data-tooltip={_('selectSubject')}
               aria-label={_('selectSubject')}
-            ><span className="sidebar-icon-btn-text" ref={subjectBtnTextRef}>{getSubjectAbbreviation(selectedBook, selectedLanguage)}</span></button>
+            ><span className="sidebar-icon-btn-text" ref={subjectBtnTextRef}>{getSubjectAbbreviation(selectedBook, uiLanguage)}</span></button>
+            <button
+              className="sidebar-icon-btn"
+              onClick={cycleUiLanguage}
+              data-tooltip={_('uiLanguage')}
+              aria-label={_('uiLanguage')}
+            ><span className="sidebar-icon-btn-text">{uiLanguage === 'tc' ? '繁' : 'EN'}</span></button>
             {/* Book + Section selector – collapsed (textbook mode) */}
             {readerMode === 'textbook' ? (
               <button
@@ -11965,7 +12043,7 @@ function App() {
                           }}
                         >
                           <div className="search-result-breadcrumb">
-                            <span>{getSubjectLabel(result.subjectId, selectedLanguage)}</span>
+                            <span>{getSubjectLabel(result.subjectId, uiLanguage)}</span>
                             <span className="breadcrumb-sep">›</span>
                             <span>{String(result.bookId || '').toUpperCase()}</span>
                             <span className="breadcrumb-sep">›</span>
@@ -12174,7 +12252,7 @@ function App() {
                 value={selectedBook}
                 onSelect={(id) => { handleSubjectChange(id); setCollapsedDropdownId(null); }}
                 onOpenChange={(open) => { if (!open) setCollapsedDropdownId(null); }}
-                selectedDisplay={getSubjectLabel(selectedBook, selectedLanguage)}
+                selectedDisplay={getSubjectLabel(selectedBook, uiLanguage)}
                 placeholder={_('subject')}
                 emptyText={_('noMatchingBooks')}
                 toggleAriaLabel="Select subject"
@@ -12450,7 +12528,7 @@ function App() {
         onAddCurrent={handleCacheSection}
         addCurrentDisabled={!selectedBook || !selectedChapter}
         addCurrentBusy={cacheProgress?.phase === 'caching'}
-        language={selectedLanguage}
+        language={uiLanguage}
       />
 
     </div>
