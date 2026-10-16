@@ -1,0 +1,1 @@
+rsync -avz --progress mini:/var/www/html/pdf-reader/data/ /var/www/html/pdf-reader/data/
