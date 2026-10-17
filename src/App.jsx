@@ -2300,6 +2300,22 @@ function App() {
   const visiblePaneKeys = useMemo(() => {
     return visiblePanes.map((pane) => `${pane.language}:${pane.role}`);
   }, [visiblePanes]);
+  const visibleZoomBuckets = useMemo(() => {
+    return [...new Set(visiblePanes.map((pane) => paneZoomBucket(pane.viewId)))];
+  }, [visiblePanes]);
+  const selectedZoomBuckets = useMemo(() => {
+    const orderedBuckets = [];
+    const seen = new Set();
+    for (const viewId of normalizeSelectedViewsForMaterial(materialMode, selectedViews)) {
+      if (viewId === VIEW_PP_RELATED) continue;
+      if (viewId !== VIEW_MY_PAPER && !visiblePanes.some((pane) => pane.viewId === viewId)) continue;
+      const bucket = paneZoomBucket(viewId);
+      if (seen.has(bucket)) continue;
+      seen.add(bucket);
+      orderedBuckets.push(bucket);
+    }
+    return orderedBuckets;
+  }, [materialMode, selectedViews, visiblePanes]);
   const visiblePaneKeysRef = useRef(visiblePaneKeys);
 
   // Derive matched topics for the current section from the mapping.
@@ -11609,7 +11625,7 @@ function App() {
               </div>
               {zoomMenuOpen === 'combined' && (
                 <div className="tool-menu-popup">
-                  {(['textbook', 'past-paper', 'my-paper']).map((bucket, idx) => {
+                  {selectedZoomBuckets.map((bucket, idx) => {
                     const bZoom = zoomSettings[bucket].zoom;
                     const bFitMode = zoomSettings[bucket].fitMode;
                     const bucketLabelKey = bucket === 'textbook' ? 'zoomBucketTextbook' : bucket === 'past-paper' ? 'zoomBucketPastPaper' : 'zoomBucketMyPaper';
@@ -11666,7 +11682,7 @@ function App() {
                           </svg>
                           {_('fitHeight')}
                         </button>
-                        {idx < 2 && <span className="tool-menu-sep" />}
+                        {idx < selectedZoomBuckets.length - 1 && <span className="tool-menu-sep" />}
                       </div>
                     );
                   })}
