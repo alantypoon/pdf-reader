@@ -449,6 +449,7 @@ const VIEW_TC_TEACHER = 'tc-teacher';
 const VIEW_PAST_PAPER = 'past-paper';
 const VIEW_MY_PAPER = 'my-paper';
 const VIEW_PP_RELATED = 'pp-related';
+const VIEW_PP_VIDEO = 'pp-video';
 
 const ALL_VIEW_IDS = [
   VIEW_EN_STUDENT,
@@ -946,6 +947,88 @@ function SectionActionButtons({
   );
 }
 
+function PpVideoPlayer({ url, label }) {
+  const videoRef = useRef(null);
+  const [playing, setPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [seeking, setSeeking] = useState(false);
+
+  useEffect(() => {
+    setPlaying(false);
+    setCurrentTime(0);
+    setDuration(0);
+  }, [url]);
+
+  const fmtTime = (s) => {
+    if (!Number.isFinite(s) || s < 0) return '0:00';
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${sec.toString().padStart(2, '0')}`;
+  };
+
+  const togglePlay = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) { v.play(); setPlaying(true); }
+    else { v.pause(); setPlaying(false); }
+  };
+
+  const onTimeUpdate = () => {
+    if (!seeking && videoRef.current) setCurrentTime(videoRef.current.currentTime);
+  };
+
+  const onSliderChange = (e) => {
+    const t = Number(e.target.value);
+    setCurrentTime(t);
+    if (videoRef.current) videoRef.current.currentTime = t;
+  };
+
+  if (!url) return <div className="pp-video-empty"><p>Select a question to play video.</p></div>;
+
+  return (
+    <div className="pp-video-player-container">
+      <video
+        ref={videoRef}
+        key={url}
+        className="pp-video-player"
+        src={url}
+        onTimeUpdate={onTimeUpdate}
+        onLoadedMetadata={() => { if (videoRef.current) setDuration(videoRef.current.duration); }}
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => setPlaying(false)}
+        onClick={togglePlay}
+      />
+      <div className="pp-video-controls">
+        <button className="pp-video-play-btn" onClick={togglePlay} aria-label={playing ? 'Pause' : 'Play'}>
+          {playing ? (
+            <svg viewBox="0 0 24 24" width="24" height="24"><rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor" /><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor" /></svg>
+          ) : (
+            <svg viewBox="0 0 24 24" width="24" height="24"><path d="M8 5v14l11-7z" fill="currentColor" /></svg>
+          )}
+        </button>
+        <span className="pp-video-time">{fmtTime(currentTime)}</span>
+        <input
+          type="range"
+          className="pp-video-slider"
+          min="0"
+          max={duration || 0}
+          step="0.1"
+          value={currentTime}
+          onChange={onSliderChange}
+          onMouseDown={() => setSeeking(true)}
+          onMouseUp={() => setSeeking(false)}
+          onTouchStart={() => setSeeking(true)}
+          onTouchEnd={() => setSeeking(false)}
+        />
+        <span className="pp-video-time">{fmtTime(duration)}</span>
+      </div>
+      {label && <div className="pp-video-player-label">{label}</div>}
+    </div>
+  );
+}
+
 function FloatingAudioPlayer({ url, name, onClose }) {
   const playerRef = useRef(null);
   const dragState = useRef({ dragging: false, startX: 0, startY: 0 });
@@ -1208,6 +1291,14 @@ function App() {
   const [pastPaperLanguage, setPastPaperLanguage] = useState(savedPrefs.pastPaperLanguage || 'en');
   const [pastPaperImages, setPastPaperImages] = useState([]);
   const [pastPaperLoaded, setPastPaperLoaded] = useState(false);
+  // Extra paper-type columns shown alongside the primary type
+  const [ppYearExtraTypes, setPpYearExtraTypes] = useState([]);
+  const [ppYearExtraImages, setPpYearExtraImages] = useState({});
+  // PP-video data for by-years video toggle
+  const [ppVideoSections, setPpVideoSections] = useState([]);
+  const [ppVideoSection, setPpVideoSection] = useState('');
+  const [ppVideoQuestion, setPpVideoQuestion] = useState('');
+  const [ppVideoOpen, setPpVideoOpen] = useState(false);
   // PP-related view: section → topic mapping + loaded images
   const [sectionTopicMap, setSectionTopicMap] = useState(null); // {chapter: {section: [{topicId, topicName, paper, score}]}}
   const [ppRelatedImages, setPpRelatedImages] = useState([]);
@@ -1899,7 +1990,7 @@ function App() {
   // Map a pane viewId to the zoom bucket key
   const paneZoomBucket = (viewId) => {
     if (viewId === VIEW_MY_PAPER) return 'my-paper';
-    if (viewId === VIEW_PAST_PAPER || viewId === VIEW_PP_RELATED) return 'past-paper';
+    if (viewId === VIEW_PAST_PAPER || viewId === VIEW_PP_RELATED || viewId === VIEW_PP_VIDEO) return 'past-paper';
     return 'textbook';
   };
 
@@ -2252,11 +2343,23 @@ function App() {
 
   const effectivePageSources = useMemo(() => {
     if ((materialMode === MATERIAL_PP_TOPICS || materialMode === MATERIAL_PP_YEARS) && pastPaperLoaded) {
-      // Past-paper uses its own pane key so annotations stay scoped correctly
-      return pastPaperImages.length > 0 ? { 'past-paper:student': pastPaperImages } : {};
+      const sources = pastPaperImages.length > 0 ? { 'past-paper:student': pastPaperImages } : {};
+      for (const type of ppYearExtraTypes) {
+        const imgs = ppYearExtraImages[type];
+        if (imgs && imgs.length > 0) sources[`past-paper:${type}`] = imgs;
+      }
+      return Object.keys(sources).length > 0 ? sources : {};
     }
     return pageSources;
-  }, [materialMode, pastPaperLoaded, pastPaperImages, pageSources]);
+  }, [materialMode, pastPaperLoaded, pastPaperImages, pageSources, ppYearExtraTypes, ppYearExtraImages]);
+
+  const activePpVideo = useMemo(() => {
+    const sec = ppVideoSections.find((s) => s.section === ppVideoSection);
+    const q = sec?.questions.find((q) => q.question === ppVideoQuestion);
+    if (!sec || !q) return null;
+    return { url: q.url, label: `${pastPaperYear} ${sec.label} Q${q.question}` };
+  }, [ppVideoSections, ppVideoSection, ppVideoQuestion, pastPaperYear]);
+  const activePpVideoUrl = activePpVideo?.url || null;
 
   const visiblePanes = useMemo(() => {
     if (materialMode === MATERIAL_PP_TOPICS || materialMode === MATERIAL_PP_YEARS) {
@@ -2264,11 +2367,22 @@ function App() {
       if (selectedViews.includes(VIEW_PAST_PAPER) && hasRenderableSource(effectivePageSources['past-paper:student'])) {
         panes.push({ language: 'past-paper', role: 'student', sourceKey: 'past-paper:student', viewId: VIEW_PAST_PAPER });
       }
+      const extraOrder = ['ans', 'per'];
+      const sortedExtras = [...ppYearExtraTypes].sort((a, b) => (extraOrder.indexOf(a) === -1 ? 99 : extraOrder.indexOf(a)) - (extraOrder.indexOf(b) === -1 ? 99 : extraOrder.indexOf(b)));
+      for (const type of sortedExtras) {
+        const key = `past-paper:${type}`;
+        if (hasRenderableSource(effectivePageSources[key])) {
+          panes.push({ language: 'past-paper', role: 'student', sourceKey: key, viewId: VIEW_PAST_PAPER, extraType: type });
+        }
+      }
       if (selectedViews.includes(VIEW_EN_STUDENT) && hasRenderableSource(effectivePageSources[getPageSourceKey('en', 'student')])) {
         panes.push({ language: 'en', role: 'student', sourceKey: getPageSourceKey('en', 'student'), viewId: VIEW_EN_STUDENT });
       }
       if (selectedViews.includes(VIEW_MY_PAPER)) {
         panes.push({ language: 'my-paper', role: 'student', sourceKey: 'my-paper', viewId: VIEW_MY_PAPER });
+      }
+      if (ppVideoOpen && activePpVideoUrl) {
+        panes.push({ language: 'pp-video', role: 'student', sourceKey: 'pp-video', viewId: VIEW_PP_VIDEO });
       }
       return panes;
     }
@@ -2290,7 +2404,7 @@ function App() {
         if (pane.viewId === VIEW_PP_RELATED) return ppRelatedImages.length > 0;
         return hasRenderableSource(effectivePageSources[pane.sourceKey]);
       });
-  }, [materialMode, selectedRoleMode, selectedLanguage, effectivePageSources, selectedViews, ppRelatedImages, ppRelatedLanguage]);
+  }, [materialMode, selectedRoleMode, selectedLanguage, effectivePageSources, selectedViews, ppRelatedImages, ppRelatedLanguage, ppVideoOpen, activePpVideoUrl, ppYearExtraTypes]);
 
   const visibleLanguages = useMemo(() => {
     return [...new Set(visiblePanes.map((pane) => pane.language))];
@@ -3128,7 +3242,7 @@ function App() {
         .filter((entry) => String(entry?.lang || 'en').trim().toLowerCase() === pastPaperLanguage)
         .map((e) => e.year)
     )].sort();
-    return years.map(y => ({ id: y, label: y, searchText: y }));
+    return years.map(y => ({ id: y, label: y, primary: String(y), secondary: '', badge: '', searchText: String(y) }));
   }, [pastPaperByYearsEntries, pastPaperLanguage]);
 
   useEffect(() => {
@@ -3167,10 +3281,41 @@ function App() {
   useEffect(() => {
     if (materialMode !== MATERIAL_PP_YEARS) return;
     if (!pastPaperYearAvailableTypes.length) return;
+    const paperTypes = new Set(['p1', 'p2', 'p1a', 'p1b']);
     if (!pastPaperYearAvailableTypes.includes(pastPaperYearType)) {
       setPastPaperYearType(pastPaperYearAvailableTypes[0]);
+      setPpYearExtraTypes([]);
+    } else {
+      setPpYearExtraTypes((prev) => prev.filter((t) => pastPaperYearAvailableTypes.includes(t) && !paperTypes.has(t)));
     }
   }, [materialMode, pastPaperYearAvailableTypes, pastPaperYearType]);
+
+  // Fetch pp-video list when year changes in by-years mode
+  useEffect(() => {
+    if (materialMode !== MATERIAL_PP_YEARS || !selectedBook || !pastPaperYear) {
+      setPpVideoSections([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await fetchJson(`api/past-papers/pp-videos?subject=${encodeURIComponent(selectedBook)}&year=${encodeURIComponent(pastPaperYear)}`);
+        if (cancelled) return;
+        const sections = data.sections || [];
+        setPpVideoSections(sections);
+        if (sections.length > 0) {
+          setPpVideoSection((prev) => sections.some((s) => s.section === prev) ? prev : sections[0].section);
+          const first = sections[0];
+          if (first.questions.length > 0) {
+            setPpVideoQuestion((prev) => first.questions.some((q) => q.question === prev) ? prev : first.questions[0].question);
+          }
+        }
+      } catch {
+        if (!cancelled) setPpVideoSections([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [materialMode, selectedBook, pastPaperYear]);
 
   // Load past-paper catalog when subject changes
   useEffect(() => {
@@ -3178,6 +3323,8 @@ function App() {
     setPastPaperCatalog(null);
     setPastPaperImages([]);
     setPastPaperLoaded(false);
+    setPpYearExtraTypes([]);
+    setPpYearExtraImages({});
     setPastPaperTopic('');
     setPastPaperYear('');
     setPastPaperPaperType('');
@@ -3357,6 +3504,32 @@ function App() {
 
     return () => { cancelled = true; };
   }, [materialMode, selectedBook, pastPaperCatalog, pastPaperPaperType, pastPaperTopic, pastPaperYear, pastPaperYearType, pastPaperLanguage]);
+
+  // Load images for extra paper-type columns
+  useEffect(() => {
+    if (materialMode !== MATERIAL_PP_YEARS || !selectedBook || !pastPaperYear || ppYearExtraTypes.length === 0) {
+      setPpYearExtraImages({});
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const result = {};
+      await Promise.all(ppYearExtraTypes.map(async (type) => {
+        try {
+          const params = new URLSearchParams({
+            subject: selectedBook, mode: 'by-years', lang: pastPaperLanguage,
+            year: pastPaperYear, type,
+          });
+          const data = await fetchJson(`api/past-papers/pages?${params}`);
+          result[type] = data.url ? [data.url] : (data.images || []);
+        } catch {
+          result[type] = [];
+        }
+      }));
+      if (!cancelled) setPpYearExtraImages(result);
+    })();
+    return () => { cancelled = true; };
+  }, [materialMode, selectedBook, pastPaperYear, pastPaperLanguage, ppYearExtraTypes]);
 
   useEffect(() => {
     if ((materialMode === MATERIAL_PP_TOPICS || materialMode === MATERIAL_PP_YEARS) && pastPaperLoaded) {
@@ -8865,7 +9038,7 @@ function App() {
     && visiblePanes.length === 1;
   // Stacked mid-header layout only applies to two real textbook language panes.
   const hasSpecialPane = visiblePanes.some(
-    (p) => p.viewId === VIEW_MY_PAPER || p.viewId === VIEW_PP_RELATED || p.viewId === VIEW_PAST_PAPER
+    (p) => p.viewId === VIEW_MY_PAPER || p.viewId === VIEW_PP_RELATED || p.viewId === VIEW_PAST_PAPER || p.viewId === VIEW_PP_VIDEO
   );
   const useBilingualMidHeaderLayout = isBilingualView && visiblePanes.length === 2 && !hasSpecialPane && (isPortrait || isMediumBilingualWidth);
   const maxPagesInGroup = useMemo(() => {
@@ -10314,6 +10487,20 @@ function App() {
                 </svg>
               </span>
             </button>
+            <div className="sidebar-ui-lang-toggle">
+              <button
+                type="button"
+                className={`ui-lang-btn ${uiLanguage === 'en' ? 'active' : ''}`}
+                onClick={() => setUiLanguage('en')}
+                aria-pressed={uiLanguage === 'en'}
+              >en</button>
+              <button
+                type="button"
+                className={`ui-lang-btn ${uiLanguage === 'tc' ? 'active' : ''}`}
+                onClick={() => setUiLanguage('tc')}
+                aria-pressed={uiLanguage === 'tc'}
+              >中文</button>
+            </div>
 
           </div>
         </div>
@@ -10351,30 +10538,6 @@ function App() {
             ))}
           </div>
         </label>
-        {!sidebarCollapsed && (
-          <label>
-            <span className="sidebar-label-icon">
-              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                <path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zm6.9 8h-3.1a13.6 13.6 0 0 0-1.1-4.3A7.03 7.03 0 0 1 18.9 11zM12 5.1c.7 1 1.4 2.9 1.7 5.9h-3.4c.3-3 1-4.9 1.7-5.9zM5.1 13h3.1c.2 1.7.6 3.2 1.1 4.3A7.03 7.03 0 0 1 5.1 13zm3.1-2H5.1a7.03 7.03 0 0 1 4.2-4.3A13.6 13.6 0 0 0 8.2 11zm3.8 7.9c-.7-1-1.4-2.9-1.7-5.9h3.4c-.3 3-1 4.9-1.7 5.9zm2.7-1.6c.5-1.1.9-2.6 1.1-4.3h3.1a7.03 7.03 0 0 1-4.2 4.3z" />
-              </svg>
-              {_('uiLanguage')}
-            </span>
-            <div className="toggle-group">
-              <button
-                type="button"
-                className={`toggle-btn ${uiLanguage === 'en' ? 'active' : ''}`}
-                onClick={() => setUiLanguage('en')}
-                aria-pressed={uiLanguage === 'en'}
-              >{_('english')}</button>
-              <button
-                type="button"
-                className={`toggle-btn ${uiLanguage === 'tc' ? 'active' : ''}`}
-                onClick={() => setUiLanguage('tc')}
-                aria-pressed={uiLanguage === 'tc'}
-              >{_('traditionalChinese')}</button>
-            </div>
-          </label>
-        )}
         {isTestMode && !sidebarCollapsed && (
           <button
             type="button"
@@ -10751,17 +10914,82 @@ function App() {
                 {_('paperType')}
               </span>
               <div className="toggle-group">
-                {(pastPaperYearAvailableTypes.length ? pastPaperYearAvailableTypes : ['p1', 'p2', 'ans', 'per']).map((type) => (
+                {(pastPaperYearAvailableTypes.length ? pastPaperYearAvailableTypes : ['p1', 'p2', 'ans', 'per']).map((type) => {
+                  const isPaperType = type === 'p1' || type === 'p2' || type === 'p1a' || type === 'p1b';
+                  const isPrimary = pastPaperYearType === type;
+                  const isExtra = ppYearExtraTypes.includes(type);
+                  return (
                   <button
                     key={type}
                     type="button"
-                    className={`toggle-btn ${pastPaperYearType === type ? 'active' : ''}`}
-                    onClick={() => setPastPaperYearType(type)}
-                    aria-pressed={pastPaperYearType === type}
+                    className={`toggle-btn ${isPrimary ? 'active' : isExtra ? 'active secondary' : ''}`}
+                    onClick={() => {
+                      if (isPaperType) {
+                        if (!isPrimary) setPastPaperYearType(type);
+                      } else {
+                        if (isExtra) setPpYearExtraTypes((prev) => prev.filter((t) => t !== type));
+                        else setPpYearExtraTypes((prev) => [...prev, type]);
+                      }
+                    }}
+                    aria-pressed={isPrimary || isExtra}
                   >{_(type === 'p1' ? 'typeP1' : type === 'p2' ? 'typeP2' : type === 'ans' ? 'typeAns' : type === 'per' ? 'typePer' : type)}</button>
-                ))}
+                  );
+                })}
+                {ppVideoSections.length > 0 && (
+                  <button
+                    key="video"
+                    type="button"
+                    className={`toggle-btn ${ppVideoOpen ? 'active' : ''}`}
+                    onClick={() => setPpVideoOpen((v) => !v)}
+                    aria-pressed={ppVideoOpen}
+                  >{_('typeVideo')}</button>
+                )}
               </div>
             </label>
+            {/* Video question selector */}
+            {ppVideoOpen && ppVideoSections.length > 0 && (
+              <label>
+                <span className="sidebar-label-icon">
+                  <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                    <path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z" />
+                  </svg>
+                  {_('ppVideoQuestion')}
+                </span>
+                <div className="pp-video-selectors">
+                  {ppVideoSections.map((sec) => {
+                    const isActive = ppVideoSection === sec.section;
+                    const currentQ = isActive ? ppVideoQuestion : '';
+                    const idx = sec.questions.findIndex((q) => q.question === currentQ);
+                    const canPrev = isActive && idx > 0;
+                    const canNext = isActive && idx >= 0 && idx < sec.questions.length - 1;
+                    const nav = (delta) => {
+                      const nextIdx = idx + delta;
+                      if (nextIdx >= 0 && nextIdx < sec.questions.length) {
+                        setPpVideoSection(sec.section);
+                        setPpVideoQuestion(sec.questions[nextIdx].question);
+                      }
+                    };
+                    return (
+                    <div key={sec.section} className="pp-video-section-row">
+                      <span className="pp-video-section-label">{sec.label}</span>
+                      <button type="button" className="selector-stepper-btn" onClick={() => nav(-1)} disabled={!canPrev}>-</button>
+                      <select
+                        className="pp-video-question-select"
+                        value={currentQ}
+                        onChange={(e) => { setPpVideoSection(sec.section); setPpVideoQuestion(e.target.value); }}
+                      >
+                        <option value="" disabled>{_('ppVideoSelectQuestion')}</option>
+                        {sec.questions.map((q) => (
+                          <option key={q.question} value={q.question}>Q{q.question}</option>
+                        ))}
+                      </select>
+                      <button type="button" className="selector-stepper-btn" onClick={() => nav(1)} disabled={!canNext}>+</button>
+                    </div>
+                    );
+                  })}
+                </div>
+              </label>
+            )}
             {/* Download / Cache for the selected past paper */}
             {selectedViews.includes(VIEW_PAST_PAPER) && pastPaperImages.length > 0 && (
               <label>
@@ -11092,6 +11320,13 @@ function App() {
             {useBilingualMidHeaderLayout ? (
               <>
                 {visiblePanes.slice(0, 1).map((pane) => {
+                  if (pane.viewId === VIEW_PP_VIDEO) {
+                    return (
+                      <div key="pp-video" className="pp-video-pane" style={{ display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
+                        <PpVideoPlayer url={activePpVideo?.url} label={activePpVideo?.label} />
+                      </div>
+                    );
+                  }
                   const language = pane.language;
                   const isMyPaper = pane.viewId === VIEW_MY_PAPER;
                   const isPpRelated = pane.viewId === VIEW_PP_RELATED;
@@ -11110,13 +11345,13 @@ function App() {
                       onPageCountChange={(count) => setPageCounts((current) => ({ ...current, [pane.sourceKey]: count }))}
                       thumbnailsOpen={showThumbnails}
                       onThumbnailClick={(page) => { if (isMyPaper) { setMyPaperPage(page); } else if (isPpRelated) { setPpRelatedPage(page); } else { setSelectedPage(page); setDisplayMode('pagination'); } }}
-                      syncGroup={(isMyPaper || isPpRelated || displayMode !== 'scrolling' || !maxPagesInGroup) ? '' : `${selectedChapter}-${selectedFile}-bilingual`}
+                      syncGroup={(isMyPaper || isPpRelated || pane.extraType || displayMode !== 'scrolling' || !maxPagesInGroup) ? '' : `${selectedChapter}-${selectedFile}-bilingual`}
                       syncId={pane.sourceKey} zoom={zoomSettings[paneZoomBucket(pane.viewId)].zoom} thumbCols={thumbCols}
                       fitMode={zoomSettings[paneZoomBucket(pane.viewId)].fitMode} fitRefreshToken={fitRefreshToken} forceRedrawToken={forceRedrawToken}
                       onRenderScaleChange={isMyPaper ? null : (scale) => { setRenderScaleByLanguage((current) => { if (current[pane.sourceKey] === scale) return current; return { ...current, [pane.sourceKey]: scale }; }); }}
                       onScrollCanvasesReady={() => setRedrawTick((t) => t + 1)}
                       language={selectedLanguage}
-                      maxPagesInGroup={(isMyPaper || isPpRelated) ? 0 : maxPagesInGroup}
+                      maxPagesInGroup={(isMyPaper || isPpRelated || pane.extraType) ? 0 : maxPagesInGroup}
                       onScrollPastEnd={isMyPaper ? () => handleMyPaperAdd(3) : null}
                       onMyPaperViewportNeed={isMyPaper ? handleMyPaperViewportNeed : null}
                       onMyPaperDeletePage={isMyPaper ? handleMyPaperDeletePageAt : null}
@@ -11150,6 +11385,13 @@ function App() {
                   </button>
                 </header>
                 {visiblePanes.slice(1).map((pane) => {
+                  if (pane.viewId === VIEW_PP_VIDEO) {
+                    return (
+                      <div key="pp-video" className="pp-video-pane" style={{ display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
+                        <PpVideoPlayer url={activePpVideo?.url} label={activePpVideo?.label} />
+                      </div>
+                    );
+                  }
                   const language = pane.language;
                   const isMyPaper = pane.viewId === VIEW_MY_PAPER;
                   const isPpRelated = pane.viewId === VIEW_PP_RELATED;
@@ -11168,13 +11410,13 @@ function App() {
                       onPageCountChange={(count) => setPageCounts((current) => ({ ...current, [pane.sourceKey]: count }))}
                       thumbnailsOpen={showThumbnails}
                       onThumbnailClick={(page) => { if (isMyPaper) { setMyPaperPage(page); } else if (isPpRelated) { setPpRelatedPage(page); } else { setSelectedPage(page); setDisplayMode('pagination'); } }}
-                      syncGroup={(isMyPaper || isPpRelated || displayMode !== 'scrolling' || !maxPagesInGroup) ? '' : `${selectedChapter}-${selectedFile}-bilingual`}
+                      syncGroup={(isMyPaper || isPpRelated || pane.extraType || displayMode !== 'scrolling' || !maxPagesInGroup) ? '' : `${selectedChapter}-${selectedFile}-bilingual`}
                       syncId={pane.sourceKey} zoom={zoomSettings[paneZoomBucket(pane.viewId)].zoom} thumbCols={thumbCols}
                       fitMode={zoomSettings[paneZoomBucket(pane.viewId)].fitMode} fitRefreshToken={fitRefreshToken} forceRedrawToken={forceRedrawToken}
                       onRenderScaleChange={isMyPaper ? null : (scale) => { setRenderScaleByLanguage((current) => { if (current[pane.sourceKey] === scale) return current; return { ...current, [pane.sourceKey]: scale }; }); }}
                       onScrollCanvasesReady={() => setRedrawTick((t) => t + 1)}
                       language={selectedLanguage}
-                      maxPagesInGroup={(isMyPaper || isPpRelated) ? 0 : maxPagesInGroup}
+                      maxPagesInGroup={(isMyPaper || isPpRelated || pane.extraType) ? 0 : maxPagesInGroup}
                       onScrollPastEnd={isMyPaper ? () => handleMyPaperAdd(3) : null}
                       onMyPaperViewportNeed={isMyPaper ? handleMyPaperViewportNeed : null}
                       onMyPaperDeletePage={isMyPaper ? handleMyPaperDeletePageAt : null}
@@ -11188,6 +11430,13 @@ function App() {
             ) : (
               /* ── Non-bilingual or bilingual landscape: render all panes normally ── */
               visiblePanes.map((pane) => {
+            if (pane.viewId === VIEW_PP_VIDEO) {
+              return (
+                <div key="pp-video" className="pp-video-pane" style={{ display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
+                  <PpVideoPlayer url={activePpVideo?.url} label={activePpVideo?.label} />
+                </div>
+              );
+            }
             const language = pane.language;
             const isMyPaper = pane.viewId === VIEW_MY_PAPER;
             const isPpRelated = pane.viewId === VIEW_PP_RELATED;
@@ -11215,7 +11464,7 @@ function App() {
                   else if (isPpRelated) { setPpRelatedPage(page); }
                   else { setSelectedPage(page); setDisplayMode('pagination'); }
                 }}
-                syncGroup={(isMyPaper || isPpRelated || !isBilingualView || displayMode !== 'scrolling' || !maxPagesInGroup) ? '' : `${selectedChapter}-${selectedFile}-bilingual`}
+                syncGroup={(isMyPaper || isPpRelated || pane.extraType || !isBilingualView || displayMode !== 'scrolling' || !maxPagesInGroup) ? '' : `${selectedChapter}-${selectedFile}-bilingual`}
                 syncId={pane.sourceKey}
                 zoom={zoomSettings[paneZoomBucket(pane.viewId)].zoom}
                 thumbCols={thumbCols}
@@ -11232,7 +11481,7 @@ function App() {
                 }}
                 onScrollCanvasesReady={() => setRedrawTick((t) => t + 1)}
                 language={selectedLanguage}
-                maxPagesInGroup={(isMyPaper || isPpRelated) ? 0 : isBilingualView ? maxPagesInGroup : 0}
+                maxPagesInGroup={(isMyPaper || isPpRelated || pane.extraType) ? 0 : isBilingualView ? maxPagesInGroup : 0}
                 onScrollPastEnd={isMyPaper ? () => handleMyPaperAdd(3) : null}
                 onMyPaperViewportNeed={isMyPaper ? handleMyPaperViewportNeed : null}
                 onMyPaperDeletePage={isMyPaper ? handleMyPaperDeletePageAt : null}

@@ -35,6 +35,7 @@ const port = 3007;
 const PATH_DATA = process.env.PATH_DATA || path.resolve(__dirname, '../data');
 const PATH_TEXTBOOKS = process.env.PATH_TEXTBOOKS || path.join(PATH_DATA, 'textbooks');
 const PATH_PASTPAPERS = process.env.PATH_PASTPAPERS || path.join(PATH_DATA, 'past-papers');
+const PATH_VIDEO_TUTOR = process.env.PATH_VIDEO_TUTOR || path.resolve(__dirname, '../../video-tutor');
 const DEFAULT_BOOK = process.env.DEFAULT_BOOK || 'biology-oup';
 const ETT_MAX_IMAGE_DIM = 1536;   // max px on longest side for images sent to ETT/vLLM
 const DSE_AUTH_CONFIG_PATH = process.env.DSE_AUTH_CONFIG_PATH || path.resolve(__dirname, '../../../dse-auth-config.php');
@@ -97,6 +98,18 @@ function mapSubjectToPastPaperRoot(subjectId) {
   if (normalized === 'physics-oup') return 'physics';
   if (normalized === 'chemistry-aristo' || normalized === 'chemistry-winter' || normalized === 'chemistry-winter2') return 'chemistry';
   return normalized;
+}
+
+function mapSubjectToPpVideoDir(subjectId) {
+  const normalized = String(subjectId || '').trim().toLowerCase();
+  if (normalized === 'chemistry-winter2' || normalized === 'chemistry-winter' || normalized === 'chemistry-aristo') return path.join(PATH_VIDEO_TUTOR, 'subjects', 'chemistry', 'winter2', 'pp-videos');
+  return null;
+}
+
+function mapSubjectToPpVideoUrlPrefix(subjectId) {
+  const normalized = String(subjectId || '').trim().toLowerCase();
+  if (normalized === 'chemistry-winter2' || normalized === 'chemistry-winter' || normalized === 'chemistry-aristo') return '/video-tutor/subjects/chemistry/winter2/pp-videos';
+  return null;
 }
 
 function sanitizePastPaperPathPart(value, fallback = '') {
@@ -863,6 +876,53 @@ app.get('/api/past-papers/section-topic-map', asyncRoute(async (request, respons
     response.json(JSON.parse(raw));
   } catch {
     response.json({});
+  }
+}));
+
+app.get('/api/past-papers/pp-videos', asyncRoute(async (request, response) => {
+  const subject = String(request.query.subject || '').trim();
+  const year = sanitizePastPaperPathPart(request.query.year);
+  if (!subject || !year) {
+    response.status(400).json({ error: 'subject and year are required' });
+    return;
+  }
+  const videoDir = mapSubjectToPpVideoDir(subject);
+  const urlPrefix = mapSubjectToPpVideoUrlPrefix(subject);
+  if (!videoDir || !urlPrefix) {
+    response.json({ sections: [] });
+    return;
+  }
+  const yearDir = path.join(videoDir, year);
+  try {
+    const files = await fs.readdir(yearDir);
+    const mp4Re = /^(\d{4})-(PI[AB])-Q(\d+_?)\.mp4$/i;
+    const grouped = {};
+    for (const f of files) {
+      const m = mp4Re.exec(f);
+      if (!m) continue;
+      const section = m[2].toUpperCase();
+      if (!grouped[section]) grouped[section] = [];
+      grouped[section].push({
+        question: m[3].replace(/_$/, ''),
+        file: f,
+        url: `${urlPrefix}/${year}/${f}`,
+      });
+    }
+    const preferredOrder = ['PIA', 'PIB', 'PIIA', 'PIIB'];
+    const sections = preferredOrder
+      .filter((s) => grouped[s])
+      .map((s) => ({
+        section: s,
+        label: s === 'PIA' ? 'P1A' : s === 'PIB' ? 'P1B' : s === 'PIIA' ? 'P2A' : s === 'PIIB' ? 'P2B' : s,
+        questions: grouped[s].sort((a, b) => {
+          const na = parseInt(a.question, 10) || 0;
+          const nb = parseInt(b.question, 10) || 0;
+          return na - nb;
+        }),
+      }));
+    response.json({ sections });
+  } catch {
+    response.json({ sections: [] });
   }
 }));
 
