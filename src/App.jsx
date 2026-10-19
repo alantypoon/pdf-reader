@@ -1959,6 +1959,8 @@ function App() {
 
   const lang = uiLanguage;
   const _ = (key) => t(key, lang);
+  // When the UI is Chinese, show Chinese names in book/section selectors regardless of content language
+  const selectorDisplayLang = uiLanguage === 'tc' ? 'tc' : selectedLanguage;
   const logoutUrl = useMemo(() => {
     if (typeof window === 'undefined') {
       return '/dse-logout.php';
@@ -3004,7 +3006,7 @@ function App() {
       const zhName = typeof book.nameZh === 'string' ? book.nameZh.trim() : '';
       const enName = typeof book.nameEn === 'string' ? book.nameEn.trim() : '';
       const fallbackName = typeof book.name === 'string' ? book.name.trim() : '';
-      const displayName = selectedLanguage === 'tc'
+      const displayName = selectorDisplayLang === 'tc'
         ? (zhName || enName || fallbackName || bookId)
         : (enName || fallbackName || zhName || bookId);
       const upperId = bookId.toUpperCase();
@@ -3029,12 +3031,12 @@ function App() {
         const displayBadge = String(item.section ?? item.page ?? '');
         const en = getSectionName(item, 'en');
         const tc = getSectionName(item, 'tc');
-        const sectionLabel = selectedLanguage === 'tc'
+        const sectionLabel = selectorDisplayLang === 'tc'
           ? (tc || en || sectionId)
           : (en || tc || sectionId);
-        const secondary = selectedLanguage === 'bilingual'
+        const secondary = selectorDisplayLang === 'bilingual'
           ? (tc || '')
-          : (selectedLanguage === 'tc' ? (en || '') : (tc || ''));
+          : (selectorDisplayLang === 'tc' ? (en || '') : (tc || ''));
         return {
           id: `${bookId}::${optionId}`,
           badge: displayBadge,
@@ -3048,7 +3050,7 @@ function App() {
 
       return [headerItem, ...sectionItems];
     });
-  }, [structure, selectedLanguage]);
+  }, [structure, selectorDisplayLang]);
 
   const currentCombinedBookSectionValue = useMemo(() => {
     const bookId = String(selectedChapter || '').trim();
@@ -3063,10 +3065,10 @@ function App() {
     if (!bookId || !sectionId) return '';
     const en = currentSection ? getSectionName(currentSection, 'en') : '';
     const tc = currentSection ? getSectionName(currentSection, 'tc') : '';
-    const sectionName = selectedLanguage === 'tc' ? (tc || en) : (en || tc);
+    const sectionName = selectorDisplayLang === 'tc' ? (tc || en) : (en || tc);
     const displayId = currentSection?.section ?? sectionId;
     return `${displayId}${sectionName ? `. ${sectionName}` : ''}`;
-  }, [currentSection, selectedChapter, selectedFile, selectedLanguage]);
+  }, [currentSection, selectedChapter, selectedFile, selectorDisplayLang]);
 
   const combinedSteppableOptions = useMemo(() => {
     return (combinedBookSectionOptions || []).filter((opt) => !opt.disabled);
@@ -10706,7 +10708,7 @@ function App() {
               <SectionAutocomplete
                 sections={combinedBookSectionOptions}
                 currentSection={{ section: currentCombinedBookSectionValue, label: currentCombinedBookSectionDisplay }}
-                language={selectedLanguage}
+                language={selectorDisplayLang}
                 getSectionName={(item) => item?.primary || item?.label || ''}
                 onSelect={(value, item) => {
                   if (item?.disabled) return;
@@ -10738,7 +10740,7 @@ function App() {
               <BookAutocomplete
                 books={physicsChapterOptions}
                 currentBook={currentPhysicsChapter}
-                language={selectedLanguage}
+                language={selectorDisplayLang}
                 subjectId="physics-oup"
                 onSelect={handlePhysicsChapterSelect}
                 placeholder={_('searchChapter')}
@@ -10817,7 +10819,7 @@ function App() {
                   <SectionAutocomplete
                     sections={pastPaperTopicOptions}
                     currentSection={pastPaperTopicOptions.find(o => o.id === pastPaperTopic) || null}
-                    language={selectedLanguage}
+                    language={selectorDisplayLang}
                     getSectionName={(item) => item?.label || item?.id || ''}
                     onSelect={(id) => { setPastPaperTopic(String(id)); }}
                   />
@@ -10895,7 +10897,7 @@ function App() {
                 <SectionAutocomplete
                   sections={pastPaperYearOptions}
                   currentSection={pastPaperYearOptions.find(o => o.id === pastPaperYear) || null}
-                  language={selectedLanguage}
+                  language={selectorDisplayLang}
                   getSectionName={(item) => item?.label || ''}
                   onSelect={(id) => { setPastPaperYear(String(id)); }}
                 />
@@ -12564,7 +12566,7 @@ function App() {
               <BookAutocomplete
                 books={bookAutocompleteOptions}
                 currentBook={currentChapter}
-                language={selectedLanguage}
+                language={selectorDisplayLang}
                 subjectId={selectedBook}
                 onSelect={(book) => { handleBookSelect(book); setCollapsedDropdownId(null); }}
                 onOpenChange={(open) => { if (!open) setCollapsedDropdownId(null); }}
@@ -12579,7 +12581,7 @@ function App() {
               <SectionAutocomplete
                 sections={combinedBookSectionOptions}
                 currentSection={{ section: currentCombinedBookSectionValue, label: currentCombinedBookSectionDisplay }}
-                language={selectedLanguage}
+                language={selectorDisplayLang}
                 getSectionName={(item) => item?.primary || item?.label || ''}
                 onSelect={(value, item) => {
                   if (item?.disabled) return;
@@ -12598,7 +12600,7 @@ function App() {
               <SectionAutocomplete
                 sections={currentChapter?.contents || []}
                 currentSection={currentSection}
-                language={selectedLanguage}
+                language={selectorDisplayLang}
                 getSectionName={getSectionName}
                 onSelect={(sectionId, item) => {
                   handleSectionSelect(sectionId, item);

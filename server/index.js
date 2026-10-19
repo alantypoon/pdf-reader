@@ -3603,6 +3603,12 @@ app.get('/api/bookmarks', requireValidUserId(true), asyncRoute(async (request, r
 
   const query = { userId };
 
+  const subjectsParam = String(request.query.subjects || '').trim();
+  if (subjectsParam) {
+    const subjectList = subjectsParam.split(',').map((s) => s.trim()).filter(Boolean);
+    if (subjectList.length) query.subjectId = { $in: subjectList };
+  }
+
   let sortSpec;
   if (sort === 'alpha') {
     sortSpec = { bookId: order === 'asc' ? 1 : -1, sectionId: order === 'asc' ? 1 : -1, pageId: order === 'asc' ? 1 : -1 };

@@ -4,9 +4,9 @@ import FontSizeControl from './FontSizeControl';
 
 const LIMIT = 20;
 
-function getSectionNameFromStructure(structure, currentSubject, subjectId, bookId, sectionId, language) {
-  if (String(subjectId) !== String(currentSubject)) return '';
-  const chapter = (structure || []).find((c) => String(c.id) === String(bookId));
+function getSectionNameFromStructures(subjectStructures, subjectId, bookId, sectionId, language) {
+  const chapters = subjectStructures[String(subjectId)] || [];
+  const chapter = chapters.find((c) => String(c.id) === String(bookId));
   if (!chapter?.contents) return '';
   const section = chapter.contents.find((item) => {
     const itemId = item.page ?? item.section;
@@ -84,7 +84,7 @@ function buildShareUrl(item) {
 
 export default function BookmarksDrawer({ lang, userId, onClose, onNavigate, onKeyDown, structure, selectedLanguage, currentSubject, refreshToken, subjectOptions = [], selectedSubjects = [], onSelectedSubjectsChange, drawerFontSize, onDrawerFontSizeChange }) {
   const _ = (key) => t(key, lang);
-  const displayLang = selectedLanguage === 'tc' ? 'tc' : 'en';
+  const displayLang = (lang === 'tc' || selectedLanguage === 'tc') ? 'tc' : 'en';
 
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
@@ -97,11 +97,19 @@ export default function BookmarksDrawer({ lang, userId, onClose, onNavigate, onK
   const [textExtracts, setTextExtracts] = useState({});
   const [flashId, setFlashId] = useState(null);
   const [copiedId, setCopiedId] = useState(null);
+  // Map of subjectId → chapters array, pre-seeded with the current subject
+  const [subjectStructures, setSubjectStructures] = useState(() => (
+    currentSubject && structure?.length ? { [String(currentSubject)]: structure } : {}
+  ));
   const filterRef = useRef('');
   const sortRef = useRef('time');
   const orderRef = useRef('desc');
+  const selectedSubjectsRef = useRef(selectedSubjects);
   const scrollRef = useRef(null);
   const flashTimerRef = useRef(null);
+
+  // Keep ref in sync so buildUrl always sees the latest subjects without re-creating load
+  useEffect(() => { selectedSubjectsRef.current = selectedSubjects; }, [selectedSubjects]);
 
   const buildUrl = useCallback((currentOffset) => {
     const params = new URLSearchParams({
@@ -111,6 +119,8 @@ export default function BookmarksDrawer({ lang, userId, onClose, onNavigate, onK
       sort: sortRef.current,
       order: orderRef.current,
     });
+    const subs = selectedSubjectsRef.current;
+    if (subs && subs.length) params.set('subjects', subs.join(','));
     return `api/bookmarks?${params}`;
   }, [userId]);
 
@@ -164,6 +174,16 @@ export default function BookmarksDrawer({ lang, userId, onClose, onNavigate, onK
       load(true);
     }
   }, [refreshToken]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Reload when subject filter changes so pagination is server-side filtered
+  const prevSubjectsRef = useRef(JSON.stringify(selectedSubjects));
+  useEffect(() => {
+    const next = JSON.stringify(selectedSubjects);
+    if (next !== prevSubjectsRef.current) {
+      prevSubjectsRef.current = next;
+      load(true);
+    }
+  }, [selectedSubjects]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const applyFilter = useCallback((value) => {
     setFilter(value);
@@ -242,6 +262,31 @@ export default function BookmarksDrawer({ lang, userId, onClose, onNavigate, onK
     }
   }, [displayLang, textExtracts]);
 
+  // Keep current subject's structure in sync when the prop changes
+  useEffect(() => {
+    if (currentSubject && structure?.length) {
+      setSubjectStructures((prev) => ({ ...prev, [String(currentSubject)]: structure }));
+    }
+  }, [structure, currentSubject]);
+
+  // Fetch catalogs for subjects that appear in bookmarks but aren't loaded yet
+  useEffect(() => {
+    const unknownSubjects = [...new Set(items.map((item) => String(item.subjectId)))]
+      .filter((sid) => !subjectStructures[sid]);
+    if (!unknownSubjects.length) return;
+    unknownSubjects.forEach(async (sid) => {
+      try {
+        const res = await fetch(`api/catalog?book=${encodeURIComponent(sid)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const chapters = data.chapters || [];
+        if (chapters.length) {
+          setSubjectStructures((prev) => ({ ...prev, [sid]: chapters }));
+        }
+      } catch { /* ignore */ }
+    });
+  }, [items]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Trigger text-extract fetch when items or display language change
   useEffect(() => {
     if (items.length) fetchTextExtracts(items);
@@ -263,7 +308,7 @@ export default function BookmarksDrawer({ lang, userId, onClose, onNavigate, onK
   const visibleItems = items.filter((item) => {
     if (selectedSubjects.length && !selectedSubjects.includes(item.subjectId)) return false;
     if (!normalizedFilter) return true;
-    const sectionName = getSectionNameFromStructure(structure, currentSubject, item.subjectId, item.bookId, item.sectionId, displayLang);
+    const sectionName = getSectionNameFromStructures(subjectStructures, item.subjectId, item.bookId, item.sectionId, displayLang);
     const extractKey = `${item.subjectId}|${item.bookId}|${item.sectionId}|${item.pageId}|${displayLang}`;
     const pageExtract = normalizeExtractText(textExtracts[extractKey], true);
     const haystack = [
@@ -354,7 +399,7 @@ export default function BookmarksDrawer({ lang, userId, onClose, onNavigate, onK
             <p className="resources-empty">{_('bookmarksEmpty')}</p>
           )}
           {!loading && visibleItems.map((item) => {
-            const sectionName = getSectionNameFromStructure(structure, currentSubject, item.subjectId, item.bookId, item.sectionId, displayLang);
+            const sectionName = getSectionNameFromStructures(subjectStructures, item.subjectId, item.bookId, item.sectionId, displayLang);
             const extractKey = `${item.subjectId}|${item.bookId}|${item.sectionId}|${item.pageId}|${displayLang}`;
             const fullTextExtract = normalizeExtractText(textExtracts[extractKey], true);
             const inlineExtract = buildInlineExtract(fullTextExtract, filter);
