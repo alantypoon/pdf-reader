@@ -729,7 +729,7 @@ def main():
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     base_dir = os.path.dirname(script_dir)
-    data_root = os.path.join(base_dir, "data")
+    data_root = os.path.join(base_dir, "data", "textbooks")
 
     scope_path, section_filter = _split_chapter_path(data_root, args.chapter_path)
     scope_dir = os.path.join(data_root, scope_path)

@@ -586,3 +586,21 @@ after all the extractions to the sections folder, fill up the sections in conten
 /private/var/www/html/pdf-reader/data/textbooks/chemistry-winter2/1/contents.json
 
 with page number, the key page-num for each section, so that the pdf-reader will show the setion names in the book+section dropdown and when they are selected, the page in the contents will jump to the corresponding page.
+
+////
+
+
+1. always remember the selected years in user's document in the database and retrieve it when reloading.
+
+2. when material is selected as in-depth or intensive, show view as notes, questions, answers, misc and my paper.
+
+- notes: the textbooks it is showing now
+- questions: in data/other-learning-resources the pdf begining with a 2-digit numbers wihtout Answers at the end
+- answers: in data/other-learning-resources the pdf begining with a 2-digit numbers with Answers at the end
+- misc: 
+> data/other-learning-resources/List of Definition.pdf
+> data/other-learning-resources/Paragraph Length Question.pdf
+> data/other-learning-resources/Summary of Diagrams.pdf
+> data/other-learning-resources/Ultimate Intensive Note.pdf
+
+write a special option --split-other-learning-resources to split the above files into pages in /private/var/www/html/pdf-reader/scripts/generate-pages-and-contents.py

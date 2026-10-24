@@ -19,6 +19,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MongoClient } from 'mongodb';
 import sharp from 'sharp';
+import { classifyOtherLearningResource, getOtherLearningResources } from './otherLearningResources.js';
 
 // ── Timestamped logging ───────────────────────────────────
 const _origLog = console.log, _origErr = console.error, _origWarn = console.warn;
@@ -636,13 +637,20 @@ app.post('/api/user-selects', requireValidUserId(true), asyncRoute(async (reques
     sectionId: body.sectionId != null ? Number(body.sectionId) : 1,
     pageId: body.pageId != null ? Number(body.pageId) : 1,
     physicsChapterId: body.physicsChapterId != null ? String(body.physicsChapterId) : '',
+    ...(body.pastPaperYear != null ? {
+      pastPaperYear: String(body.pastPaperYear),
+      pastPaperLanguage: body.pastPaperLanguage === 'tc' ? 'tc' : 'en',
+      pastPaperYearType: String(body.pastPaperYearType || 'p1'),
+    } : {}),
   };
   await userSelects.updateOne(
     { userId },
     {
       $set: {
         lastSubjectId: String(body.lastSubjectId || subjectId),
-        [`selections.${subjectId}`]: selection,
+        ...Object.fromEntries(Object.entries(selection).map(([key, value]) => [
+          `selections.${subjectId}.${key}`, value,
+        ])),
         ...(body.lastStudyAction ? { lastStudyAction: String(body.lastStudyAction) } : {}),
         updatedAt: now,
       },
@@ -694,6 +702,10 @@ app.post('/api/user-actions/logout', requireValidUserId(true), asyncRoute(async 
   });
 
   response.json({ ok: true });
+}));
+
+app.get('/api/other-learning-resources', asyncRoute(async (request, response) => {
+  response.json(await getOtherLearningResources(PATH_DATA));
 }));
 
 app.get('/api/catalog', asyncRoute(async (request, response) => {
@@ -1201,6 +1213,11 @@ app.get('/api/section-pdfs.zip', asyncRoute(async (request, response) => {
   const section = String(request.query.section || '').trim();
   const viewsParam = String(request.query.views || '');
   const includePastPaper = String(request.query.pp || '') === '1';
+  const resourceIds = [...new Set([].concat(request.query.resource ?? []).map(String))];
+  if (resourceIds.some((id) => /[\\/]/.test(id) || !classifyOtherLearningResource(`${id}.pdf`))) {
+    response.status(400).json({ error: 'Invalid other learning resource' });
+    return;
+  }
   const viewToDir = {
     'en-student': { language: 'en', roleDir: 'contents' },
     'tc-student': { language: 'tc', roleDir: 'contents' },
@@ -1209,8 +1226,8 @@ app.get('/api/section-pdfs.zip', asyncRoute(async (request, response) => {
   };
   const views = viewsParam.split(',').map((view) => view.trim()).filter((view) => viewToDir[view]);
   const includeTextbook = views.length > 0;
-  if (!includeTextbook && !includePastPaper) {
-    response.status(400).json({ error: 'views or pp are required' });
+  if (!includeTextbook && !includePastPaper && !resourceIds.length) {
+    response.status(400).json({ error: 'views, pp or resource are required' });
     return;
   }
   if (includeTextbook && (!chapter || !section)) {
@@ -1221,6 +1238,13 @@ app.get('/api/section-pdfs.zip', asyncRoute(async (request, response) => {
 
   const files = [];
   let downloadName = `${chapter}-${section}-pdfs.zip`;
+  for (const id of resourceIds) {
+    files.push({
+      name: `${id}.pdf`,
+      data: await fs.readFile(path.join(PATH_DATA, 'other-learning-resources', `${id}.pdf`)),
+    });
+  }
+  if (resourceIds.length && !includeTextbook && !includePastPaper) downloadName = 'other-learning-resources.zip';
 
   // ── Textbook views ───────────────────────────────────────
   for (const viewId of views) {
@@ -2187,6 +2211,7 @@ const dataStatic = express.static(PATH_DATA, {
 app.use('/data', dataStatic);
 app.use('/pdf-reader/data/textbooks', dataStatic);
 app.use('/pdf-reader/data/past-papers', dataStatic);
+app.use('/pdf-reader/data', dataStatic);
 
 // ── AI Generation ─────────────────────────────────────────
 //

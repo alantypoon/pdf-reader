@@ -1,5 +1,20 @@
 # Debugging: Page Scrolling Issues
 
+## In-depth and Intensive resource columns
+
+Questions, Answers and Misc each show a single-row searchable Select2 dropdown above their
+own reader in the main area. Selecting a document or scrolling a resource must not
+change another column's page or the Notes page. Document dropdowns remain available
+when the sidebar is collapsed.
+Page-card headers are hidden while any resource column is visible so they cannot
+cover document selectors. Normal header behaviour returns when none is visible.
+
+If a column shows a catalog error, check `/api/other-learning-resources`.
+It must return JSON with `questions`, `answers` and `misc` arrays. An HTML
+response usually means the backend has not been restarted since the endpoint
+was added. Restart the PDF Reader backend, then use Retry in the column.
+Selected columns show loading or error states rather than disappearing.
+
 ## Enable Scroll Logging
 
 The debug system uses constants to enable/disable verbose logging. To debug scroll issues:

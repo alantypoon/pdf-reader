@@ -12,6 +12,7 @@ import AutocompleteDropdown from './components/AutocompleteDropdown';
 import MathText from './components/MathText';
 import BookmarksDrawer from './components/BookmarksDrawer';
 import FontSizeControl from './components/FontSizeControl';
+import OtherResourceColumn from './components/OtherResourceColumn';
 import { t, uiLang } from './i18n';
 import { isDebugScrollingMomentum, isDebugScrollingPersistence, isDebugZooming, isDebugAnnoStrokes } from './debug';
 import { myScrollBy, myScrollTo } from './MyScroll';
@@ -450,6 +451,7 @@ const VIEW_PAST_PAPER = 'past-paper';
 const VIEW_MY_PAPER = 'my-paper';
 const VIEW_PP_RELATED = 'pp-related';
 const VIEW_PP_VIDEO = 'pp-video';
+const RESOURCE_VIEW_IDS = ['questions', 'answers', 'misc'];
 
 const ALL_VIEW_IDS = [
   VIEW_EN_STUDENT,
@@ -458,6 +460,7 @@ const ALL_VIEW_IDS = [
   VIEW_TC_TEACHER,
   VIEW_PAST_PAPER,
   VIEW_PP_RELATED,
+  ...RESOURCE_VIEW_IDS,
   VIEW_MY_PAPER,
 ];
 
@@ -548,6 +551,7 @@ function mergePastPaperTopicEntries(entries, selectedLanguage) {
 }
 
 function getViewLabelKey(viewId) {
+  if (RESOURCE_VIEW_IDS.includes(viewId)) return `view${viewId[0].toUpperCase()}${viewId.slice(1)}`;
   if (viewId === VIEW_EN_STUDENT) return 'viewEnglishStudent';
   if (viewId === VIEW_TC_STUDENT) return 'viewChineseStudent';
   if (viewId === VIEW_EN_TEACHER) return 'viewEnglishTeacher';
@@ -1267,6 +1271,15 @@ function App() {
   const [selectedRoleMode, setSelectedRoleMode] = useState(savedPrefs.selectedRoleMode || savedPrefs.selectedAudienceMode || 'student');
   const selectedRoleModeRef = useRef(selectedRoleMode);
   const [materialMode, setMaterialMode] = useState(savedPrefs.materialMode || MATERIAL_TEXTBOOK);
+  const isWinterMaterial = materialMode === MATERIAL_TEXTBOOK
+    && ['chemistry-winter', 'chemistry-winter2'].includes(selectedBook);
+  const [otherResourceCatalog, setOtherResourceCatalog] = useState(null);
+  const [otherResourceError, setOtherResourceError] = useState('');
+  const [otherResourceRetry, setOtherResourceRetry] = useState(0);
+  const [otherResourceSelections, setOtherResourceSelections] = useState({});
+  const subjectSelectionsRef = useRef(subjectSelections);
+  subjectSelectionsRef.current = subjectSelections;
+  const viewLabel = (viewId) => _(isWinterMaterial && viewId === VIEW_EN_STUDENT ? 'viewNotes' : getViewLabelKey(viewId));
   const [selectedViews, setSelectedViews] = useState(() => {
     const savedMaterial = savedPrefs.materialMode || MATERIAL_TEXTBOOK;
     const savedViews = Array.isArray(savedPrefs.selectedViews) && savedPrefs.selectedViews.length > 0
@@ -1572,7 +1585,11 @@ function App() {
   // My Paper page is independent — not synced with the textbook page
 
   useEffect(() => {
-    const normalized = normalizeSelectedViewsForMaterial(materialMode, selectedViews);
+    const normalized = normalizeSelectedViewsForMaterial(materialMode, selectedViews.filter((viewId) => (
+      isWinterMaterial
+        ? [VIEW_EN_STUDENT, ...RESOURCE_VIEW_IDS, VIEW_MY_PAPER].includes(viewId)
+        : !RESOURCE_VIEW_IDS.includes(viewId)
+    )));
     if (normalized.length !== selectedViews.length || normalized.some((view, index) => view !== selectedViews[index])) {
       setSelectedViews(normalized);
       return;
@@ -1581,7 +1598,43 @@ function App() {
     if (readerMode !== nextReaderMode) {
       setReaderMode(nextReaderMode);
     }
-  }, [materialMode, selectedViews, readerMode]);
+  }, [materialMode, selectedViews, readerMode, isWinterMaterial]);
+
+  useEffect(() => {
+    if (!isWinterMaterial) return;
+    let cancelled = false;
+    setOtherResourceError('');
+    fetchJson('api/other-learning-resources').then((data) => {
+      if (!cancelled) setOtherResourceCatalog(data);
+    }).catch((err) => {
+      console.error('[other-learning-resources] failed to load:', err);
+      if (!cancelled) setOtherResourceError(err.message);
+    });
+    return () => { cancelled = true; };
+  }, [isWinterMaterial, otherResourceRetry]);
+
+  useEffect(() => {
+    if (!isWinterMaterial || !otherResourceCatalog) return;
+    setOtherResourceSelections((current) => Object.fromEntries(RESOURCE_VIEW_IDS.map((category) => {
+      const entries = otherResourceCatalog[category] || [];
+      const matched = entries.find((entry) => entry.chapter === String(Number(selectedChapter)));
+      return [category, matched?.id || (entries.some((entry) => entry.id === current[category]) ? current[category] : entries[0]?.id || '')];
+    })));
+  }, [isWinterMaterial, otherResourceCatalog, selectedChapter]);
+
+  const otherResourcePanes = useMemo(() => {
+    if (!isWinterMaterial) return [];
+    return RESOURCE_VIEW_IDS.map((category) => {
+      const entry = otherResourceCatalog?.[category]?.find((item) => item.id === otherResourceSelections[category]);
+      const language = entry
+        ? `other-${category}-${entry.id.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`
+        : `other-${category}`;
+      return {
+        language, role: 'student', sourceKey: `${language}:student`,
+        viewId: category, source: entry?.source || null, extraType: category,
+      };
+    });
+  }, [isWinterMaterial, otherResourceCatalog, otherResourceSelections]);
 
   // Auto-fallback to English if the selected language isn't available for the current book.
   // 'bilingual' is a UI mode combining en+tc — only skip fallback when both languages exist.
@@ -2352,8 +2405,8 @@ function App() {
       }
       return Object.keys(sources).length > 0 ? sources : {};
     }
-    return pageSources;
-  }, [materialMode, pastPaperLoaded, pastPaperImages, pageSources, ppYearExtraTypes, ppYearExtraImages]);
+    return { ...pageSources, ...Object.fromEntries(otherResourcePanes.map((pane) => [pane.sourceKey, pane.source])) };
+  }, [materialMode, pastPaperLoaded, pastPaperImages, pageSources, ppYearExtraTypes, ppYearExtraImages, otherResourcePanes]);
 
   const activePpVideo = useMemo(() => {
     const sec = ppVideoSections.find((s) => s.section === ppVideoSection);
@@ -2396,17 +2449,18 @@ function App() {
       [VIEW_TC_TEACHER]: { language: 'tc', role: 'teacher', sourceKey: getPageSourceKey('tc', 'teacher'), viewId: VIEW_TC_TEACHER },
       [VIEW_MY_PAPER]: { language: 'my-paper', role: 'student', sourceKey: 'my-paper', viewId: VIEW_MY_PAPER },
       [VIEW_PP_RELATED]: { language: 'pp-related', role: 'student', sourceKey: 'pp-related', viewId: VIEW_PP_RELATED },
+      ...Object.fromEntries(otherResourcePanes.map((pane) => [pane.viewId, pane])),
     };
 
     return normalizeSelectedViewsForMaterial(materialMode, selectedViews)
       .map((viewId) => textbookViewToPane[viewId])
       .filter(Boolean)
       .filter((pane) => {
-        if (pane.viewId === VIEW_MY_PAPER) return true;
+        if (pane.viewId === VIEW_MY_PAPER || RESOURCE_VIEW_IDS.includes(pane.viewId)) return true;
         if (pane.viewId === VIEW_PP_RELATED) return ppRelatedImages.length > 0;
         return hasRenderableSource(effectivePageSources[pane.sourceKey]);
       });
-  }, [materialMode, selectedRoleMode, selectedLanguage, effectivePageSources, selectedViews, ppRelatedImages, ppRelatedLanguage, ppVideoOpen, activePpVideoUrl, ppYearExtraTypes]);
+  }, [materialMode, selectedRoleMode, selectedLanguage, effectivePageSources, selectedViews, ppRelatedImages, ppRelatedLanguage, ppVideoOpen, activePpVideoUrl, ppYearExtraTypes, otherResourcePanes]);
 
   const visibleLanguages = useMemo(() => {
     return [...new Set(visiblePanes.map((pane) => pane.language))];
@@ -2462,6 +2516,12 @@ function App() {
     };
     const downloadViews = [];
     const cacheUrls = [];
+    const resourceIds = [];
+    for (const pane of otherResourcePanes) {
+      if (!views.includes(pane.viewId) || !pane.source) continue;
+      resourceIds.push(otherResourceSelections[pane.viewId]);
+      cacheUrls.push(...(Array.isArray(pane.source) ? pane.source : [pane.source]));
+    }
     views.forEach((viewId) => {
       const sourceKey = viewToSourceKey[viewId];
       if (!sourceKey) return;
@@ -2528,7 +2588,7 @@ function App() {
         };
       }
     }
-    return { downloadViews, cacheUrls, pastPaperDownload };
+    return { downloadViews, cacheUrls, pastPaperDownload, resourceIds };
   }, [
     selectedViews,
     materialMode,
@@ -2543,6 +2603,8 @@ function App() {
     ppRelatedTopics,
     ppRelatedLanguage,
     selectedBook,
+    otherResourcePanes,
+    otherResourceSelections,
   ]);
 
   // Cache targets for the current section's selected views — used by the
@@ -2593,8 +2655,8 @@ function App() {
 
   /** Download a zip containing the selected views' PDFs (textbook + past-paper). */
   const handleDownloadSection = useCallback(async () => {
-    const { downloadViews, pastPaperDownload } = collectSelectedViewSources();
-    if (!downloadViews.length && !pastPaperDownload) {
+    const { downloadViews, pastPaperDownload, resourceIds } = collectSelectedViewSources();
+    if (!downloadViews.length && !pastPaperDownload && !resourceIds.length) {
       Swal.fire({
         icon: 'info',
         title: _('downloadFailed'),
@@ -2607,6 +2669,7 @@ function App() {
     setDownloadProgress({ total: 0, received: 0, phase: 'downloading' });
     try {
       const params = new URLSearchParams();
+      resourceIds.forEach((id) => params.append('resource', id));
       if (downloadViews.length) {
         params.set('book', selectedBook || '');
         params.set('chapter', selectedChapter || '');
@@ -2669,6 +2732,7 @@ function App() {
       anchor.href = objectUrl;
       anchor.download = downloadViews.length
         ? `${selectedChapter}-${selectedFile}-pdfs.zip`
+        : resourceIds.length ? 'other-learning-resources.zip'
         : pastPaperDownload?.related
           ? `past-papers-${pastPaperDownload.subject}-related-pages.zip`
           : `past-papers-${pastPaperDownload.subject}-${pastPaperDownload.mode}.zip`;
@@ -2883,7 +2947,7 @@ function App() {
     const normalized = existing.map((remark) => ({
       ...remark,
       // Preserve special langIds (my-paper, past-paper, pp-related); only coerce unknown ones to en/tc
-      langId: remark.langId === 'tc' ? 'tc' : (remark.langId && remark.langId !== 'en' && !['my-paper','past-paper','pp-related'].includes(remark.langId)) ? 'en' : (remark.langId || 'en'),
+      langId: remark.langId?.startsWith('other-') ? remark.langId : remark.langId === 'tc' ? 'tc' : (remark.langId && remark.langId !== 'en' && !['my-paper','past-paper','pp-related'].includes(remark.langId)) ? 'en' : (remark.langId || 'en'),
       role: remark.role || 'student',
     }));
     // Strictly enforce: only include annotations whose paneKey is currently visible
@@ -2900,7 +2964,7 @@ function App() {
       .map((remark) => ({
         ...remark,
         // Preserve special langIds (my-paper, past-paper, pp-related); only coerce unknown ones to en/tc
-        langId: remark.langId === 'tc' ? 'tc' : (remark.langId && remark.langId !== 'en' && !['my-paper','past-paper','pp-related'].includes(remark.langId)) ? 'en' : (remark.langId || 'en'),
+        langId: remark.langId?.startsWith('other-') ? remark.langId : remark.langId === 'tc' ? 'tc' : (remark.langId && remark.langId !== 'en' && !['my-paper','past-paper','pp-related'].includes(remark.langId)) ? 'en' : (remark.langId || 'en'),
         role: remark.role || 'student',
       }));
     // Strictly enforce: only include annotations whose paneKey is currently visible
@@ -3260,6 +3324,7 @@ function App() {
 
   useEffect(() => {
     if (materialMode !== MATERIAL_PP_YEARS) return;
+    if (!pastPaperCatalog) return;
     if (!pastPaperYearOptions.length) {
       if (pastPaperYear) setPastPaperYear('');
       return;
@@ -3267,7 +3332,7 @@ function App() {
     if (!pastPaperYearOptions.some((option) => String(option.id) === String(pastPaperYear))) {
       setPastPaperYear(pastPaperYearOptions[0].id);
     }
-  }, [materialMode, pastPaperYearOptions, pastPaperYear]);
+  }, [materialMode, pastPaperYearOptions, pastPaperYear, pastPaperCatalog]);
 
   // Paper types available for the currently selected year.
   const pastPaperYearAvailableTypes = useMemo(() => {
@@ -3321,28 +3386,33 @@ function App() {
 
   // Load past-paper catalog when subject changes
   useEffect(() => {
-    if (!selectedBook) return;
+    if (!selectedBook || !userSelectsLoaded) return;
+    let cancelled = false;
     setPastPaperCatalog(null);
     setPastPaperImages([]);
     setPastPaperLoaded(false);
     setPpYearExtraTypes([]);
     setPpYearExtraImages({});
     setPastPaperTopic('');
-    setPastPaperYear('');
     setPastPaperPaperType('');
     setPastPaperLanguage('en');
     (async () => {
       try {
         const data = await fetchJson(`api/past-papers/catalog?subject=${encodeURIComponent(selectedBook)}`);
+        if (cancelled) return;
         if (data.byTopics || data.byYears) {
-          setPastPaperCatalog(data);
+          const savedSelection = subjectSelectionsRef.current[selectedBook] || {};
+          setPastPaperCatalog({ ...data, subjectId: selectedBook });
+          setPastPaperYear(savedSelection.pastPaperYear || (savedPrefs.selectedBook === selectedBook ? savedPrefs.pastPaperYear : '') || '');
+          setPastPaperYearType(savedSelection.pastPaperYearType || (savedPrefs.selectedBook === selectedBook ? savedPrefs.pastPaperYearType : '') || 'p1');
           const availableLanguages = ['en', 'tc'].filter((lang) => {
             const topicMatch = Array.isArray(data.byTopics?.contents) && data.byTopics.contents.some((entry) => String(entry?.lang || '').trim().toLowerCase() === lang);
             const yearMatch = Array.isArray(data.byYears?.contents) && data.byYears.contents.some((entry) => String(entry?.lang || '').trim().toLowerCase() === lang);
             return topicMatch || yearMatch;
           });
           if (availableLanguages.length > 0) {
-            setPastPaperLanguage(availableLanguages[0]);
+            setPastPaperLanguage(availableLanguages.includes(savedSelection.pastPaperLanguage)
+              ? savedSelection.pastPaperLanguage : availableLanguages[0]);
           }
           // Auto-select first paper type for subjects that have papers
           const entries = data.byTopics?.contents || [];
@@ -3354,7 +3424,8 @@ function App() {
         console.warn('[past-papers] catalog error:', err);
       }
     })();
-  }, [selectedBook]);
+    return () => { cancelled = true; };
+  }, [selectedBook, userSelectsLoaded]);
 
   // Load section→topic map whenever the book changes
   useEffect(() => {
@@ -4062,13 +4133,15 @@ function App() {
     // Don't save while chapter is empty — this is a transitional state
     // during subject/book switches that would overwrite the previously
     // saved selection with blank values before restoration can occur.
-    if (!selectedBook || !selectedChapter) return;
+    if (!selectedBook || !selectedChapter || !userSelectsLoaded || restoringUserSelectsRef.current) return;
     setSubjectSelections((current) => {
       const nextEntry = {
+        ...current[selectedBook],
         bookId: selectedChapter,
         sectionId: selectedFile,
         pageId: selectedPage,
         physicsChapterId: selectedBook === 'physics-oup' ? selectedPhysicsChapterId : '',
+        ...(pastPaperCatalog?.subjectId === selectedBook && pastPaperYear ? { pastPaperYear, pastPaperLanguage, pastPaperYearType } : {}),
       };
       const previous = current[selectedBook] || {};
       if (
@@ -4076,20 +4149,24 @@ function App() {
         && String(previous.sectionId ?? '') === String(nextEntry.sectionId ?? '')
         && Number(previous.pageId) === Number(nextEntry.pageId)
         && String(previous.physicsChapterId || '') === String(nextEntry.physicsChapterId || '')
+        && previous.pastPaperYear === nextEntry.pastPaperYear
+        && previous.pastPaperLanguage === nextEntry.pastPaperLanguage
+        && previous.pastPaperYearType === nextEntry.pastPaperYearType
       ) {
         return current;
       }
       return { ...current, [selectedBook]: nextEntry };
     });
-  }, [selectedBook, selectedChapter, selectedFile, selectedPage, selectedPhysicsChapterId]);
+  }, [selectedBook, selectedChapter, selectedFile, selectedPage, selectedPhysicsChapterId, userSelectsLoaded, pastPaperCatalog, pastPaperYear, pastPaperLanguage, pastPaperYearType]);
 
   useEffect(() => {
     // Don't save while chapter is empty — transitional state during subject
     // switches that would overwrite the saved selection on the server.
     if (!sessionUserResolved || !userSelectsLoaded || !userId || !selectedBook || !selectedChapter || restoringUserSelectsRef.current) return;
-    const timer = window.setTimeout(() => {
+    const saveSelection = () => {
       fetchJson('api/user-selects', {
         method: 'POST',
+        keepalive: true,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userId,
@@ -4099,14 +4176,20 @@ function App() {
           sectionId: selectedFile,
           pageId: selectedPage,
           physicsChapterId: selectedBook === 'physics-oup' ? selectedPhysicsChapterId : '',
+          ...(pastPaperCatalog?.subjectId === selectedBook && pastPaperYear ? { pastPaperYear, pastPaperLanguage, pastPaperYearType } : {}),
           lastStudyAction,
         }),
       }).catch((err) => {
         console.error('[user-selects] failed to save:', err);
       });
-    }, 250);
-    return () => window.clearTimeout(timer);
-  }, [sessionUserResolved, userId, userSelectsLoaded, selectedBook, selectedChapter, selectedFile, selectedPage, selectedPhysicsChapterId, lastStudyAction]);
+    };
+    const timer = window.setTimeout(saveSelection, 250);
+    window.addEventListener('pagehide', saveSelection);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('pagehide', saveSelection);
+    };
+  }, [sessionUserResolved, userId, userSelectsLoaded, selectedBook, selectedChapter, selectedFile, selectedPage, selectedPhysicsChapterId, lastStudyAction, pastPaperCatalog, pastPaperYear, pastPaperLanguage, pastPaperYearType]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -9040,14 +9123,14 @@ function App() {
     && visiblePanes.length === 1;
   // Stacked mid-header layout only applies to two real textbook language panes.
   const hasSpecialPane = visiblePanes.some(
-    (p) => p.viewId === VIEW_MY_PAPER || p.viewId === VIEW_PP_RELATED || p.viewId === VIEW_PAST_PAPER || p.viewId === VIEW_PP_VIDEO
+    (p) => p.viewId === VIEW_MY_PAPER || p.viewId === VIEW_PP_RELATED || p.viewId === VIEW_PAST_PAPER || p.viewId === VIEW_PP_VIDEO || RESOURCE_VIEW_IDS.includes(p.viewId)
   );
   const useBilingualMidHeaderLayout = isBilingualView && visiblePanes.length === 2 && !hasSpecialPane && (isPortrait || isMediumBilingualWidth);
   const maxPagesInGroup = useMemo(() => {
     // Only synchronise page heights across same-material textbook panes.
     // My Paper and PP-related are independent materials and must not be equalised.
     const textbookPanes = visiblePanes.filter(
-      (pane) => pane.viewId !== VIEW_MY_PAPER && pane.viewId !== VIEW_PP_RELATED
+      (pane) => pane.viewId !== VIEW_MY_PAPER && pane.viewId !== VIEW_PP_RELATED && !RESOURCE_VIEW_IDS.includes(pane.viewId)
     );
     const counts = textbookPanes
       .map((pane) => Number(pageCounts[pane.sourceKey] || 0))
@@ -10315,6 +10398,8 @@ function App() {
   // sidebar checkbox dropdown so both surfaces offer identical choices/state.
   const viewToggleOptions = normalizeSelectedViewsForMaterial(materialMode, ALL_VIEW_IDS)
     .filter((viewId) => {
+      if (isWinterMaterial) return [VIEW_EN_STUDENT, ...RESOURCE_VIEW_IDS, VIEW_MY_PAPER].includes(viewId);
+      if (RESOURCE_VIEW_IDS.includes(viewId)) return false;
       // Both PP modes only offer Past Paper + My Paper (no English Student).
       if (materialMode === MATERIAL_PP_TOPICS || materialMode === MATERIAL_PP_YEARS) {
         return viewId === VIEW_PAST_PAPER || viewId === VIEW_MY_PAPER;
@@ -10327,7 +10412,8 @@ function App() {
       // Disable views whose content isn't available: past-paper needs
       // loaded past-paper images, textbook views need the matching
       // {lang}/contents (student) or {lang}/contents.tn (teacher) data.
-      const noSource = viewId === VIEW_MY_PAPER ? false
+      // Resource selectors remain available even while their catalog is loading.
+      const noSource = viewId === VIEW_MY_PAPER || RESOURCE_VIEW_IDS.includes(viewId) ? false
         : viewId === VIEW_PP_RELATED ? ppRelatedTopics.length === 0
         : viewId === VIEW_PAST_PAPER ? !hasRenderableSource(effectivePageSources['past-paper:student'])
         : !isTextViewAvailable(viewId);
@@ -10635,7 +10721,7 @@ function App() {
                   onClick={() => toggleSelectedView(viewId)}
                   aria-pressed={active}
                 >
-                  {_(getViewLabelKey(viewId))}
+                  {viewLabel(viewId)}
                 </button>
               ))}
             </div>
@@ -11252,7 +11338,7 @@ function App() {
 
       <main className={`reader ${isRightDrawerOpen ? 'reader-with-right-drawer' : ''}`}>
         <div
-          className={`book-stage ${displayMode} ${isBilingualView ? 'bilingual-layout' : ''} ${isBilingualView ? `pane-count-${visiblePanes.length}` : ''} ${useBilingualMidHeaderLayout ? 'bilingual-stacked' : ''} ${hasSpecialPane ? 'has-special-pane' : ''} ${isSingleLanguageSinglePane && isRightDrawerOpen ? 'single-pane-with-right-drawer' : ''} tool-${tool}`}
+          className={`book-stage ${displayMode} ${isBilingualView ? 'bilingual-layout' : ''} ${isBilingualView ? `pane-count-${visiblePanes.length}` : ''} ${useBilingualMidHeaderLayout ? 'bilingual-stacked' : ''} ${hasSpecialPane ? 'has-special-pane' : ''} ${visiblePanes.some((pane) => RESOURCE_VIEW_IDS.includes(pane.viewId)) ? 'has-resource-columns' : ''} ${isSingleLanguageSinglePane && isRightDrawerOpen ? 'single-pane-with-right-drawer' : ''} tool-${tool}`}
           ref={stageRef}
           onClick={(e) => { handleStageClick(e); if (tool === 'text') handleCanvasClick(e); }}
           onContextMenu={handleStageContextMenu}
@@ -11432,6 +11518,35 @@ function App() {
             ) : (
               /* ── Non-bilingual or bilingual landscape: render all panes normally ── */
               visiblePanes.map((pane) => {
+            if (RESOURCE_VIEW_IDS.includes(pane.viewId)) {
+              return (
+                <OtherResourceColumn
+                  key={pane.viewId}
+                  pane={pane}
+                  title={viewLabel(pane.viewId)}
+                  entries={otherResourceCatalog?.[pane.viewId] || []}
+                  selectedId={otherResourceSelections[pane.viewId] || ''}
+                  onSelect={(id) => setOtherResourceSelections((current) => ({ ...current, [pane.viewId]: id }))}
+                  loading={!otherResourceCatalog && !otherResourceError}
+                  error={otherResourceError}
+                  onRetry={() => setOtherResourceRetry((value) => value + 1)}
+                  labels={{ loading: _('loading'), retry: _('retry'), noResources: _('noResources') }}
+                  mode={displayMode}
+                  thumbnailsOpen={showThumbnails}
+                  contentType="textbook"
+                  zoom={zoomSettings.textbook.zoom}
+                  thumbCols={thumbCols}
+                  fitMode={zoomSettings.textbook.fitMode}
+                  fitRefreshToken={fitRefreshToken}
+                  forceRedrawToken={forceRedrawToken}
+                  onRenderScaleChange={(scale) => setRenderScaleByLanguage((current) => (
+                    current[pane.sourceKey] === scale ? current : { ...current, [pane.sourceKey]: scale }
+                  ))}
+                  onScrollCanvasesReady={() => setRedrawTick((value) => value + 1)}
+                  language={selectedLanguage}
+                />
+              );
+            }
             if (pane.viewId === VIEW_PP_VIDEO) {
               return (
                 <div key="pp-video" className="pp-video-pane" style={{ display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
@@ -12651,7 +12766,7 @@ function App() {
                     disabled={disabled}
                     onChange={() => toggleSelectedView(viewId)}
                   />
-                  <span className="collapsed-views-label">{_(getViewLabelKey(viewId))}</span>
+                  <span className="collapsed-views-label">{viewLabel(viewId)}</span>
                 </label>
               ))}
             </div>

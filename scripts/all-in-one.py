@@ -1973,7 +1973,7 @@ def main():
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     base_dir = os.path.dirname(script_dir)
-    data_root = os.path.join(base_dir, "data")
+    data_root = os.path.join(base_dir, "data", "textbooks")
 
     if args.chapter_path:
         TEXTBOOKS_DIR = os.path.join(data_root, args.chapter_path)

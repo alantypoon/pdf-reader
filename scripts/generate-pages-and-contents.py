@@ -4,6 +4,11 @@ all-in-one.py
 
 Usage:
     python3 scripts/all-in-one.py biology-oup/1a
+    python3 scripts/generate-pages-and-contents.py --split-other-learning-resources
+
+    --split-other-learning-resources renders numbered question/answer PDFs and
+    the four Misc PDFs in data/other-learning-resources into pages/<PDF stem>/.
+    Supports --dpi and --format and leaves source PDFs unchanged.
 
 Output:
     1. Splits each multi-page PDF into individual PNG images.
@@ -1797,6 +1802,27 @@ def _split_pdf_to_single_page_pdfs(pdf_path, pages_dir, prefix):
     return results
 
 
+def split_other_learning_resources(data_root, args):
+    """Render question, answer and Misc PDFs using separate output directories."""
+    resource_dir = Path(data_root) / "other-learning-resources"
+    misc_names = {
+        "List of Definition", "Paragraph Length Question",
+        "Summary of Diagrams", "Ultimate Intensive Note",
+    }
+    pdfs = sorted(
+        pdf for pdf in resource_dir.glob("*.pdf")
+        if re.match(r"^\d{2}(?!\d)", pdf.stem) or pdf.stem in misc_names
+    )
+    if not pdfs:
+        raise FileNotFoundError(f"No other learning resource PDFs found in {resource_dir}")
+    for pdf in pdfs:
+        pages = _split_pdf_to_pages(
+            str(pdf), str(resource_dir / "pages" / pdf.stem),
+            "page", dpi=args.dpi, fmt=args.format,
+        )
+        print(f"  {pdf.name}: {len(pages)} pages")
+
+
 def _normalize_past_paper_stem(stem):
     """Normalize malformed paper stems like 'p1 ' to 'p1'."""
     normalized = re.sub(r"\s+", "", str(stem or "").strip())
@@ -2490,11 +2516,22 @@ def main():
         help="Process past-papers in data/past-papers/ instead of textbooks in data/",
     )
     parser.add_argument(
+        "--split-other-learning-resources",
+        action="store_true",
+        help="Only split numbered question/answer PDFs and the four Misc PDFs in data/other-learning-resources into page images.",
+    )
+    parser.add_argument(
         "--contents-json-only",
         action="store_true",
         help="[past-papers only] Generate only contents.json with ETT-extracted titles from the first page of each PDF. Does NOT extract page images.",
     )
     args = parser.parse_args()
+    if args.split_other_learning_resources and (
+        args.chapter_path or args.past_papers or args.contents_json_only or args.skip_pdfs
+    ):
+        parser.error("--split-other-learning-resources cannot be combined with a chapter, --past-papers, --contents-json-only or --skip-pdfs")
+    if args.dpi <= 0:
+        parser.error("--dpi must be positive")
 
     # --contents-json-only implies --skip-pdfs (no page extraction needed)
     if args.contents_json_only:
@@ -2504,12 +2541,18 @@ def main():
     base_dir = os.path.dirname(script_dir)
     data_root = os.path.join(base_dir, "data")
 
+    if args.split_other_learning_resources:
+        split_other_learning_resources(data_root, args)
+        return
+
     if args.past_papers:
         _process_past_papers(data_root, args, base_dir)
         return
 
+    textbooks_root = os.path.join(data_root, "textbooks")
+
     if args.chapter_path:
-        data_dir = os.path.join(data_root, args.chapter_path)
+        data_dir = os.path.join(textbooks_root, args.chapter_path)
         if not os.path.isdir(data_dir):
             print(f"ERROR: directory not found: {data_dir}", file=sys.stderr)
             sys.exit(1)
@@ -2519,20 +2562,20 @@ def main():
 
     subject_dirs = sorted(
         (
-            entry.name for entry in os.scandir(data_root)
+            entry.name for entry in os.scandir(textbooks_root)
             if entry.is_dir()
         ),
         key=_natural_id_sort_key,
     )
 
     if not subject_dirs:
-        print(f"ERROR: no subject directories found under: {data_root}", file=sys.stderr)
+        print(f"ERROR: no subject directories found under: {textbooks_root}", file=sys.stderr)
         sys.exit(1)
 
     for index, subject_id in enumerate(subject_dirs):
         if index > 0:
             print("\n\n")
-        subject_dir = os.path.join(data_root, subject_id)
+        subject_dir = os.path.join(textbooks_root, subject_id)
         print("@" * 60)
         print(f"  Subject: {subject_id}")
         print("@" * 60)
