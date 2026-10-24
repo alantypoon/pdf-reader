@@ -23,6 +23,20 @@ export default function OtherResourceColumn({
                   onSelect={(id) => { setPage(1); onSelect(id); }}
                 />
               )}
+        {entries.some((entry) => entry.id === selectedId) && (
+          <a
+            className="resource-document-download"
+            href={`/pdf-reader/data/other-learning-resources/${encodeURIComponent(selectedId)}.pdf`}
+            download={`${selectedId}.pdf`}
+            title={`${labels.download}: ${selectedId}`}
+            aria-label={`${labels.download}: ${selectedId}`}
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+              <path d="M11 3h2v10l3-3 1.4 1.4L12 17l-5.4-5.6L8 10l3 3V3zM5 19h14v2H5v-2z" fill="currentColor" />
+            </svg>
+            <span>{labels.download}</span>
+          </a>
+        )}
       </div>
       {source && (
         <PdfPane

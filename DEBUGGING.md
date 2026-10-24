@@ -6,6 +6,8 @@ Questions, Answers and Misc each show a single-row searchable Select2 dropdown a
 own reader in the main area. Selecting a document or scrolling a resource must not
 change another column's page or the Notes page. Document dropdowns remain available
 when the sidebar is collapsed.
+The Download button at the right of each column header saves the selected
+document's original PDF, not its generated page images.
 Page-card headers are hidden while any resource column is visible so they cannot
 cover document selectors. Normal header behaviour returns when none is visible.
 

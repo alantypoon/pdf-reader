@@ -11530,7 +11530,7 @@ function App() {
                   loading={!otherResourceCatalog && !otherResourceError}
                   error={otherResourceError}
                   onRetry={() => setOtherResourceRetry((value) => value + 1)}
-                  labels={{ loading: _('loading'), retry: _('retry'), noResources: _('noResources') }}
+                  labels={{ loading: _('loading'), retry: _('retry'), noResources: _('noResources'), download: _('downloadDocument') }}
                   mode={displayMode}
                   thumbnailsOpen={showThumbnails}
                   contentType="textbook"
