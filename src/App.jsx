@@ -3668,7 +3668,7 @@ function App() {
 
   useEffect(() => {
     if (!selectedBook) return;
-    setSearchSubjects([selectedBook]);
+    if (!navigatingToLocationRef.current) setSearchSubjects([selectedBook]);
     setBookmarkSubjects([selectedBook]);
   }, [selectedBook]);
 
@@ -9803,14 +9803,37 @@ function App() {
   // When searchQuery / scope / subjects change → fresh search (offset=0).
   // When searchOffset increases → load-more (append results).
 
+  const searchParams = useMemo(() => {
+    if (!searchQuery.trim()) return '';
+    const params = new URLSearchParams({ q: searchQuery.trim() });
+    params.set('limit', '50');
+    params.set('language', sidebarExcerptLanguage);
+    if (searchScopePage || searchScopeSection) {
+      if (selectedBook) params.set('subjectId', selectedBook);
+      if (selectedChapter) params.set('bookId', selectedChapter);
+      if (selectedFile) params.set('sectionId', selectedFile);
+      if (searchScopePage && selectedPage) params.set('pageId', selectedPage);
+    } else {
+      const allSubjects = ['physics-oup', 'chemistry-aristo', 'chemistry-winter', 'chemistry-winter2', 'biology-oup'];
+      const selectedSet = new Set(searchSubjects);
+      const allSelected = allSubjects.every((id) => selectedSet.has(id));
+      if (!allSelected && searchSubjects.length > 0) {
+        searchSubjects.forEach((id) => params.append('subjectId', id));
+      }
+    }
+    params.set('includeAnnotations', '1');
+    if (wholeWord) params.set('wholeWord', '1');
+    return params.toString();
+  }, [searchQuery, searchScopePage, searchScopeSection, selectedBook, selectedChapter, selectedFile, selectedPage, wholeWord, searchSubjects, sidebarExcerptLanguage]);
+
   // Reset offset to 0 whenever the query or filters change (not on offset change).
   useEffect(() => {
     setSearchOffset(0);
     setSearchHasMore(false);
-  }, [searchQuery, searchScopePage, searchScopeSection, selectedBook, selectedChapter, selectedFile, selectedPage, wholeWord, searchSubjects, sidebarExcerptLanguage]);
+  }, [searchParams]);
 
   useEffect(() => {
-    if (!searchQuery.trim()) {
+    if (!searchParams) {
       setSearchResults([]);
       setSearchHasMore(false);
       setSearchOffset(0);
@@ -9819,6 +9842,7 @@ function App() {
     const isFirstPage = searchOffset === 0;
     if (isFirstPage) {
       setSearchLoading(true);
+      setSearchLoadingMore(false);
       setSearchResults([]);
       setSearchHasMore(false);
     } else {
@@ -9829,25 +9853,8 @@ function App() {
 
     const timer = setTimeout(async () => {
       try {
-        const params = new URLSearchParams({ q: searchQuery.trim() });
-        params.set('limit', '50');
+        const params = new URLSearchParams(searchParams);
         params.set('offset', String(searchOffset));
-        params.set('language', sidebarExcerptLanguage);
-        if (searchScopePage || searchScopeSection) {
-          if (selectedBook) params.set('subjectId', selectedBook);
-          if (selectedChapter) params.set('bookId', selectedChapter);
-          if (selectedFile) params.set('sectionId', selectedFile);
-          if (searchScopePage && selectedPage) params.set('pageId', selectedPage);
-        } else {
-          const allSubjects = ['physics-oup', 'chemistry-aristo', 'chemistry-winter', 'chemistry-winter2', 'biology-oup'];
-          const selectedSet = new Set(searchSubjects);
-          const allSelected = allSubjects.every((id) => selectedSet.has(id));
-          if (!allSelected && searchSubjects.length > 0) {
-            searchSubjects.forEach((id) => params.append('subjectId', id));
-          }
-        }
-        params.set('includeAnnotations', '1');
-        if (wholeWord) params.set('wholeWord', '1');
         const data = await fetchJson(`api/search?${params.toString()}`);
 
         // Discard stale responses (e.g. a new query was typed while this was in-flight)
@@ -9871,8 +9878,11 @@ function App() {
       }
     }, isFirstPage ? 300 : 0); // debounce only for fresh searches; load-more is immediate
 
-    return () => clearTimeout(timer);
-  }, [searchQuery, searchScopePage, searchScopeSection, selectedBook, selectedChapter, selectedFile, selectedPage, wholeWord, searchSubjects, searchOffset, sidebarExcerptLanguage]);
+    return () => {
+      clearTimeout(timer);
+      searchVersionRef.current += 1;
+    };
+  }, [searchParams, searchOffset]);
 
   // ── Load more when IntersectionObserver fires ────────────
   const loadMoreSentinelRef = useRef(null);
@@ -9890,7 +9900,7 @@ function App() {
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [searchHasMore, searchLoading, searchLoadingMore]);
+  }, [searchDrawerOpen, searchHasMore, searchLoading, searchLoadingMore]);
 
   // Derive modal content type
   const modalType = useMemo(() => {
@@ -12453,9 +12463,10 @@ function App() {
                         <button
                           key={result._id || `${result.source}-${result.subjectId}-${result.bookId}-${result.sectionId}-${result.pageId}-${idx}`}
                           className="search-result-item"
-                          onClick={() => {
-                            navigateToReaderLocation(result);
-                            // Keep drawer open so user can try another result
+                          onClick={async () => {
+                            if (await navigateToReaderLocation(result) && isNarrowScreen && isPortrait) {
+                              setSearchDrawerOpen(false);
+                            }
                           }}
                         >
                           <div className="search-result-breadcrumb">

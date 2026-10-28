@@ -17,6 +17,17 @@ The visible page's top should match the scroll container's top, not merely
 the requested page label. The regression test is
 `node --test tests/search-page-navigation.test.js`.
 
+## Search results refresh after navigation
+
+Search effects depend on the effective request parameters, not the reader's
+unscoped location. Clicking a result must preserve the selected search subjects,
+loaded results, pagination and scroll position. Current Section searches refresh
+only when the section changes; Current Page searches also refresh on page changes.
+Changing the query, language or active filters still starts a fresh search.
+After successful result navigation, the search drawer closes on narrow portrait
+screens (up to 960px wide) so the page is visible. It remains open on wider screens
+and in landscape, and reopening it preserves the search.
+
 ## In-depth and Intensive resource columns
 
 Questions, Answers and Misc each show a single-row searchable Select2 dropdown above their
