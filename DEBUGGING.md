@@ -1,5 +1,22 @@
 # Debugging: Page Scrolling Issues
 
+## Search jumps to the wrong visible page
+
+Fit/zoom refreshes must preserve explicit image heights from the page metadata,
+including unloaded images and lazy-load placeholders. Setting unloaded images to
+`height: auto` collapses them until they load, shifting page offsets while the
+requested page label remains unchanged. Check the visible page itself after a
+search jump, not just the page label. Use
+https://ai-edu.dedyn.io/pdf-reader/ for browser validation, not a localhost
+navigation-test route. After rebuilding, reload the site to load the new bundle.
+For example, search for `broken down`, click Chemistry › 1A › §2 › p.25 and
+confirm the visible image URL ends in `/2-25.png`, including with slow image
+loading and after fit/zoom changes. For Physics, search for `force`, click
+Book 1, section 5, p.52 and confirm the visible image URL ends in `/5-52.png`.
+The visible page's top should match the scroll container's top, not merely
+the requested page label. The regression test is
+`node --test tests/search-page-navigation.test.js`.
+
 ## In-depth and Intensive resource columns
 
 Questions, Answers and Misc each show a single-row searchable Select2 dropdown above their

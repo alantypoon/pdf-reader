@@ -3840,12 +3840,20 @@ function PdfPane({
         placeholders.forEach((ph) => { ph.style.height = `${h}px`; });
       } else {
         const w = baseWidth * zoom;
-        imgs.forEach((img) => {
+        imgs.forEach((img, idx) => {
+          const item = images[idx];
+          const natW = (typeof item === 'object' ? item?.w : 0) || img.naturalWidth;
+          const natH = (typeof item === 'object' ? item?.h : 0) || img.naturalHeight;
           img.style.width = `${w}px`;
-          img.style.height = 'auto';
+          // Keep unloaded pages the same size as their placeholders.
+          img.style.height = natW && natH ? `${Math.round(natH * w / natW)}px` : 'auto';
           img.style.maxWidth = 'none';
         });
-        placeholders.forEach((ph) => { ph.style.width = `${w}px`; });
+        placeholders.forEach((ph) => {
+          const img = imgs[Number(ph.dataset.page) - 1];
+          ph.style.width = `${w}px`;
+          if (img) ph.style.height = img.style.height;
+        });
         // Also update any .my-paper-page divs swapped in by ensureMyPaperWindow
         // (they are not in imgElementsRef so the forEach above misses them).
         if (contentType === 'my-paper') {
