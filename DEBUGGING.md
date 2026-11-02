@@ -1,5 +1,31 @@
 # Debugging: Page Scrolling Issues
 
+## Action logs
+
+Open `/pdf-reader/logs` (or **Action logs** beside Logout) to view the
+signed-in user's activity. `/pdf-reader/logs/<username>` selects a specific
+account, for example `/pdf-reader/logs/raymond`. Only the administrator account
+`alan` may view another user's logs; other accounts receive a 403 error.
+The API enforces the same rule at `GET /api/user-actions/:userId` and returns
+404 for unknown usernames. Search, sorting and pagination stay scoped to the
+selected account. Search matches action types, subject IDs, book and
+section names/IDs, dates, language and source. Book and section names for older
+entries are resolved from textbook catalogs; missing catalogs display the IDs.
+Datetime (the default, newest first), book name and section name each support
+ascending/descending order. Times display in Hong Kong time.
+
+The page fetches 50 entries at a time from `GET /api/user-actions` and loads
+the next page when the bottom approaches the scroll viewport. Search/sort
+changes reset pagination. The API accepts `search`, `sort` (`datetime`,
+`bookName`, `sectionName`), `direction` (`asc`, `desc`), `limit` (1-100) and
+an opaque `cursor`. Pagination uses the sort value and unique document ID
+instead of offsets, so equal sort values do not repeat or skip entries.
+Failures show an error and Retry rather than an empty success state.
+
+Rebuild the frontend and restart the backend after deployment. Existing nginx
+SPA fallback and `/pdf-reader/api/` proxy locations already cover this page;
+do not expose the filesystem `logs/` directory.
+
 ## Search jumps to the wrong visible page
 
 Fit/zoom refreshes must preserve explicit image heights from the page metadata,

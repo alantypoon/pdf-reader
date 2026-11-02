@@ -10611,6 +10611,7 @@ function App() {
                 </svg>
                 <code>{userId}</code>
               </div>
+              <a className="sidebar-logout-btn" href={`${import.meta.env.BASE_URL}logs`}>{_('actionLogs')}</a>
               <a className="sidebar-logout-btn" href={logoutUrl} onClick={logLogout}>{_('logout')}</a>
             </div>
           </div>

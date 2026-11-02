@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { MongoClient } from 'mongodb';
 import sharp from 'sharp';
 import { classifyOtherLearningResource, getOtherLearningResources } from './otherLearningResources.js';
+import { parseActionLogQuery, readActionLogPage } from './actionLogs.js';
 
 // ── Timestamped logging ───────────────────────────────────
 const _origLog = console.log, _origErr = console.error, _origWarn = console.warn;
@@ -260,6 +261,7 @@ async function connectMongo() {
     annotationsCollection = db.collection('annotations');
     annotationsRedoCollection = db.collection('annotations-redo');
     bookmarksCollection = db.collection('bookmarks');
+    await userActions.createIndex({ userId: 1, createdAt: -1 }, { name: 'user_actions_user_time' });
     await migrateAiGenerationSubjectIds();
     await aiGenerations.createIndex(
       { subjectId: 1, bookId: 1, sectionId: 1, pageId: 1 },
@@ -662,6 +664,33 @@ app.post('/api/user-selects', requireValidUserId(true), asyncRoute(async (reques
     { upsert: true }
   );
   response.json({ ok: true });
+}));
+
+app.get(['/api/user-actions', '/api/user-actions/:userId'], requireValidUserId(), asyncRoute(async (request, response) => {
+  response.setHeader('Cache-Control', 'no-store');
+  const userId = request.params.userId ?? request.validatedUserId;
+  if (userId !== request.validatedUserId && request.validatedUserId !== 'alan') {
+    console.warn('[action-logs] cross-user access denied for', request.validatedUserId);
+    response.status(403).json({ error: "Only administrators can view another user's action logs." });
+    return;
+  }
+  if (!isValidUserId(userId)) {
+    response.status(404).json({ error: 'User not found.' });
+    return;
+  }
+  let options;
+  try {
+    options = parseActionLogQuery(request.query);
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error;
+    response.status(400).json({ error: error.message });
+    return;
+  }
+  if (!userActions) {
+    response.status(503).json({ error: 'Action logs are unavailable: MongoDB not connected.' });
+    return;
+  }
+  response.json(await readActionLogPage(userActions, userId, PATH_TEXTBOOKS, options));
 }));
 
 app.post('/api/user-actions', requireValidUserId(true), asyncRoute(async (request, response) => {

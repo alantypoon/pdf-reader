@@ -1,0 +1,61 @@
+.action-logs {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  padding: 24px;
+  gap: 20px;
+  color: var(--text, #102033);
+  background: var(--bg, #f3f7fa);
+}
+
+.action-logs-header h1 { margin: 12px 0 8px; }
+.action-logs-header p { margin: 0; color: var(--text-secondary, #536477); }
+.action-logs a { color: var(--accent, #245caa); }
+.action-logs-controls { display: flex; flex-wrap: wrap; gap: 16px; }
+.action-logs-controls label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; }
+.action-logs-search { flex: 1; min-width: 220px; }
+.action-logs-controls input,
+.action-logs-controls select,
+.action-logs-error button {
+  padding: 10px 12px;
+  border: 1px solid var(--border, #b9c9d6);
+  border-radius: 6px;
+  color: inherit;
+  background: var(--bg-secondary, #fff);
+}
+.action-logs-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border, #cfdae3);
+  border-radius: 8px;
+  background: var(--bg-secondary, #fff);
+  overscroll-behavior: contain;
+}
+.action-logs table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 14px; }
+.action-logs th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-surface, #eaf0f6);
+  text-align: left;
+  white-space: nowrap;
+}
+.action-logs th,
+.action-logs td { padding: 12px; border-bottom: 1px solid var(--border, #e1e8ee); vertical-align: top; }
+.action-logs td:first-child { white-space: nowrap; }
+.action-logs td { min-width: 75px; overflow-wrap: anywhere; }
+.action-logs pre { max-width: 320px; white-space: pre-wrap; }
+.action-logs summary { cursor: pointer; }
+.action-logs-status,
+.action-logs-error { padding: 20px; text-align: center; }
+.action-logs-error { color: var(--text, #a32222); }
+.action-logs-sentinel { height: 1px; }
+@media (max-width: 600px) {
+  .action-logs { padding: 12px; gap: 12px; }
+  .action-logs-header h1 { font-size: 24px; }
+  .action-logs-header p { font-size: 13px; }
+  .action-logs-search { flex-basis: 100%; min-width: 0; }
+  .action-logs-controls label:not(.action-logs-search) { flex: 1; }
+}
