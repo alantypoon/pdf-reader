@@ -10663,7 +10663,7 @@ function App() {
               </svg>
               {_('material')}
             </span>
-            <div className="book-section-mode-toggle" role="group" aria-label="Material mode">
+            <div className="toggle-group book-section-mode-toggle" role="group" aria-label="Material mode">
             <button
               type="button"
               className={`toggle-btn ${materialMode === MATERIAL_TEXTBOOK && (!CHEMISTRY_SUBJECT_IDS.includes(String(selectedBook).toLowerCase()) || selectedBook === 'chemistry-aristo') ? 'active' : ''}`}
@@ -10720,7 +10720,7 @@ function App() {
               </svg>
               {_('view')}
             </span>
-            <div className="toggle-group multi-toggle-group">
+            <div className="toggle-group multi-toggle-group view-toggle-group">
               {viewToggleOptions.map(({ viewId, active, disabled, isLastActive }) => (
                 <button
                   key={viewId}

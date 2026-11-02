@@ -1481,6 +1481,24 @@ button, input, select {
   border-radius: 8px;
 }
 
+.toggle-group.view-toggle-group {
+  gap: 0;
+  background: white;
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.toggle-group.view-toggle-group .toggle-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  border-radius: 0;
+}
+
+.toggle-group.view-toggle-group .toggle-btn + .toggle-btn,
+.toggle-group.book-section-mode-toggle .toggle-btn + .toggle-btn {
+  box-shadow: inset 1px 0 0 #d7e3ec;
+}
+
 .toggle-btn {
   flex: 1;
   display: inline-flex;
@@ -3813,12 +3831,41 @@ button, input, select {
 
 .book-section-mode-toggle {
   display: flex;
-  gap: 8px;
+  gap: 0;
   margin: 8px 0 10px;
 }
 
 .book-section-mode-toggle .toggle-btn {
   flex: 1;
+}
+
+.toggle-group.book-section-mode-toggle {
+  background: white;
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.toggle-group.book-section-mode-toggle .toggle-btn {
+  border-radius: 0;
+}
+
+.toggle-group.view-toggle-group .toggle-btn:first-child,
+.toggle-group.book-section-mode-toggle .toggle-btn:first-child,
+.toggle-group.view-toggle-group .toggle-btn:first-child:not(:last-child),
+.toggle-group.book-section-mode-toggle .toggle-btn:first-child:not(:last-child) {
+  border-top-left-radius: 999px;
+  border-bottom-left-radius: 999px;
+}
+
+.toggle-group.view-toggle-group .toggle-btn:last-child,
+.toggle-group.book-section-mode-toggle .toggle-btn:last-child {
+  border-top-right-radius: 999px;
+  border-bottom-right-radius: 999px;
+}
+
+:root.dark .toggle-group.view-toggle-group .toggle-btn + .toggle-btn,
+:root.dark .toggle-group.book-section-mode-toggle .toggle-btn + .toggle-btn {
+  box-shadow: inset 1px 0 0 #3b4c5c;
 }
 
 .autocomplete-item.disabled {
