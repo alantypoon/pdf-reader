@@ -1309,6 +1309,7 @@ function App() {
   const [ppYearExtraImages, setPpYearExtraImages] = useState({});
   // PP-video data for by-years video toggle
   const [ppVideoSections, setPpVideoSections] = useState([]);
+  const [ppVideoLoading, setPpVideoLoading] = useState(false);
   const [ppVideoSection, setPpVideoSection] = useState('');
   const [ppVideoQuestion, setPpVideoQuestion] = useState('');
   const [ppVideoOpen, setPpVideoOpen] = useState(false);
@@ -3357,13 +3358,27 @@ function App() {
     }
   }, [materialMode, pastPaperYearAvailableTypes, pastPaperYearType]);
 
+  // Reset before paint so the previous year's video cannot remain visible while the new list loads.
+  const previousPpVideoYearRef = useRef(pastPaperYear);
+  useLayoutEffect(() => {
+    const yearChanged = String(previousPpVideoYearRef.current) !== String(pastPaperYear);
+    previousPpVideoYearRef.current = pastPaperYear;
+    if (!yearChanged || materialMode !== MATERIAL_PP_YEARS || !ppVideoOpen) return;
+    setPpVideoSections([]);
+    setPpVideoLoading(true);
+    setPpVideoSection('PIA');
+    setPpVideoQuestion('1');
+  }, [materialMode, pastPaperYear, ppVideoOpen]);
+
   // Fetch pp-video list when year changes in by-years mode
   useEffect(() => {
     if (materialMode !== MATERIAL_PP_YEARS || !selectedBook || !pastPaperYear) {
       setPpVideoSections([]);
+      setPpVideoLoading(false);
       return;
     }
     let cancelled = false;
+    setPpVideoLoading(true);
     (async () => {
       try {
         const data = await fetchJson(`api/past-papers/pp-videos?subject=${encodeURIComponent(selectedBook)}&year=${encodeURIComponent(pastPaperYear)}`);
@@ -3379,6 +3394,8 @@ function App() {
         }
       } catch {
         if (!cancelled) setPpVideoSections([]);
+      } finally {
+        if (!cancelled) setPpVideoLoading(false);
       }
     })();
     return () => { cancelled = true; };
@@ -11034,7 +11051,7 @@ function App() {
                   >{_(type === 'p1' ? 'typeP1' : type === 'p2' ? 'typeP2' : type === 'ans' ? 'typeAns' : type === 'per' ? 'typePer' : type)}</button>
                   );
                 })}
-                {ppVideoSections.length > 0 && (
+                {(ppVideoSections.length > 0 || (ppVideoOpen && ppVideoLoading)) && (
                   <button
                     key="video"
                     type="button"
